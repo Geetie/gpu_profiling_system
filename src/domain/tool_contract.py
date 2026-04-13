@@ -172,6 +172,35 @@ def build_standard_registry(
             requires_approval=False,
             is_blocking=True,
         ),
+        ToolContract(
+            name="kaggle_push",
+            description="Push kernel source to Kaggle and optionally monitor execution",
+            input_schema={
+                "kernel_text": "string",
+                "kernel_id": "integer (optional, for updates)",
+                "kernel_title": "string",
+                "kernel_slug": "string",
+                "language": "string (default: python3)",
+                "kernel_type": "string (default: notebook)",
+                "enable_gpu": "boolean (default: true)",
+                "enable_internet": "boolean (default: true)",
+                "is_private": "boolean (default: true)",
+                "monitor": "boolean (default: false) — wait for completion",
+                "timeout_min": "integer (default: 90) — monitor timeout",
+            },
+            output_schema={
+                "success": "boolean",
+                "kernel_id": "integer",
+                "kernel_url": "string",
+                "session_id": "integer (if monitor=true)",
+                "session_status": "string (if monitor=true)",
+                "output_files": "array of strings (if monitor=true and complete)",
+                "error": "string (if failure)",
+            },
+            permissions=["process:exec", "network:outbound"],
+            requires_approval=True,
+            is_blocking=True,
+        ),
     ]
 
     registry.register_bulk(contracts)

@@ -6,7 +6,9 @@
   2. --mode probes     : 仅硬件探针 (无 LLM，跳过智能体框架)
 
 在 Kaggle Notebook 中执行：
-    exec(open('/kaggle/working/gpu_profiling_system/kaggle_test/run_kaggle_test.py').read())
+    # 推荐：直接导入模块而不是exec
+    from kaggle_test.run_kaggle_test import main as run_test
+    run_test()
 
 或在本地 GPU 机器上：
     python kaggle_test/run_kaggle_test.py --mode pipeline
@@ -160,25 +162,60 @@ if os.path.isfile(config_path):
     model = env.get("ANTHROPIC_MODEL", "")
 
     # 检查 token 是否为有效值（不是占位符）
-    token_valid = bool(auth_token) and not auth_token.startswith("sk-<") and not auth_token.startswith("在此填入") and len(auth_token) > 10
+    token_valid = bool(auth_token) and not auth_token.startswith("sk-<") and not auth_token.startswith("在此填入") and not auth_token.startswith("mock") and not auth_token.startswith("YOUR") and len(auth_token) > 10
 
     print(f"配置文件: config/api_config.json")
     print(f"API 端点: {base_url}")
     print(f"主模型:   {model or '未设置'}")
-    print(f"Token:    {'已配置 ✓' if token_valid else '占位符/未配置 ✗'}")
+    print(f"Token:    {'已配置' if token_valid else '占位符/未配置'}")
 
     if token_valid:
         api_configured = True
-        print(f"\n→ LLM API 已配置，多智能体管线可用")
+        print(f"\n-> LLM API 已配置，多智能体管线可用")
     else:
-        print(f"\n→ LLM API 未配置，请编辑 config/api_config.json 填入真实 API Key")
-        print(f"  LongCat API 配置示例:")
-        print(f'    "ANTHROPIC_BASE_URL": "https://api.longcat.com"')
-        print(f'    "ANTHROPIC_AUTH_TOKEN": "你的LongCat API Key"')
-        print(f'    "ANTHROPIC_MODEL": "longcat-flash-chat"')
-else:
-    print(f"[警告] config/api_config.json 不存在")
-    print(f"        多智能体管线需要 LLM API，请先创建配置文件")
+        print(f"\n-> LLM API 未配置")
+
+# 如果配置文件未配置，尝试环境变量
+if not api_configured:
+    longcat_key = os.environ.get("LONGCAT_API_KEY", "")
+    dashscope_key = os.environ.get("DASHSCOPE_API_KEY", "")
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+
+    chosen = None
+    if longcat_key and len(longcat_key) > 10:
+        chosen = ("longcat", longcat_key, "https://api.longcat.com/openaicompatible/api/v1/chat/completions", "longcat-flash-chat")
+    elif dashscope_key and len(dashscope_key) > 10:
+        chosen = ("dashscope", dashscope_key, "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions", "qwen-max")
+    elif anthropic_key and len(anthropic_key) > 10:
+        chosen = ("anthropic", anthropic_key, "https://api.anthropic.com", "claude-sonnet-4-5-20250514")
+
+    if chosen:
+        name, key, url, model_name = chosen
+        api_config = {
+            "env": {
+                "ANTHROPIC_BASE_URL": url,
+                "ANTHROPIC_AUTH_TOKEN": key,
+                "ANTHROPIC_MODEL": model_name,
+                "ANTHROPIC_REASONING_MODEL": model_name,
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": model_name,
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": model_name,
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": model_name
+            },
+            "includeCoAuthoredBy": False,
+            "effortLevel": "high"
+        }
+        os.makedirs(os.path.dirname(config_path), exist_ok=True)
+        with open(config_path, "w") as f:
+            json.dump(api_config, f, indent=2)
+        print(f"API configured from {name.upper()}_API_KEY env var")
+        print(f"  Endpoint: {url}")
+        print(f"  Model: {model_name}")
+        api_configured = True
+    else:
+        print("No LLM API keys found (file or env vars)")
+
+if not api_configured:
+    print("-> Will use probes-only mode")
 
 
 # ============================================================
@@ -189,29 +226,8 @@ if RUN_MODE == "pipeline":
     section("阶段 3：多智能体管线 (Planner → CodeGen → MetricAnalysis → Verification)")
 
     if not api_configured:
-        print("[错误] 多智能体管线需要 LLM API 配置，但当前未设置")
-        print("")
-        print("解决方案:")
-        print("  1. 编辑 config/api_config.json，填入真实的 API Key")
-        print("  2. 或将 RUN_MODE 改为 'probes' 仅运行硬件探针")
-        print("")
-        print("LongCat API 配置方法:")
-        print("  在 config/api_config.json 中修改:")
-        print('    "ANTHROPIC_BASE_URL": "https://api.longcat.com/openaicompatible/api/v1/"')
-        print('    "ANTHROPIC_AUTH_TOKEN": "你的实际API Key"')
-        print('    "ANTHROPIC_MODEL": "longcat-flash-chat"')
-        print("")
-        print("是否切换到 probes 模式继续? (y/n)")
-        try:
-            resp = input("> ").strip().lower()
-            if resp in ("y", "yes"):
-                RUN_MODE = "probes"
-                print("切换到 probes 模式...")
-            else:
-                sys.exit(1)
-        except (EOFError, KeyboardInterrupt):
-            print("\n交互输入不可用，自动切换到 probes 模式")
-            RUN_MODE = "probes"
+        print("[自动] 多智能体管线需要 LLM API 配置，自动切换到 probes 模式")
+        RUN_MODE = "probes"
 
     if RUN_MODE == "pipeline":
         start_time = time.time()

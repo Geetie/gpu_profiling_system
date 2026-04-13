@@ -1,0 +1,46 @@
+{
+  "_provider": "aliyun_bailian",
+  "_name": "阿里云百炼",
+  "_description": "阿里云百炼大模型API配置",
+  "_models": {
+    "default": "qwen-max",
+    "reasoning": "qwen-max",
+    "haiku": "qwen-turbo",
+    "sonnet": "qwen-plus",
+    "opus": "qwen-max"
+  },
+  "_endpoints": {
+    "base": "https://dashscope.aliyuncs.com/compatible-mode/v1/",
+    "chat": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+  },
+  "_auth": {
+    "type": "api_key",
+    "header": "Authorization",
+    "format": "Bearer {api_key}",
+    "env_var": "DASHSCOPE_API_KEY"
+  },
+  "_headers": {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer {api_key}"
+  },
+  "_request_format": {
+    "model": "{model}",
+    "messages": "{messages}",
+    "max_tokens": "{max_tokens}",
+    "stream": false
+  },
+  "_supported_features": [
+    "chat_completion",
+    "streaming",
+    "function_calling"
+  ],
+  "_rate_limits": {
+    "requests_per_minute": 1000,
+    "tokens_per_minute": 1000000
+  },
+  "_cost": {
+    "qwen-max": {"input": 0.02, "output": 0.04},
+    "qwen-plus": {"input": 0.006, "output": 0.012},
+    "qwen-turbo": {"input": 0.002, "output": 0.006}
+  }
+}

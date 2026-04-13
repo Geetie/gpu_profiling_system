@@ -99,7 +99,7 @@ os.chdir("/kaggle/working/gpu_profiling_system")
 config = {
     "env": {
         "ANTHROPIC_BASE_URL": "https://api.longcat.com/openaicompatible/api/v1/",
-        "ANTHROPIC_AUTH_TOKEN": "你的LongCat API Key",
+        "ANTHROPIC_AUTH_TOKEN": "YOUR_LONGCAE_API_KEY_HERE",
         "ANTHROPIC_MODEL": "longcat-flash-chat",
         "ANTHROPIC_REASONING_MODEL": "longcat-flash-chat",
         "ANTHROPIC_DEFAULT_HAIKU_MODEL": "longcat-flash-chat",
@@ -145,7 +145,9 @@ else:
 import os, sys
 os.chdir("/kaggle/working/gpu_profiling_system")
 sys.path.insert(0, "/kaggle/working/gpu_profiling_system")
-exec(open("kaggle_test/run_kaggle_test.py").read())
+# 安全执行方式 - 替代exec()
+from kaggle_test.run_kaggle_test import main as run_test
+run_test()
 ```
 
 自动执行流程：

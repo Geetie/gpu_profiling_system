@@ -1,0 +1,44 @@
+{
+  "_provider": "longcat",
+  "_name": "LongCat API",
+  "_description": "LongCat API兼容模式配置",
+  "_models": {
+    "default": "longcat-flash-chat",
+    "reasoning": "longcat-flash-chat",
+    "haiku": "longcat-flash-chat",
+    "sonnet": "longcat-flash-chat",
+    "opus": "longcat-flash-chat"
+  },
+  "_endpoints": {
+    "base": "https://api.longcat.com/openaicompatible/api/v1/",
+    "chat": "https://api.longcat.com/openaicompatible/api/v1/chat/completions"
+  },
+  "_auth": {
+    "type": "api_key",
+    "header": "Authorization",
+    "format": "Bearer {api_key}",
+    "env_var": "LONGCAT_API_KEY"
+  },
+  "_headers": {
+    "Content-Type": "application/json",
+    "Authorization": "Bearer {api_key}"
+  },
+  "_request_format": {
+    "model": "{model}",
+    "messages": "{messages}",
+    "max_tokens": "{max_tokens}",
+    "stream": false
+  },
+  "_supported_features": [
+    "chat_completion",
+    "streaming",
+    "function_calling"
+  ],
+  "_rate_limits": {
+    "requests_per_minute": 1000,
+    "tokens_per_minute": 1000000
+  },
+  "_cost": {
+    "longcat-flash-chat": {"input": 0.001, "output": 0.001}
+  }
+}

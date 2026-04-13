@@ -41,7 +41,7 @@ print(f"GPU: {r.stdout.strip()}")
 # config = {
 #     "env": {
 #         "ANTHROPIC_BASE_URL": "https://api.longcat.com/openaicompatible/api/v1/",
-#         "ANTHROPIC_AUTH_TOKEN": "你的API Key",
+#         "ANTHROPIC_AUTH_TOKEN": "YOUR_API_KEY_HERE",
 #         "ANTHROPIC_MODEL": "longcat-flash-chat",
 #         "ANTHROPIC_REASONING_MODEL": "longcat-flash-chat",
 #         "ANTHROPIC_DEFAULT_HAIKU_MODEL": "longcat-flash-chat",

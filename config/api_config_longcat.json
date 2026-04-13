@@ -3,7 +3,7 @@
   "_usage": "在 Kaggle 上: cp api_config_longcat.json api_config.json",
   "env": {
     "ANTHROPIC_BASE_URL": "https://api.longcat.com/openaicompatible/api/v1/",
-    "ANTHROPIC_AUTH_TOKEN": "在此替换为你的LongCat API Key",
+    "ANTHROPIC_AUTH_TOKEN": "ak_2Xu3Tv2WN62a5tG79X7aM98P80H6B",
     "ANTHROPIC_MODEL": "longcat-flash-chat",
     "ANTHROPIC_REASONING_MODEL": "longcat-flash-chat",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "longcat-flash-chat",

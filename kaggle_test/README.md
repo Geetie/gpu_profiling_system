@@ -17,7 +17,8 @@ sys.path.insert(0, "/kaggle/working/gpu_profiling_system")
 
 # 1. 先配置 LLM API（见 KAGGLE_TEST_GUIDE.md 第 3 节）
 # 2. 运行管线
-exec(open("kaggle_test/run_kaggle_test.py").read())
+from kaggle_test.run_kaggle_test import main as run_test
+run_test()
 ```
 
 脚本会自动：

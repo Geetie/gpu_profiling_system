@@ -1,17 +1,26 @@
-"""Model caller — calls LLM via Anthropic-compatible API.
+"""Model caller — calls LLM via multi-provider API system.
 
-Reads config from config/api_config.json.
-Supports both AgentLoop (single-turn) and SubAgent (multi-turn) modes.
+Supports multiple LLM providers:
+- Aliyun Bailian (DASHSCOPE)
+- Anthropic Claude
+- LongCat API
+
+Uses provider_manager for unified configuration management,
+with fallback to direct api_config.json reading for compatibility.
 """
 from __future__ import annotations
 
 import json
 import os
-from typing import Any
+import requests
+from typing import Any, Dict, List, Optional
 
 
 def load_config() -> dict[str, Any]:
-    """Load API configuration from config/api_config.json."""
+    """Load API configuration from config/api_config.json.
+
+    Fallback for environments without provider_manager (e.g. Kaggle).
+    """
     config_path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
         "config", "api_config.json",
@@ -20,12 +29,20 @@ def load_config() -> dict[str, Any]:
         return json.load(f)
 
 
-def check_key(api_key: str) -> None:
-    if not api_key or api_key.startswith("在此填入"):
+def check_key(api_key: str, provider_name: str = "API") -> None:
+    """Check API key validity."""
+    if not api_key:
         raise ValueError(
-            "API Key 未配置。\n"
-            "请编辑 config/api_config.json，将 ANTHROPIC_AUTH_TOKEN 设置为你的 API Key。\n"
-            "格式示例: \"sk-xxxxxxxxxxxxxxxxxxxxxxxx\""
+            f"{provider_name} API Key not configured.\n"
+            f"Please set the corresponding environment variable or check provider config."
+        )
+
+    # Check common placeholder patterns
+    placeholders = ["在此填入", "YOUR_API_KEY", "sk-<", "ak_", "在此处填入", "mock"]
+    if any(api_key.startswith(ph) for ph in placeholders):
+        raise ValueError(
+            f"{provider_name} API Key is a placeholder.\n"
+            f"Please configure a valid API key."
         )
 
 
@@ -34,65 +51,172 @@ def make_model_caller(model_name: str | None = None, max_tokens: int = 4096):
 
     Returns a callable: (messages: list[dict]) -> str
 
-    Usage:
-        caller = make_model_caller()
-        agent_loop.set_model_caller(caller)
+    Strategy:
+    1. Try provider_manager (multi-provider support)
+    2. Fall back to direct api_config.json reading (Kaggle compatibility)
     """
+    # Try provider_manager first
+    provider_manager = None
+    try:
+        from src.infrastructure.provider_manager import get_provider_manager
+        provider_manager = get_provider_manager()
+        if provider_manager.get_provider() is None:
+            provider_manager = None
+    except Exception:
+        provider_manager = None
+
+    # Fall back to api_config.json
+    use_fallback = provider_manager is None
+
+    def _caller(messages: List[Dict[str, Any]]) -> str:
+        """Actual model call function."""
+        if use_fallback:
+            return _caller_from_config(messages, model_name, max_tokens)
+        else:
+            return _caller_from_provider(messages, model_name, max_tokens, provider_manager)
+
+    return _caller
+
+
+def _caller_from_config(
+    messages: List[Dict[str, Any]],
+    model_name: str | None,
+    max_tokens: int,
+) -> str:
+    """Fallback: read config directly from api_config.json."""
     config = load_config()
     env = config["env"]
 
     api_key = env.get("ANTHROPIC_AUTH_TOKEN", "")
-    check_key(api_key)
+    check_key(api_key, "API")
 
     base_url = env.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
     model = model_name or env.get("ANTHROPIC_MODEL", "qwen3.6-plus")
 
-    def _caller(messages: list[dict[str, Any]]) -> str:
-        """Call the LLM API and return the assistant's text response."""
-        # Build Anthropic-compatible request
-        system_msg = ""
-        user_messages = []
-        for m in messages:
-            if m.get("role") == "system":
-                system_msg = m.get("content", "")
-            else:
-                user_messages.append(m)
+    return _call_api(base_url, api_key, model, messages, max_tokens)
 
-        # Use requests to call the API (no external dependency)
-        import requests
 
+def _caller_from_provider(
+    messages: List[Dict[str, Any]],
+    model_name: str | None,
+    max_tokens: int,
+    provider_manager,
+) -> str:
+    """Use provider_manager for multi-provider support."""
+    provider = provider_manager.get_provider()
+    if not provider:
+        raise ValueError("No LLM provider configured")
+
+    unified_config = provider_manager.create_unified_config()
+    if not unified_config:
+        raise ValueError("Cannot create provider config")
+
+    env = unified_config["env"]
+    headers = unified_config["headers"]
+
+    api_key = env.get("ANTHROPIC_AUTH_TOKEN", "")
+    check_key(api_key, unified_config["provider_name"])
+
+    base_url = env.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+    model = model_name or env.get("ANTHROPIC_MODEL", provider.get_model("default"))
+
+    if provider.provider == "anthropic":
+        return _call_anthropic(base_url, headers, model, messages, max_tokens)
+    elif provider.provider in ("aliyun_bailian", "longcat"):
+        return _call_openai_compatible(base_url, headers, model, messages, max_tokens)
+    else:
+        return _call_api(base_url, api_key, model, messages, max_tokens)
+
+
+def _call_api(
+    base_url: str,
+    api_key: str,
+    model: str,
+    messages: List[Dict[str, Any]],
+    max_tokens: int,
+) -> str:
+    """Call API — detect endpoint type from base_url."""
+    # Anthropic native API
+    if "anthropic.com" in base_url:
         headers = {
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         }
-
-        body = {
-            "model": model,
-            "messages": user_messages,
-            "max_tokens": max_tokens,
-            "temperature": 0.1,  # Low temperature for consistent tool calls
+        return _call_anthropic(base_url, headers, model, messages, max_tokens)
+    else:
+        # OpenAI-compatible API
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "content-type": "application/json",
         }
-        if system_msg:
-            body["system"] = system_msg
+        return _call_openai_compatible(base_url, headers, model, messages, max_tokens)
 
-        response = requests.post(
-            f"{base_url}/v1/messages",
-            headers=headers,
-            json=body,
-            timeout=120,
-        )
-        response.raise_for_status()
-        data = response.json()
 
-        # Extract text content
-        for block in data.get("content", []):
-            if block.get("type") == "text":
-                return block["text"]
+def _call_anthropic(
+    base_url: str,
+    headers: Dict[str, str],
+    model: str,
+    messages: List[Dict[str, Any]],
+    max_tokens: int,
+) -> str:
+    """Call Anthropic-compatible API endpoint."""
+    # Convert messages: extract system message
+    anthropic_messages = []
+    system_message = None
 
-        return ""
+    for msg in messages:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if role == "system":
+            system_message = content
+        elif role == "user":
+            anthropic_messages.append({"role": "user", "content": content})
+        elif role == "assistant":
+            anthropic_messages.append({"role": "assistant", "content": content})
 
-    return _caller
+    payload = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": anthropic_messages,
+    }
+    if system_message:
+        payload["system"] = system_message
+
+    response = requests.post(base_url, headers=headers, json=payload, timeout=120)
+
+    if response.status_code != 200:
+        raise RuntimeError(f"API call failed: {response.status_code} - {response.text[:500]}")
+
+    result = response.json()
+    for block in result.get("content", []):
+        if block.get("type") == "text":
+            return block["text"]
+    return ""
+
+
+def _call_openai_compatible(
+    base_url: str,
+    headers: Dict[str, str],
+    model: str,
+    messages: List[Dict[str, Any]],
+    max_tokens: int,
+) -> str:
+    """Call OpenAI-compatible API endpoint."""
+    payload = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "stream": False,
+    }
+
+    response = requests.post(base_url, headers=headers, json=payload, timeout=120)
+
+    if response.status_code != 200:
+        raise RuntimeError(f"API call failed: {response.status_code} - {response.text[:500]}")
+
+    result = response.json()
+    return result["choices"][0]["message"]["content"]
 
 
 def make_subagent_model_caller(model_name: str | None = None, max_tokens: int = 4096):

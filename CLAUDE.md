@@ -81,6 +81,7 @@
 | `write_file` | 写入文件 | 是（仅允许特定路径） |
 | `read_file` | 读取文件 | 否 |
 | `generate_microbenchmark` | 自动生成指针追逐等探针内核 | 否 |
+| `kaggle_push` | 推送内核到 Kaggle 并监控执行 | 是 |
 
 ---
 

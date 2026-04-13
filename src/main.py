@@ -163,7 +163,7 @@ def _wire_all_subagents(planner, code_gen, metric_analysis, verification) -> boo
     - MetricAnalysis: main model (analyzing ncu output)
     - Verification: reasoning model (independent review)
     """
-    from src.infrastructure.model_caller import make_model_caller, load_config, check_key
+    from src.infrastructure.model_caller import make_model_caller, check_key, load_config
 
     try:
         config = load_config()
@@ -213,6 +213,7 @@ def _build_tool_handlers(sandbox):
         make_read_file_handler,
         make_write_file_handler,
     )
+    from src.infrastructure.tools.kaggle_push import kaggle_push_handler
     from src.infrastructure.tools.microbenchmark import generate_microbenchmark_handler
     from src.infrastructure.tools.run_ncu import run_ncu_handler
 
@@ -225,6 +226,7 @@ def _build_tool_handlers(sandbox):
         "read_file": make_read_file_handler(file_ops),
         "write_file": make_write_file_handler(file_ops),
         "generate_microbenchmark": generate_microbenchmark_handler,
+        "kaggle_push": kaggle_push_handler,
     }
 
 

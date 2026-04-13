@@ -6,13 +6,34 @@ The multi-agent system autonomously generates CUDA code based on targets.
 No hardcoded CUDA source in this kernel - Agent generates everything.
 """
 from __future__ import annotations
-import json, os, shutil, subprocess, sys, time
+import json, os, shutil, subprocess, sys, time, traceback
 from pathlib import Path
 
+# Redirect stdout/stderr to a log file for debugging
 WORKING_DIR = "/kaggle/working"
+os.makedirs(WORKING_DIR, exist_ok=True)
+LOG_FILE = os.path.join(WORKING_DIR, "execution.log")
+log_fh = open(LOG_FILE, "w", buffering=1)  # line-buffered
+
+class TeeWriter:
+    def __init__(self, stream, file):
+        self._stream = stream
+        self._file = file
+    def write(self, s):
+        self._stream.write(s)
+        self._file.write(s)
+        self._file.flush()
+    def flush(self):
+        self._stream.flush()
+        self._file.flush()
+
+sys.stdout = TeeWriter(sys.stdout, log_fh)
+sys.stderr = TeeWriter(sys.stderr, log_fh)
+
 os.chdir(WORKING_DIR)
 print(f"Working dir: {WORKING_DIR}")
 print(f"Python: {sys.version}")
+print(f"Log file: {LOG_FILE}")
 
 
 def banner(title):
@@ -30,9 +51,16 @@ def run_cmd(cmd, timeout=300, description=""):
         r = subprocess.run(cmd, capture_output=True, text=True,
                           timeout=timeout, cwd=WORKING_DIR)
         if r.stdout:
-            print(r.stdout[-3000:])
+            out = r.stdout
+            if len(out) > 5000:
+                print(f"... ({len(out)} chars total, showing first 3000 + last 2000)")
+                print(out[:3000])
+                print("\n... [truncated] ...\n")
+                print(out[-2000:])
+            else:
+                print(out)
         if r.stderr:
-            print(f"STDERR: {r.stderr[-500:]}")
+            print(f"STDERR: {r.stderr[-1000:]}")
         print(f"Exit code: {r.returncode}")
         return r.returncode == 0, r.stdout, r.stderr
     except subprocess.TimeoutExpired:
@@ -219,59 +247,98 @@ def analyze_results():
 # ============================================================
 
 PROJECT_ROOT = None
+all_errors = []
 
-banner("GPU Profiling System - Kaggle Test")
+try:
+    banner("GPU Profiling System - Kaggle Test")
 
-# Step 0: Clone repo
-banner("0. Clone Project Repository")
-PROJECT_ROOT = os.path.join(WORKING_DIR, "gpu_profiling_system")
-if os.path.isfile(os.path.join(PROJECT_ROOT, "src", "main.py")):
-    print("Project already cloned -- skipping")
-else:
-    ok, out, err = run_cmd([
-        "git", "clone",
-        "https://github.com/Geetie/gpu_profiling_system.git",
-        PROJECT_ROOT,
-    ], timeout=120, description="Clone repository")
-    if not ok:
-        print("ERROR: Failed to clone repository")
+    # Step 0: Clone repo
+    banner("0. Clone Project Repository")
+    PROJECT_ROOT = os.path.join(WORKING_DIR, "gpu_profiling_system")
+    if os.path.isfile(os.path.join(PROJECT_ROOT, "src", "main.py")):
+        print("Project already cloned -- skipping")
+    else:
+        ok, out, err = run_cmd([
+            "git", "clone",
+            "https://github.com/Geetie/gpu_profiling_system.git",
+            PROJECT_ROOT,
+        ], timeout=120, description="Clone repository")
+        if not ok:
+            all_errors.append("Failed to clone repository")
+            print("ERROR: Failed to clone repository")
+            sys.exit(1)
+
+    os.chdir(PROJECT_ROOT)
+    sys.path.insert(0, PROJECT_ROOT)
+    print(f"Project root: {PROJECT_ROOT}")
+
+
+    if not check_environment():
+        all_errors.append("Environment check failed")
+        print("Environment check failed")
         sys.exit(1)
 
-os.chdir(PROJECT_ROOT)
-sys.path.insert(0, PROJECT_ROOT)
-print(f"Project root: {PROJECT_ROOT}")
+    api_configured = configure_api()
 
+    target_spec_path = create_target_spec()
 
-if not check_environment():
-    print("Environment check failed")
-    sys.exit(1)
+    # Run probes first
+    probe_ok = run_probes()
+    if not probe_ok:
+        all_errors.append("Hardware probes failed")
 
-api_configured = configure_api()
+    # Run pipeline if API available
+    pipeline_ok = False
+    if api_configured and probe_ok:
+        pipeline_ok = run_pipeline(target_spec_path)
+        if not pipeline_ok:
+            all_errors.append("Pipeline failed")
+    else:
+        banner("Pipeline - SKIPPED (no API or probes failed)")
+        all_errors.append(f"Pipeline skipped: api_configured={api_configured}, probe_ok={probe_ok}")
 
-target_spec_path = create_target_spec()
+    results_ok = analyze_results()
+    if not results_ok:
+        all_errors.append("Results analysis failed")
 
-# Run probes first
-probe_ok = run_probes()
+except Exception as e:
+    all_errors.append(f"Fatal error: {str(e)}")
+    print(f"\nFATAL ERROR: {e}")
+    traceback.print_exc()
 
-# Run pipeline if API available
-pipeline_ok = False
-if api_configured and probe_ok:
-    pipeline_ok = run_pipeline(target_spec_path)
-else:
-    banner("Pipeline - SKIPPED (no API or probes failed)")
+finally:
+    # Write execution summary
+    banner("Execution Summary")
+    rp = os.path.join(WORKING_DIR, "results.json")
+    ps = "PASS" if probe_ok else "FAIL"
+    pl = "PASS" if pipeline_ok else "SKIP"
+    rs = "FOUND" if os.path.isfile(rp) else "MISSING"
+    print("  Hardware probes:", ps)
+    print("  Pipeline mode:  ", pl)
+    print("  results.json:   ", rs)
+    if os.path.isfile(rp):
+        print("  Size:", os.path.getsize(rp), "bytes")
 
-results_ok = analyze_results()
+    # Write summary file for debugging
+    summary = {
+        "probe_ok": probe_ok,
+        "pipeline_ok": pipeline_ok,
+        "results_found": os.path.isfile(rp) if "rp" in dir() else False,
+        "api_configured": api_configured,
+        "errors": all_errors,
+        "project_root": PROJECT_ROOT,
+    }
+    summary_path = os.path.join(WORKING_DIR, "execution_summary.json")
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=2)
+    print(f"\nExecution summary written to: {summary_path}")
+    if all_errors:
+        print(f"\nERRORS ({len(all_errors)}):")
+        for i, err in enumerate(all_errors, 1):
+            print(f"  {i}. {err}")
 
+    print("\nTest complete.")
+    print(f"Log file: {LOG_FILE}")
 
-banner("Execution Summary")
-rp = os.path.join(WORKING_DIR, "results.json")
-ps = "PASS" if probe_ok else "FAIL"
-pl = "PASS" if pipeline_ok else "SKIP"
-rs = "FOUND" if os.path.isfile(rp) else "MISSING"
-print("  Hardware probes:", ps)
-print("  Pipeline mode:  ", pl)
-print("  results.json:   ", rs)
-if os.path.isfile(rp):
-    print("  Size:", os.path.getsize(rp), "bytes")
-
-print("\nTest complete.")
+    # Close log file
+    log_fh.close()
