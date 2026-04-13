@@ -527,6 +527,9 @@ def _build_pipeline(args, sandbox, registry, session):
         metric_analysis=metric_analysis,
         verification=verification,
         state_dir=args.state_dir,
+        sandbox=sandbox,
+        tool_handlers=_build_tool_handlers(sandbox),
+        max_turns_per_stage=50,
     )
 
     # Wire LLM model callers to all subagents
