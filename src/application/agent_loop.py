@@ -271,6 +271,13 @@ class AgentLoop:
                 # Continue loop — model may retry or adapt
         else:
             # No tool call — turn ends
+            # Save model output to context so it can be extracted later
+            if self._model_output:
+                self.context_manager.add_entry(
+                    Role.ASSISTANT,
+                    self._model_output,
+                    token_count=20,
+                )
             self._emit(EventKind.TURN, {
                 "turn": self.loop_state.turn_count,
                 "output": self._model_output[:200],

@@ -194,6 +194,66 @@ class Pipeline:
             },
         )
 
+    def _build_stage_system_prompt(self, agent: BaseSubAgent, stage_name: str) -> str:
+        """Build system prompt for a pipeline stage's AgentLoop."""
+        import json as _json
+        available_tools = agent.tool_registry.list_tools()
+        tool_list = _json.dumps(available_tools, indent=2) if available_tools else "(no tools registered)"
+
+        return (
+            f"You are the {stage_name} stage in a GPU hardware profiling pipeline.\n"
+            f"{agent._build_system_prompt()}\n\n"
+            f"Available tools: {tool_list}\n\n"
+            f"Tool call format: {{\"tool\": \"tool_name\", \"args\": {{\"key\": \"value\"}}}}\n"
+            f"After each tool call result, you may call more tools or give your final answer.\n"
+            f"When done, give your final answer as plain text (not JSON)."
+        )
+
+    def _build_task_prompt(
+        self, task: dict, prev_result: dict, stage_name: str
+    ) -> str:
+        """Build task-specific prompt for CODE_GEN, METRIC_ANALYSIS, VERIFICATION."""
+        import json as _json
+
+        if stage_name == PipelineStage.CODE_GEN.value:
+            target = task.get("target", "unknown")
+            category = task.get("category", "unknown")
+            method = task.get("method", "custom micro-benchmark")
+
+            return (
+                f"Generate and execute a CUDA micro-benchmark to measure '{target}'.\n"
+                f"Category: {category}\n"
+                f"Method: {method}\n\n"
+                f"Steps:\n"
+                f"1. Use compile_cuda to write and compile CUDA source code for the benchmark\n"
+                f"2. Use execute_binary to run the compiled benchmark\n"
+                f"3. Analyze the output and report the measured value\n\n"
+                f"Report the final measured value clearly."
+            )
+
+        elif stage_name == PipelineStage.METRIC_ANALYSIS.value:
+            return (
+                f"Analyze the benchmark results from the previous stage.\n"
+                f"Previous stage data: {_json.dumps(prev_result.get('data', {}), indent=2)[:2000]}\n\n"
+                f"Identify the bottleneck type and confidence level.\n"
+                f"Return: bottleneck_type (compute_bound/memory_bound/latency_bound/cache_capacity/unknown), "
+                f"and all extracted numeric metrics."
+            )
+
+        elif stage_name == PipelineStage.VERIFICATION.value:
+            return (
+                f"Independently verify the GPU profiling results.\n"
+                f"You do NOT trust the previous stages' conclusions.\n"
+                f"Review from first principles.\n\n"
+                f"Previous stage data: {_json.dumps(prev_result.get('data', {}), indent=2)[:2000]}\n\n"
+                f"Check: (1) data completeness, (2) numeric sanity, "
+                f"(3) methodology soundness, (4) cross-validation.\n"
+                f"State clearly: ACCEPT or REJECT the results."
+            )
+
+        else:
+            return f"Execute your {stage_name} stage task."
+
     def _get_stage_agent(self, stage: PipelineStage) -> BaseSubAgent | None:
         """Find the agent for a given stage."""
         for step in self._stages:
@@ -220,41 +280,38 @@ class Pipeline:
         agent = step.agent
         stage_name = step.stage.value
 
-        # Build task description for the LLM
-        if message.message_type == "task_dispatch":
-            task = message.payload.get("task", {})
-            prev_result = message.payload.get("prev_result", {})
-            target_spec = message.payload.get("target_spec", {})
-        else:
-            task = message.payload
-            prev_result = None
-            target_spec = None
+        # Extract payload
+        payload = message.payload
+        task = payload.get("task", {})
+        prev_result = payload.get("prev_result", {})
+        target_spec = payload.get("target_spec", {})
 
         # System prompt for the AgentLoop stage
-        system_prompt = f"""You are the {stage_name} stage in a GPU profiling pipeline.
+        system_prompt = self._build_stage_system_prompt(agent, stage_name)
 
-Your role: {agent._build_system_prompt()}
-
-Available tools: {agent.tool_registry.list_tools()}
-
-Instructions:
-1. Use the available tools to complete your task
-2. For each tool call, respond with ONLY valid JSON:
-   {{"tool": "tool_name", "args": {{"arg1": "value1"}}}}
-3. After using tools, analyze results and produce a final answer
-4. When done, output your final answer as plain text (no JSON)
-
-"""
-
-        # Build user task description
+        # Build user task description — CRITICAL: use task from Planner
         if target_spec:
-            user_task = f"Process these profiling targets:\n{_json.dumps(target_spec, indent=2)}"
-        elif prev_result:
-            user_task = f"Process results from {prev_result.get('agent_role', 'previous')} stage:\n{_json.dumps(prev_result.get('data', {}), indent=2)[:2000]}"
+            # First stage: Planner receives targets
+            user_task = (
+                f"You are the PLANNER stage. Analyze these GPU profiling targets "
+                f"and decompose them into actionable tasks.\n\n"
+                f"Targets: {_json.dumps(target_spec, indent=2)}\n\n"
+                f"Return a JSON array of task objects with: "
+                f'"target", "category" (latency_measurement, capacity_measurement, '
+                f'clock_measurement, bandwidth_measurement, or unknown), '
+                f'"method" (one sentence description of approach).'
+            )
         elif task:
-            user_task = f"Task: {_json.dumps(task, indent=2)}"
+            # Subsequent stages: receive a specific task
+            user_task = self._build_task_prompt(task, prev_result, stage_name)
+        elif prev_result:
+            # No task but has prev_result
+            user_task = (
+                f"You are the {stage_name} stage. Process results from the "
+                f"previous stage:\n{_json.dumps(prev_result.get('data', {}), indent=2)[:2000]}"
+            )
         else:
-            user_task = "Execute your stage task."
+            user_task = f"You are the {stage_name} stage. Execute your task."
 
         # Create session and control plane
         session_id = f"pipeline_{stage_name}_{uuid.uuid4().hex[:6]}"
@@ -278,9 +335,14 @@ Instructions:
 
         # Wire tool executor if sandbox available
         if self._sandbox and self._tool_handlers:
+            handlers = dict(self._tool_handlers)
             loop.set_tool_executor(
-                lambda tool_name, args: self._tool_handlers[tool_name](args)
+                lambda tool_name, args: handlers[tool_name](args)
             )
+
+        # Auto-approve tool calls in HIGH_AUTONOMY mode (no human in loop)
+        if agent.permission_mode == PermissionMode.HIGH_AUTONOMY:
+            loop.set_approval_callback(lambda request: True)
 
         # Set up context and run
         agent.context_manager.add_entry(
@@ -307,57 +369,83 @@ Instructions:
         self,
         agent: BaseSubAgent,
         stage: PipelineStage,
-        loop: AgentLoop,
+        loop: "AgentLoop",
     ) -> SubAgentResult:
         """Extract a SubAgentResult from the AgentLoop's final context."""
         import json as _json
 
         entries = agent.context_manager.get_entries()
 
-        # Collect all tool call results
+        # Collect tool call results and model's text outputs
         tool_results = []
-        final_text = ""
+        assistant_outputs = []
+        model_prompt_prefix = ("You are the", "Available tools", "Instructions:")
 
         for entry in entries:
+            if entry.role.value != "assistant":
+                continue
+
+            # Try to parse as JSON
             try:
                 data = _json.loads(entry.content)
-                if isinstance(data, dict):
-                    if "tool" in data or "status" in data:
-                        tool_results.append(data)
-            except (_json.JSONDecodeError, AttributeError):
-                # Non-JSON content = model's text output
-                if entry.content and not entry.content.startswith("You are") and not entry.content.startswith("Process"):
-                    final_text = entry.content
+                if isinstance(data, dict) and ("status" in data or "tool" in data):
+                    tool_results.append(data)
+                elif isinstance(data, (dict, list)):
+                    # JSON output from model (not a tool result)
+                    assistant_outputs.append(entry.content)
+            except (_json.JSONDecodeError, TypeError):
+                # Plain text from model
+                content = entry.content.strip()
+                if content and not content.startswith(model_prompt_prefix):
+                    assistant_outputs.append(content)
 
-        # Build structured result based on stage
-        data = {"tool_results": tool_results, "final_output": final_text[:3000]}
+        # Final output = last non-empty assistant text
+        final_text = assistant_outputs[-1] if assistant_outputs else ""
 
-        # Stage-specific extraction
+        # Build structured result
+        data = {
+            "tool_results": tool_results,
+            "final_output": final_text[:3000],
+            "num_tool_calls": len(tool_results),
+        }
+
+        # Stage-specific extraction and status determination
         if stage == PipelineStage.PLAN:
-            # Try to extract plan from final output
             data["plan_text"] = final_text[:2000]
-            status = SubAgentStatus.SUCCESS
+            status = SubAgentStatus.SUCCESS if final_text else SubAgentStatus.FAILED
+            if not final_text and not tool_results:
+                data["error_detail"] = "Planner produced no output"
+
         elif stage == PipelineStage.CODE_GEN:
-            # Extract compilation/execution results
             data["code_gen_output"] = final_text[:2000]
-            # Check if any tool succeeded
-            succeeded = any(r.get("status") == "success" for r in tool_results)
-            status = SubAgentStatus.SUCCESS if succeeded else SubAgentStatus.FAILED
-            if not succeeded and tool_results:
-                errors = [r.get("error", "") for r in tool_results if r.get("status") != "success"]
-                data["errors"] = errors
+            tool_succeeded = any(
+                r.get("status") in ("success", True) for r in tool_results
+            )
+            output_succeeded = bool(final_text) and not any(
+                kw in final_text.lower() for kw in ["failed", "error:", "could not", "cannot"]
+            )
+            if tool_succeeded or output_succeeded:
+                status = SubAgentStatus.SUCCESS
+            else:
+                status = SubAgentStatus.FAILED
+                if not final_text:
+                    data["error_detail"] = "CodeGen produced no output"
+
         elif stage == PipelineStage.METRIC_ANALYSIS:
             data["analysis_output"] = final_text[:2000]
             status = SubAgentStatus.SUCCESS if final_text else SubAgentStatus.FAILED
+
         elif stage == PipelineStage.VERIFICATION:
-            # Check if verification accepted or rejected
-            accepted = "accept" in final_text.lower() or "valid" in final_text.lower()
-            rejected = "reject" in final_text.lower() or "invalid" in final_text.lower()
+            data["review_text"] = final_text[:2000]
+            lower = final_text.lower()
+            # Use explicit phrases to avoid substring collisions (e.g., "invalid" contains "valid")
+            rejected = "reject" in lower or "not valid" in lower or "not accept" in lower
+            accepted = "accept" in lower and "reject" not in lower and "not valid" not in lower and "not accept" not in lower
             if rejected and not accepted:
                 status = SubAgentStatus.REJECTED
             else:
                 status = SubAgentStatus.SUCCESS
-            data["review_text"] = final_text[:2000]
+
         else:
             status = SubAgentStatus.SUCCESS
 
@@ -371,7 +459,12 @@ Instructions:
         result.context_fingerprint = result.compute_fingerprint(agent.context_manager)
         self._persister.log_entry(
             "stage_result",
-            details={"stage": stage.value, "status": status.value, "tool_calls": len(tool_results)},
+            details={
+                "stage": stage.value,
+                "status": status.value,
+                "tool_calls": len(tool_results),
+                "output_length": len(final_text),
+            },
         )
 
         return result
