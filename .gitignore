@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+
+# Sandboxes
+.sandbox/
+.docker_sandbox/
+
+# State directory
+.state/
+
+# Runtime output
+results.json
+evidence_*.json
+evidence_*_ncu_raw.txt
+
+# Config (may contain keys)
+config/api_config.json
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

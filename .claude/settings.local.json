@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(python -m pytest tests/ -v)",
+      "Bash(python -m pip install pytest -q)",
+      "Bash(python -c ':*)",
+      "Bash(python -m pytest tests/ -v --tb=short)",
+      "Bash(python -c \"from src.main import main; print\\('main.py imports OK'\\)\")",
+      "Bash(python -m src.main --help)",
+      "Bash(python -m src.main \"test\" --no-docker --max-turns 1 --state-dir .state_test)",
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(python -m src \"test via __main__\" --no-docker --max-turns 1 --state-dir .state_test2)",
+      "Bash(python -c \"from src.main import main; print\\('imports OK'\\)\")",
+      "Bash(python -m pytest tests/test_audit_fixes.py -v)",
+      "Bash(python -m pytest tests/test_tools/test_tool_handlers.py -v -k compile)",
+      "Bash(python -m pytest tests/test_integration/ -v)",
+      "Bash(python -m pytest tests/test_integration/ -v --tb=short)",
+      "Bash(python -m pytest tests/test_integration/test_main_integration.py::TestMainEntryPoint::test_main_builds_all_components tests/test_integration/test_main_integration.py::TestMainEntryPoint::test_main_pipeline_mode_builds_pipeline -v --tb=long)",
+      "Bash(python -m pytest tests/)"
+    ]
+  }
+}

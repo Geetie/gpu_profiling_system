@@ -1,0 +1,15 @@
+{
+  "_comment": "LongCat API 配置模板 — 复制为 api_config.json 并填入你的 API Key",
+  "_usage": "在 Kaggle 上: cp api_config_longcat.json api_config.json",
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://api.longcat.com/openaicompatible/api/v1/",
+    "ANTHROPIC_AUTH_TOKEN": "在此替换为你的LongCat API Key",
+    "ANTHROPIC_MODEL": "longcat-flash-chat",
+    "ANTHROPIC_REASONING_MODEL": "longcat-flash-chat",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "longcat-flash-chat",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "longcat-flash-chat",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "longcat-flash-chat"
+  },
+  "includeCoAuthoredBy": false,
+  "effortLevel": "high"
+}
