@@ -75,7 +75,7 @@ def check_key(api_key: str, provider_name: str = "API") -> None:
 def make_model_caller(model_name: str | None = None, max_tokens: int = 4096):
     """Create a model caller function compatible with AgentLoop.set_model_caller().
 
-    Returns a callable: (messages: list[dict]) -> str
+    Returns a callable: (messages: list[dict], tools: list[dict] | None = None) -> str
 
     Strategy:
     1. Try provider_manager (multi-provider support)
@@ -94,12 +94,12 @@ def make_model_caller(model_name: str | None = None, max_tokens: int = 4096):
     # Fall back to api_config.json
     use_fallback = provider_manager is None
 
-    def _caller(messages: List[Dict[str, Any]]) -> str:
+    def _caller(messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None) -> str:
         """Actual model call function."""
         if use_fallback:
-            return _caller_from_config(messages, model_name, max_tokens)
+            return _caller_from_config(messages, model_name, max_tokens, tools)
         else:
-            return _caller_from_provider(messages, model_name, max_tokens, provider_manager)
+            return _caller_from_provider(messages, model_name, max_tokens, provider_manager, tools)
 
     return _caller
 
@@ -108,6 +108,7 @@ def _caller_from_config(
     messages: List[Dict[str, Any]],
     model_name: str | None,
     max_tokens: int,
+    tools: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Fallback: read config directly from api_config.json."""
     config = load_config()
@@ -119,7 +120,7 @@ def _caller_from_config(
     base_url = env.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
     model = model_name or env.get("ANTHROPIC_MODEL", "qwen3.6-plus")
 
-    return _call_api(base_url, api_key, model, messages, max_tokens)
+    return _call_api(base_url, api_key, model, messages, max_tokens, tools)
 
 
 def _caller_from_provider(
@@ -127,6 +128,7 @@ def _caller_from_provider(
     model_name: str | None,
     max_tokens: int,
     provider_manager,
+    tools: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Use provider_manager for multi-provider support."""
     provider = provider_manager.get_provider()
@@ -147,11 +149,11 @@ def _caller_from_provider(
     model = model_name or env.get("ANTHROPIC_MODEL", provider.get_model("default"))
 
     if provider.provider == "anthropic":
-        return _call_anthropic(base_url, headers, model, messages, max_tokens)
+        return _call_anthropic(base_url, headers, model, messages, max_tokens, tools)
     elif provider.provider in ("aliyun_bailian", "longcat"):
-        return _call_openai_compatible(base_url, headers, model, messages, max_tokens)
+        return _call_openai_compatible(base_url, headers, model, messages, max_tokens, tools)
     else:
-        return _call_api(base_url, api_key, model, messages, max_tokens)
+        return _call_api(base_url, api_key, model, messages, max_tokens, tools)
 
 
 def _call_api(
@@ -160,6 +162,7 @@ def _call_api(
     model: str,
     messages: List[Dict[str, Any]],
     max_tokens: int,
+    tools: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Call API — detect endpoint type from base_url."""
     # Anthropic native API
@@ -169,14 +172,14 @@ def _call_api(
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         }
-        return _call_anthropic(base_url, headers, model, messages, max_tokens)
+        return _call_anthropic(base_url, headers, model, messages, max_tokens, tools)
     else:
         # OpenAI-compatible API
         headers = {
             "Authorization": f"Bearer {api_key}",
             "content-type": "application/json",
         }
-        return _call_openai_compatible(base_url, headers, model, messages, max_tokens)
+        return _call_openai_compatible(base_url, headers, model, messages, max_tokens, tools)
 
 
 def _call_anthropic(
@@ -185,6 +188,7 @@ def _call_anthropic(
     model: str,
     messages: List[Dict[str, Any]],
     max_tokens: int,
+    tools: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Call Anthropic-compatible API endpoint."""
     # Convert messages: extract system message
@@ -208,6 +212,12 @@ def _call_anthropic(
     }
     if system_message:
         payload["system"] = system_message
+    if tools:
+        # Convert {"type": "function", "function": {"name": ...}} to Anthropic format
+        payload["tools"] = [
+            {"name": t["function"]["name"]}
+            for t in tools if t.get("type") == "function" and "function" in t
+        ]
 
     response = _retry_request(base_url, headers=headers, json_payload=payload, timeout=120)
 
@@ -215,6 +225,14 @@ def _call_anthropic(
         raise RuntimeError(f"API call failed: {response.status_code} - {response.text[:500]}")
 
     result = response.json()
+    # Check for tool_calls first (Anthropic function calling)
+    for block in result.get("content", []):
+        if block.get("type") == "tool_use":
+            return json.dumps({
+                "tool": block["name"],
+                "args": block.get("input", {}),
+            })
+    # Fallback to text
     for block in result.get("content", []):
         if block.get("type") == "text":
             return block["text"]
@@ -227,6 +245,7 @@ def _call_openai_compatible(
     model: str,
     messages: List[Dict[str, Any]],
     max_tokens: int,
+    tools: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Call OpenAI-compatible API endpoint."""
     payload = {
@@ -235,6 +254,9 @@ def _call_openai_compatible(
         "max_tokens": max_tokens,
         "stream": False,
     }
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
 
     response = _retry_request(base_url, headers=headers, json_payload=payload, timeout=120)
 
@@ -242,7 +264,23 @@ def _call_openai_compatible(
         raise RuntimeError(f"API call failed: {response.status_code} - {response.text[:500]}")
 
     result = response.json()
-    return result["choices"][0]["message"]["content"]
+    choice = result["choices"][0]
+
+    # Check for tool_calls (OpenAI function calling)
+    tool_calls = choice.get("message", {}).get("tool_calls")
+    if tool_calls:
+        # Return the first tool call in AgentLoop's expected format
+        tc = tool_calls[0]
+        if tc.get("type") == "function":
+            func = tc["function"]
+            try:
+                args = json.loads(func["arguments"])
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+            return json.dumps({"tool": func["name"], "args": args})
+
+    # Fallback to text content
+    return choice.get("message", {}).get("content", "")
 
 
 def make_subagent_model_caller(model_name: str | None = None, max_tokens: int = 4096):

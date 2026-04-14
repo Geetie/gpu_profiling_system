@@ -562,6 +562,13 @@ class Pipeline:
                 return step.agent
         return None
 
+    def _tool_handler_tools(self, handlers: dict) -> list[dict]:
+        """Build OpenAI function-calling tool definitions from handler names."""
+        return [
+            {"type": "function", "function": {"name": name}}
+            for name in handlers.keys()
+        ]
+
     def _run_with_agent_loop(
         self, step: PipelineStep, message: CollaborationMessage
     ) -> SubAgentResult:
@@ -644,6 +651,8 @@ class Pipeline:
             loop.set_tool_executor(
                 lambda tool_name, args: handlers[tool_name](args)
             )
+            # Pass tool definitions to the model caller for OpenAI function calling
+            loop.set_available_tools(self._tool_handler_tools(handlers))
 
         # Auto-approve tool calls in HIGH_AUTONOMY mode (no human in loop)
         if agent.permission_mode == PermissionMode.HIGH_AUTONOMY:

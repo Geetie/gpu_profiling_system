@@ -38,7 +38,7 @@ def probe_bank_conflict_latency(
         method: str — methodology
     """
     kernel = bank_conflict_kernel(size=32768)
-    result = compile_and_run(kernel.source, sandbox=sandbox)
+    result = compile_and_run(kernel.source, sandbox=sandbox, nvcc_flags=kernel.nvcc_flags)
 
     if not result or not result.success:
         print(f"[bank_conflict] compile_and_run failed")

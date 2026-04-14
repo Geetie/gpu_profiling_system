@@ -160,6 +160,7 @@ class AgentLoop:
         self._model_caller: ModelCaller | None = None
         self._tool_executor: ToolExecutor | None = None
         self._approval_callback: Callable[[Any], bool] | None = None
+        self._available_tools: list[dict[str, Any]] | None = None
 
     # ── Event System ─────────────────────────────────────────────────
 
@@ -226,7 +227,12 @@ class AgentLoop:
         # 3. Get model output (via hook or default)
         if self._model_caller:
             messages = self.context_manager.to_messages()
-            self._model_output = self._model_caller(messages)
+            # Pass available tools for OpenAI function calling
+            try:
+                self._model_output = self._model_caller(messages, self._available_tools)
+            except TypeError:
+                # Backward compat: older callers that don't accept tools param
+                self._model_output = self._model_caller(messages)
         # _model_output is pre-set for testing
 
         # 4. Parse tool call
@@ -451,6 +457,13 @@ class AgentLoop:
     def set_model_caller(self, caller: ModelCaller) -> None:
         """Set the function that calls the LLM."""
         self._model_caller = caller
+
+    def set_available_tools(self, tools: list[dict[str, Any]]) -> None:
+        """Set tool definitions for OpenAI function calling.
+
+        Format: [{"type": "function", "function": {"name": "tool_name"}}]
+        """
+        self._available_tools = tools
 
     def set_tool_executor(self, executor: ToolExecutor) -> None:
         """Set the function that executes tool calls."""
