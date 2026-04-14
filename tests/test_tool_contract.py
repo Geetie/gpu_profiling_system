@@ -173,6 +173,7 @@ class TestToolRegistry:
         expected = {
             "run_ncu", "compile_cuda", "execute_binary",
             "write_file", "read_file", "generate_microbenchmark",
+            "kaggle_push",
         }
         assert set(registry.list_tools()) == expected
         # read_file should NOT require approval

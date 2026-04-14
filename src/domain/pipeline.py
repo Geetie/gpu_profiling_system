@@ -562,12 +562,50 @@ class Pipeline:
                 return step.agent
         return None
 
-    def _tool_handler_tools(self, handlers: dict) -> list[dict]:
-        """Build OpenAI function-calling tool definitions from handler names."""
-        return [
-            {"type": "function", "function": {"name": name}}
-            for name in handlers.keys()
-        ]
+    def _tool_handler_tools(self, handlers: dict, tool_registry=None) -> list[dict]:
+        """Build OpenAI function-calling tool definitions from ToolRegistry.
+
+        Uses full ToolContract definitions (name + description + parameters)
+        so the LLM knows what each tool expects. Without parameters, the model
+        cannot invoke tools correctly.
+        """
+        tools = []
+        if tool_registry:
+            for name in tool_registry.list_tools():
+                try:
+                    contract = tool_registry.get(name)
+                    # Build OpenAI-compatible tool definition
+                    properties = {}
+                    for param_name, param_type in contract.input_schema.items():
+                        if isinstance(param_type, list):
+                            # Array type
+                            item_type = param_type[0] if param_type else "string"
+                            properties[param_name] = {
+                                "type": "array",
+                                "items": {"type": item_type},
+                            }
+                        else:
+                            properties[param_name] = {"type": param_type}
+                    tools.append({
+                        "type": "function",
+                        "function": {
+                            "name": contract.name,
+                            "description": contract.description,
+                            "parameters": {
+                                "type": "object",
+                                "properties": properties,
+                                "required": list(contract.input_schema.keys()),
+                            },
+                        },
+                    })
+                except KeyError:
+                    # Tool not in registry — skip
+                    pass
+        else:
+            # Fallback: name-only (legacy, may not work well)
+            for name in handlers.keys():
+                tools.append({"type": "function", "function": {"name": name}})
+        return tools
 
     def _run_with_agent_loop(
         self, step: PipelineStep, message: CollaborationMessage
@@ -652,7 +690,7 @@ class Pipeline:
                 lambda tool_name, args: handlers[tool_name](args)
             )
             # Pass tool definitions to the model caller for OpenAI function calling
-            loop.set_available_tools(self._tool_handler_tools(handlers))
+            loop.set_available_tools(self._tool_handler_tools(handlers, agent.tool_registry))
 
         # Auto-approve tool calls in HIGH_AUTONOMY mode (no human in loop)
         if agent.permission_mode == PermissionMode.HIGH_AUTONOMY:

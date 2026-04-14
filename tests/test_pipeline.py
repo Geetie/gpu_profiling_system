@@ -35,6 +35,7 @@ class MockAgent(BaseSubAgent):
         model_response: str = "Task completed successfully.",
         state_dir: str = ".state",
         tool_registry: ToolRegistry | None = None,
+        simulate_tool_results: bool = False,
     ) -> None:
         super().__init__(
             role=role,
@@ -43,12 +44,27 @@ class MockAgent(BaseSubAgent):
             state_dir=state_dir,
             permission_mode=PermissionMode.HIGH_AUTONOMY,
         )
-        # Set a mock model caller that returns the predetermined response
         self._mock_response = model_response
         self._call_count = 0
+        self._simulate_tool_results = simulate_tool_results
 
         def mock_caller(messages):
             self._call_count += 1
+            # If simulating tool results, inject a tool result entry into context
+            # before returning text. This mimics what the AgentLoop does when
+            # a tool call succeeds: it adds the tool result as an ASSISTANT entry.
+            if self._simulate_tool_results:
+                self.context_manager.add_entry(
+                    Role.ASSISTANT,
+                    json.dumps({
+                        "tool": "compile_cuda",
+                        "status": "success",
+                        "success": True,
+                        "binary_path": ".sandbox/benchmark",
+                        "stdout": self._mock_response,
+                    }),
+                    token_count=10,
+                )
             return self._mock_response
 
         self._model_caller = mock_caller
@@ -75,8 +91,9 @@ class CapturingMockAgent(MockAgent):
         role: AgentRole,
         model_response: str = "Task completed successfully.",
         state_dir: str = ".state",
+        simulate_tool_results: bool = False,
     ) -> None:
-        super().__init__(role, model_response, state_dir)
+        super().__init__(role, model_response, state_dir, simulate_tool_results=simulate_tool_results)
         self.captured_messages: list[CollaborationMessage] = []
 
     def run(self, message: CollaborationMessage) -> SubAgentResult:
@@ -131,7 +148,7 @@ class TestPipeline:
         """All 4 stages succeed in sequence."""
         stages = [
             PipelineStep(PipelineStage.PLAN, MockAgent(AgentRole.PLANNER, state_dir=str(tmp_path))),
-            PipelineStep(PipelineStage.CODE_GEN, MockAgent(AgentRole.CODE_GEN, state_dir=str(tmp_path))),
+            PipelineStep(PipelineStage.CODE_GEN, MockAgent(AgentRole.CODE_GEN, state_dir=str(tmp_path), simulate_tool_results=True)),
             PipelineStep(PipelineStage.METRIC_ANALYSIS, MockAgent(AgentRole.METRIC_ANALYSIS, state_dir=str(tmp_path))),
             PipelineStep(PipelineStage.VERIFICATION, MockAgent(AgentRole.VERIFICATION, state_dir=str(tmp_path))),
         ]
@@ -164,6 +181,7 @@ class TestPipeline:
             AgentRole.CODE_GEN,
             model_response="Measured latency: 442 cycles",
             state_dir=str(tmp_path),
+            simulate_tool_results=True,
         )
 
         stages = [
@@ -212,16 +230,32 @@ class TestPipeline:
         assert result.is_success()
 
     def test_retry_on_failure(self, tmp_path):
-        """Stage should retry up to retry_on_failure times."""
+        """Stage should retry up to retry_on_failure times.
+
+        Simulates retries by having the first N calls return error-like text,
+        then the final call returns text with a simulated tool result.
+        """
+        agent = MockAgent(AgentRole.CODE_GEN, state_dir=str(tmp_path))
         call_count = {"n": 0}
 
         def flaky_caller(messages):
             call_count["n"] += 1
             if call_count["n"] < 3:
-                return json.dumps({"tool": "compile_cuda", "args": {"source": "bad_code"}})
+                return "Compilation error: invalid syntax"  # will trigger retry
+            # Final attempt: return text + inject tool result
+            agent.context_manager.add_entry(
+                Role.ASSISTANT,
+                json.dumps({
+                    "tool": "compile_cuda",
+                    "status": "success",
+                    "success": True,
+                    "binary_path": ".sandbox/benchmark",
+                    "stdout": "dram_latency_cycles: 442",
+                }),
+                token_count=10,
+            )
             return "Compilation successful, measured 442 cycles"
 
-        agent = MockAgent(AgentRole.CODE_GEN, state_dir=str(tmp_path))
         agent._model_caller = flaky_caller
 
         stages = [
@@ -257,7 +291,7 @@ class TestPipeline:
         """Each stage should be logged to pipeline_log.jsonl."""
         stages = [
             PipelineStep(PipelineStage.PLAN, MockAgent(AgentRole.PLANNER, state_dir=str(tmp_path))),
-            PipelineStep(PipelineStage.CODE_GEN, MockAgent(AgentRole.CODE_GEN, state_dir=str(tmp_path))),
+            PipelineStep(PipelineStage.CODE_GEN, MockAgent(AgentRole.CODE_GEN, state_dir=str(tmp_path), simulate_tool_results=True)),
         ]
         pipeline = Pipeline(stages=stages, state_dir=str(tmp_path))
         pipeline.run({"targets": ["test"]})
@@ -306,6 +340,7 @@ class TestPipeline:
             AgentRole.CODE_GEN,
             model_response="Measured 442 cycles",
             state_dir=str(tmp_path),
+            simulate_tool_results=True,
         )
 
         stages = [

@@ -329,9 +329,9 @@ class TestBuildStandardRegistryDisabled:
         assert registry.has_tool("generate_microbenchmark") is True
 
     def test_default_has_all_tools(self):
-        """Without disabled_tools, all 6 standard tools should be present."""
+        """Without disabled_tools, all 7 standard tools should be present."""
         registry = build_standard_registry()
-        assert len(registry.list_tools()) == 6
+        assert len(registry.list_tools()) == 7
 
 
 # ── Missing coverage: FileOperations(prior_reads=...) ────────────────
