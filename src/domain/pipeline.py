@@ -128,12 +128,13 @@ class Pipeline:
                 )
 
             # Build the collaboration message
+            # CRITICAL: target_spec must be available to ALL stages, not just Planner
             payload: dict[str, Any] = {}
+            if target_spec:
+                payload["target_spec"] = target_spec
             if prev_result is not None:
                 payload["prev_result"] = prev_result.to_dict()
                 payload["prev_fingerprint"] = prev_result.context_fingerprint
-            else:
-                payload["target_spec"] = target_spec
 
             message = CollaborationMessage(
                 sender=prev_result.agent_role if prev_result else AgentRole.PLANNER,
@@ -200,6 +201,28 @@ class Pipeline:
         available_tools = agent.tool_registry.list_tools()
         tool_list = _json.dumps(available_tools, indent=2) if available_tools else "(no tools registered)"
 
+        # Stage-specific tool usage instructions
+        tool_guidance = ""
+        if stage_name == PipelineStage.CODE_GEN.value:
+            tool_guidance = (
+                f"\n\nWORKFLOW: For each target in the task list:\n"
+                f"1. compile_cuda(source=\"...full .cu code...\", flags=[\"-O3\", \"-arch=sm_XX\"])\n"
+                f"2. execute_binary(binary_path=\"./benchmark\")\n"
+                f"3. Parse the output for 'target_name: numeric_value'\n"
+                f"4. If compilation fails or output is invalid, fix the code and retry\n"
+                f"5. After all targets are done, report all measured values"
+            )
+        elif stage_name == PipelineStage.METRIC_ANALYSIS.value:
+            tool_guidance = (
+                f"\n\nWORKFLOW: Parse CodeGen output, extract numeric metrics, "
+                f"assess confidence. Use read_file if evidence files exist."
+            )
+        elif stage_name == PipelineStage.VERIFICATION.value:
+            tool_guidance = (
+                f"\n\nWORKFLOW: Review all previous stage data independently. "
+                f"Use read_file to check evidence files. State ACCEPT or REJECT."
+            )
+
         return (
             f"You are the {stage_name} stage in a GPU hardware profiling pipeline.\n"
             f"{agent._build_system_prompt()}\n\n"
@@ -207,6 +230,7 @@ class Pipeline:
             f"Tool call format: {{\"tool\": \"tool_name\", \"args\": {{\"key\": \"value\"}}}}\n"
             f"After each tool call result, you may call more tools or give your final answer.\n"
             f"When done, give your final answer as plain text (not JSON)."
+            f"{tool_guidance}"
         )
 
     def _build_task_prompt(
@@ -216,52 +240,119 @@ class Pipeline:
         import json as _json
 
         if stage_name == PipelineStage.CODE_GEN.value:
-            target = task.get("target", "unknown")
-            category = task.get("category", "unknown")
-            method = task.get("method", "custom micro-benchmark")
+            # CodeGen receives ALL tasks from Planner as a list
+            tasks_list = task.get("tasks", [])
 
-            # Append design principles for specific targets
-            design_guide = _get_design_principle(target)
+            if tasks_list:
+                # Build design guide for ALL targets
+                design_guides = []
+                for t in tasks_list:
+                    target = t.get("target", "unknown")
+                    guide = _get_design_principle(target)
+                    design_guides.append(f"--- Task: {target} ---\n{guide}")
+                all_design = "\n\n".join(design_guides)
 
-            return (
-                f"Generate and execute a CUDA micro-benchmark to measure '{target}'.\n"
-                f"Category: {category}\n"
-                f"Method: {method}\n\n"
-                f"{design_guide}\n\n"
-                f"Steps:\n"
-                f"1. Write complete CUDA C++ source code implementing the above design\n"
-                f"   - Use clock64() for cycle timing (NOT clock())\n"
-                f"   - Use cudaEventElapsedTime for wall-clock timing when needed\n"
-                f"   - Output parseable key: value pairs via printf\n"
-                f"   - Include: cuda_runtime.h, main(), cudaMalloc, cudaMemcpy, kernel launch\n"
-                f"2. Use compile_cuda tool to compile the CUDA source\n"
-                f"   - source: the full .cu source code string\n"
-                f"   - flags: [\"-O3\", \"-arch=sm_XX\"] (detect arch from nvidia-smi)\n"
-                f"3. Use execute_binary tool to run the compiled benchmark\n"
-                f"4. Parse the numeric output from printf results\n"
-                f"5. If results are invalid (0, negative, implausible), revise the code and retry\n\n"
-                f"Output the measured value with: {target}: <numeric_value>\n"
-                f"Also report: confidence (0.0-1.0), method_used, num_trials."
-            )
+                task_summary = "\n".join(
+                    f"- {t.get('target', 'unknown')}: {t.get('category', 'unknown')} "
+                    f"(method: {t.get('method', 'custom')})"
+                    for t in tasks_list
+                )
+
+                return (
+                    f"You must generate and execute CUDA micro-benchmarks for "
+                    f"{len(tasks_list)} targets:\n\n{task_summary}\n\n"
+                    f"PROCESS EACH TARGET ONE BY ONE:\n"
+                    f"1. Pick the first target from the list above\n"
+                    f"2. Read its design guide below\n"
+                    f"3. Write complete CUDA C++ source code\n"
+                    f"4. Use compile_cuda to compile\n"
+                    f"5. Use execute_binary to run\n"
+                    f"6. Parse the numeric output\n"
+                    f"7. Move to the next target\n\n"
+                    f"CODING RULES:\n"
+                    f"- Use clock64() for cycle timing (NOT clock())\n"
+                    f"- Use cudaEventElapsedTime for wall-clock timing\n"
+                    f"- Each binary must output: target_name: numeric_value\n"
+                    f"- Include: cuda_runtime.h, main(), cudaMalloc, cudaMemcpy, kernel launch\n"
+                    f"- Detect GPU arch: compile with -arch=sm_XX (from nvidia-smi, e.g. sm_60)\n\n"
+                    f"DESIGN GUIDES (one per target):\n\n{all_design}"
+                )
+            else:
+                # Fallback: single task format
+                target = task.get("target", "unknown")
+                category = task.get("category", "unknown")
+                method = task.get("method", "custom micro-benchmark")
+                design_guide = _get_design_principle(target)
+
+                return (
+                    f"Generate and execute a CUDA micro-benchmark to measure '{target}'.\n"
+                    f"Category: {category}\n"
+                    f"Method: {method}\n\n"
+                    f"{design_guide}\n\n"
+                    f"Steps:\n"
+                    f"1. Write complete CUDA C++ source code implementing the above design\n"
+                    f"   - Use clock64() for cycle timing (NOT clock())\n"
+                    f"   - Use cudaEventElapsedTime for wall-clock timing when needed\n"
+                    f"   - Output parseable key: value pairs via printf\n"
+                    f"   - Include: cuda_runtime.h, main(), cudaMalloc, cudaMemcpy, kernel launch\n"
+                    f"2. Use compile_cuda tool to compile the CUDA source\n"
+                    f"3. Use execute_binary tool to run the compiled benchmark\n"
+                    f"4. Parse the numeric output from printf results\n"
+                    f"5. If results are invalid (0, negative, implausible), revise the code and retry\n\n"
+                    f"Output the measured value with: {target}: <numeric_value>\n"
+                    f"Also report: confidence (0.0-1.0), method_used, num_trials."
+                )
 
         elif stage_name == PipelineStage.METRIC_ANALYSIS.value:
+            # MetricAnalysis receives CodeGen's raw output + parsed data
+            code_gen_data = prev_result.get("data", {})
+            raw_outputs = {}
+            for key, val in code_gen_data.items():
+                if isinstance(val, str):
+                    raw_outputs[key] = val[:1000]
+
             return (
-                f"Analyze the benchmark results from the previous stage.\n"
-                f"Previous stage data: {_json.dumps(prev_result.get('data', {}), indent=2)[:2000]}\n\n"
-                f"Identify the bottleneck type and confidence level.\n"
-                f"Return: bottleneck_type (compute_bound/memory_bound/latency_bound/cache_capacity/unknown), "
-                f"and all extracted numeric metrics."
+                f"You are analyzing GPU micro-benchmark results.\n\n"
+                f"Benchmark output from CodeGen stage:\n"
+                f"{_json.dumps(raw_outputs, indent=2, ensure_ascii=False)[:2000]}\n\n"
+                f"YOUR TASK:\n"
+                f"1. Parse the raw output — extract all numeric metrics (latency cycles, "
+                f"bandwidth GB/s, cache size MB, clock MHz, SM count, etc.)\n"
+                f"2. For each metric: identify the target name and measured value\n"
+                f"3. Assess confidence: high (>3 trials, consistent), medium (1-2 trials), "
+                f"low (single run, high variance)\n"
+                f"4. Check for anomalies: negative values, zero cycles, implausible ranges\n\n"
+                f"EXPECTED RANGES (for reference):\n"
+                f"- L1 latency: 50-300 cycles, L2: 100-500, DRAM: 300-1000\n"
+                f"- L2 cache: 2-100 MB (power of 2 typically)\n"
+                f"- DRAM bandwidth: 100-900 GB/s\n"
+                f"- SM clock: 1000-2500 MHz\n"
+                f"- SM count: 8-256\n"
+                f"- Shared memory per block: 48-164 KB\n\n"
+                f"Return: for each metric, the target name, measured value, confidence, "
+                f"and whether it passes sanity check."
             )
 
         elif stage_name == PipelineStage.VERIFICATION.value:
+            # Verification receives the FULL chain: Planner targets + CodeGen output + MetricAnalysis
             return (
-                f"Independently verify the GPU profiling results.\n"
-                f"You do NOT trust the previous stages' conclusions.\n"
-                f"Review from first principles.\n\n"
-                f"Previous stage data: {_json.dumps(prev_result.get('data', {}), indent=2)[:2000]}\n\n"
-                f"Check: (1) data completeness, (2) numeric sanity, "
-                f"(3) methodology soundness, (4) cross-validation.\n"
-                f"State clearly: ACCEPT or REJECT the results."
+                f"You are the independent Verification Agent for GPU hardware profiling.\n\n"
+                f"You do NOT trust any previous stage's conclusions.\n"
+                f"Review from first principles using GPU hardware knowledge.\n\n"
+                f"Previous stage data:\n"
+                f"{_json.dumps(prev_result.get('data', {}), indent=2, ensure_ascii=False)[:2000]}\n\n"
+                f"VERIFICATION CHECKS (perform each):\n"
+                f"1. DATA COMPLETENESS: Are all requested targets measured? Any missing?\n"
+                f"2. NUMERIC SANITY: Are values within plausible GPU hardware ranges?\n"
+                f"3. LATENCY HIERARCHY: DRAM latency > L2 latency > L1 latency?\n"
+                f"4. L2 CAPACITY: Is it a power of 2 (2, 4, 8, 40, 50, 60, 72 MB)?\n"
+                f"5. BANDWIDTH: DRAM BW matches known GPU specs (±30%)?\n"
+                f"6. CLOCK FREQ: 1000-2500 MHz range?\n"
+                f"7. SM COUNT: Known configuration (56=P100, 108=A100, 256=H100, etc.)?\n"
+                f"8. SHARED MEMORY: 48 KB or 64 KB or 164 KB per block?\n"
+                f"9. BANK CONFLICTS: ratio >= 1.0 (strided >= sequential)?\n\n"
+                f"State clearly: ACCEPT (all checks pass) or REJECT (specify which failed).\n"
+                f"If REJECT: explain what needs to be re-measured."
             )
 
         else:
@@ -299,11 +390,18 @@ class Pipeline:
         prev_result = payload.get("prev_result", {})
         target_spec = payload.get("target_spec", {})
 
+        # Fix: Planner outputs "tasks" (list) in data, not "task" (singular)
+        # Extract tasks list if this is CodeGen stage
+        if not task and stage_name == PipelineStage.CODE_GEN.value:
+            tasks_list = prev_result.get("data", {}).get("tasks", [])
+            if tasks_list:
+                task = {"tasks": tasks_list}  # Pass ALL tasks to CodeGen
+
         # System prompt for the AgentLoop stage
         system_prompt = self._build_stage_system_prompt(agent, stage_name)
 
-        # Build user task description — CRITICAL: use task from Planner
-        if target_spec:
+        # Build user task description — CRITICAL: route by stage, not by payload
+        if stage_name == PipelineStage.PLAN.value:
             # First stage: Planner receives targets
             user_task = (
                 f"You are the PLANNER stage. Analyze these GPU profiling targets "
@@ -312,17 +410,14 @@ class Pipeline:
                 f"Return a JSON array of task objects with: "
                 f'"target", "category" (latency_measurement, capacity_measurement, '
                 f'clock_measurement, bandwidth_measurement, or unknown), '
-                f'"method" (one sentence description of approach).'
+                f'"method" (detailed description of the measurement approach).'
             )
         elif task:
             # Subsequent stages: receive a specific task
             user_task = self._build_task_prompt(task, prev_result, stage_name)
         elif prev_result:
-            # No task but has prev_result
-            user_task = (
-                f"You are the {stage_name} stage. Process results from the "
-                f"previous stage:\n{_json.dumps(prev_result.get('data', {}), indent=2)[:2000]}"
-            )
+            # No task but has prev_result (MetricAnalysis, Verification)
+            user_task = self._build_task_prompt(task, prev_result, stage_name)
         else:
             user_task = f"You are the {stage_name} stage. Execute your task."
 
