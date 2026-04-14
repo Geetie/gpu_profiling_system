@@ -163,7 +163,7 @@ def _wire_all_subagents(planner, code_gen, metric_analysis, verification) -> boo
     - MetricAnalysis: main model (analyzing ncu output)
     - Verification: reasoning model (independent review)
     """
-    from src.infrastructure.model_caller import make_model_caller, check_key, load_config
+    from src.infrastructure.model_caller import make_model_caller, load_config
 
     try:
         config = load_config()
@@ -172,11 +172,9 @@ def _wire_all_subagents(planner, code_gen, metric_analysis, verification) -> boo
         return False
 
     env = config["env"]
-    try:
-        check_key(env.get("ANTHROPIC_AUTH_TOKEN", ""))
-    except ValueError:
-        print("[llm] API Key not configured — subagents using rule-based fallbacks")
-        return False
+    # Don't gate on check_key here — ProviderManager may have valid keys
+    # even if the config token fails placeholder checks. make_model_caller()
+    # does its own validation at actual call time.
 
     main_model = env.get("ANTHROPIC_MODEL", "qwen3.6-plus")
     code_model = env.get("ANTHROPIC_DEFAULT_SONNET_MODEL", main_model)
