@@ -167,7 +167,7 @@ def configure_api():
         os.environ["DASHSCOPE_API_KEY"] = ""
         os.environ["ANTHROPIC_API_KEY"] = ""
         env = {
-            "ANTHROPIC_BASE_URL": "https://api.longcat.com/openaicompatible/api/v1/chat/completions",
+            "ANTHROPIC_BASE_URL": "https://api.longcat.chat/openai/v1/chat/completions",
             "ANTHROPIC_AUTH_TOKEN": longcat_key,
             "ANTHROPIC_MODEL": "longcat-flash-chat",
             "ANTHROPIC_REASONING_MODEL": "longcat-flash-chat",

@@ -10,8 +10,8 @@
     "opus": "longcat-flash-chat"
   },
   "_endpoints": {
-    "base": "https://api.longcat.com/openaicompatible/api/v1/",
-    "chat": "https://api.longcat.com/openaicompatible/api/v1/chat/completions"
+    "base": "https://api.longcat.chat/openai/v1/",
+    "chat": "https://api.longcat.chat/openai/v1/chat/completions"
   },
   "_auth": {
     "type": "api_key",
