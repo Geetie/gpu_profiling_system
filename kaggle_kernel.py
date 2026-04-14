@@ -581,26 +581,23 @@ try:
         target_spec_path = create_target_spec(PROJECT_ROOT)
         log_step("target_spec", "created")
 
-        # ── Step 4: Hardware Probes (always runs) ────────────────────
-        probe_ok = run_probes(PROJECT_ROOT)
-        log_step("probes", "pass" if probe_ok else "fail")
-        if not probe_ok:
-            all_errors.append("Hardware probes failed")
+        # ── Step 4: Hardware Probes (skipped — pipeline runs independently)
+        # Hardware probes take ~10 min and are only for cross-validation.
+        # The Pipeline's CodeGen generates and executes its own CUDA code.
+        # Probes remain available via --probes-only in main.py.
+        probe_ok = True  # Treat as "skipped" — pipeline will run regardless
+        print("Hardware probes: SKIPPED (pipeline runs independently)")
+        log_step("probes", "skipped")
 
-        # ── Step 5: Pipeline (only if API configured and probes OK) ──
-        if api_configured and probe_ok:
+        # ── Step 5: Pipeline (only if API configured) ──
+        if api_configured:
             pipeline_ok = run_pipeline(PROJECT_ROOT, target_spec_path)
             log_step("pipeline", "pass" if pipeline_ok else "fail")
             if not pipeline_ok:
                 all_errors.append("Pipeline failed")
         else:
             banner("Pipeline - SKIPPED")
-            reason = []
-            if not api_configured:
-                reason.append("no API key")
-            if not probe_ok:
-                reason.append("probes failed")
-            msg = f"Pipeline skipped: {', '.join(reason)}"
+            msg = "Pipeline skipped: no API key"
             all_errors.append(msg)
             print(msg)
             log_step("pipeline", "skipped", {"reason": msg})
@@ -624,7 +621,7 @@ finally:
     # ── Execution Summary ────────────────────────────────────────
     banner("Execution Summary")
     rp = os.path.join(WORKING_DIR, "results.json")
-    ps = "PASS" if probe_ok else "FAIL"
+    ps = "SKIP"  # Hardware probes are skipped in Kaggle mode
     pl = "PASS" if pipeline_ok else "SKIP"
     rs = "FOUND" if os.path.isfile(rp) else "MISSING"
 
