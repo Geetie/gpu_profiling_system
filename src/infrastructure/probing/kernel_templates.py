@@ -506,6 +506,10 @@ __global__ void bank_conflict_kernel(int size, int stride,
     __syncthreads();
 
     // Strided access pattern (bank conflicts) — timed with clock64()
+    // NOTE: With stride=32 and 32 threads/warp, each warp hits a single bank.
+    // All warps map to the same bank, creating an extreme worst-case scenario
+    // where all 256 threads queue on 1 bank. The measured ratio may exceed
+    // the theoretical 32x because of inter-warp scheduling serialization.
     __syncthreads();
     {{
         volatile float sum = 0;

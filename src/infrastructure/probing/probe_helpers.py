@@ -185,7 +185,7 @@ def _detect_arch_by_compilation(runner: SandboxRunner) -> str:
     test_source = """
 #include <cuda_runtime.h>
 __global__ void test_kernel() {
-    volatile unsigned long long c = clock();
+    volatile unsigned long long c = clock64();
     (void)c;
 }
 int main() {

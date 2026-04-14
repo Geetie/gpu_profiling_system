@@ -762,7 +762,7 @@ def _write_results_json(results: dict[str, Any], output_path: str) -> None:
             "Shared memory bank conflict measurement: strided access (thread t accesses t*32) "
             "vs sequential access (thread t accesses t+offset) in same kernel. "
             "Ratio = strided_cycles / sequential_cycles. "
-            "Both measured via clock() cycles in same execution — eliminates clock variance."
+            "Both measured via clock64() cycles in same execution — eliminates clock variance."
         ),
         "shmem_bandwidth_gbps": (
             "Cooperative shared memory read/write: all threads in a single block "
