@@ -38,7 +38,8 @@ def check_key(api_key: str, provider_name: str = "API") -> None:
         )
 
     # Check common placeholder patterns
-    placeholders = ["在此填入", "YOUR_API_KEY", "sk-<", "ak_", "在此处填入", "mock"]
+    # Note: "ak_" removed — LongCat/Aliyun real API keys start with "ak_"
+    placeholders = ["在此填入", "YOUR_API_KEY", "sk-<", "在此处填入", "mock"]
     if any(api_key.startswith(ph) for ph in placeholders):
         raise ValueError(
             f"{provider_name} API Key is a placeholder.\n"
