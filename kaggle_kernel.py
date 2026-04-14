@@ -46,8 +46,9 @@ def banner(title):
 def run_cmd(cmd, timeout=300, description="", wd=None):
     if description:
         print(f"  {description}")
-    # Use explicit working directory: prefer wd param, then PROJECT_ROOT if set, else WORKING_DIR
-    cwd = wd if wd else (PROJECT_ROOT if PROJECT_ROOT else WORKING_DIR)
+    # FIX: Default to WORKING_DIR. Use wd param or PROJECT_ROOT only when explicitly set.
+    # This avoids using PROJECT_ROOT before git clone creates the directory.
+    cwd = wd if wd else WORKING_DIR
     print(f"[cwd={cwd}] $ {' '.join(cmd)}")
     try:
         r = subprocess.run(cmd, capture_output=True, text=True,
@@ -188,7 +189,7 @@ def run_probes():
         "--output-dir", WORKING_DIR,
         "--state-dir", os.path.join(WORKING_DIR, ".state"),
         "--no-docker",
-    ], timeout=600)
+    ], timeout=600, wd=PROJECT_ROOT)
     print(f"Probes completed: success={ok}")
     return ok
 
@@ -208,7 +209,7 @@ def run_pipeline(target_spec_path):
         "--mode", "high_autonomy",
         "--max-turns", "50",
         "--max-tokens", "16000",
-    ], timeout=3600)
+    ], timeout=3600, wd=PROJECT_ROOT)
     print(f"Pipeline completed: success={ok}")
     return ok
 
