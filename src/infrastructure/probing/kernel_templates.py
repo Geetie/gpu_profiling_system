@@ -489,33 +489,50 @@ __global__ void bank_conflict_kernel(int size, int stride,
     }}
     __syncthreads();
 
-    // Strided access pattern (bank conflicts)
-    unsigned long long strided_start = clock();
-    for (int iter = 0; iter < iterations; iter++) {{
+    // Ensure all threads have finished initializing before timing
+    __syncthreads();
+
+    // Strided access pattern (bank conflicts) — use clock64 for Pascal+
+    __syncthreads();
+    unsigned long long strided_start = clock64();
+    {{
         volatile float sum = 0;
-        for (int i = 0; i < 32; i++) {{
-            int idx = (warp_id * 32 + i * stride) % size;
-            sum += shmem[idx];
+        for (int iter = 0; iter < iterations; iter++) {{
+            for (int i = 0; i < 32; i++) {{
+                int idx = (warp_id * 32 + i * stride) % size;
+                sum += shmem[idx];
+            }}
         }}
-        if (sum > 1e9f) shmem[0] = sum;
+        // Prevent dead-code elimination
+        if (tid == 0) shmem[0] = sum;
     }}
-    unsigned long long strided_end = clock();
-    if (tid == 0) *d_strided_cycles = strided_end - strided_start;
+    unsigned long long strided_end = clock64();
+
+    // Warp-aggregate result: thread 0 reads the per-thread value
+    __syncthreads();
+    unsigned long long total_strided = strided_end - strided_start;
+    if (tid == 0) *d_strided_cycles = total_strided;
 
     __syncthreads();
 
     // Sequential access pattern (no conflicts)
-    unsigned long long seq_start = clock();
-    for (int iter = 0; iter < iterations; iter++) {{
+    __syncthreads();
+    unsigned long long seq_start = clock64();
+    {{
         volatile float sum = 0;
-        for (int i = 0; i < 32; i++) {{
-            int idx = (tid + i) % size;
-            sum += shmem[idx];
+        for (int iter = 0; iter < iterations; iter++) {{
+            for (int i = 0; i < 32; i++) {{
+                int idx = (tid + i) % size;
+                sum += shmem[idx];
+            }}
         }}
-        if (sum > 1e9f) shmem[0] = sum;
+        if (tid == 0) shmem[0] = sum;
     }}
-    unsigned long long seq_end = clock();
-    if (tid == 0) *d_seq_cycles = seq_end - seq_start;
+    unsigned long long seq_end = clock64();
+
+    __syncthreads();
+    unsigned long long total_seq = seq_end - seq_start;
+    if (tid == 0) *d_seq_cycles = total_seq;
 }}
 
 int main() {{
