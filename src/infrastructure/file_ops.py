@@ -59,13 +59,26 @@ class FileOperations:
     def write(self, file_path: str, content: str) -> int:
         """Write content to a file.
 
-        M1 enforcement: the file must have been read through this module first.
+        M1 enforcement:
+        - Modifying an existing file requires a prior read through this module.
+        - Creating a NEW file (that doesn't exist on disk) is always allowed,
+          since there is nothing to read. The file is tracked as created.
 
         Raises:
             PermissionError: if the file was not previously read (M1 violation)
                              or if the path escapes the sandbox.
         """
         resolved = self._resolve(file_path)
+
+        # New file creation: allow since there's nothing to read (M1 applies to edits)
+        if not os.path.exists(resolved):
+            with open(resolved, "w", encoding="utf-8") as f:
+                f.write(content)
+            bytes_written = len(content.encode("utf-8"))
+            self._tracker.record_created(resolved)
+            return bytes_written
+
+        # Existing file: require prior read (M1)
         if not self._tracker.can_write(resolved):
             raise PermissionError(
                 f"M1 violation: cannot write '{resolved}' without a prior read. "

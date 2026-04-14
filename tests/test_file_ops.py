@@ -59,11 +59,14 @@ class TestFileOperationsWrite:
         # The read ledger entry should be consumed
         assert file_ops._tracker.has_read(str(test_file)) is False
 
-    def test_write_new_file_not_allowed(self, file_ops, tmp_path):
-        """Cannot create brand-new files without reading first (M1)."""
+    def test_write_new_file_allowed(self, file_ops, tmp_path):
+        """New files can be created via write() — M1 applies to editing existing files."""
         new_file = tmp_path / "brand_new.txt"
-        with pytest.raises(PermissionError):
-            file_ops.write(str(new_file), "content")
+        bytes_written = file_ops.write(str(new_file), "new content")
+        assert bytes_written == len("new content".encode("utf-8"))
+        assert new_file.read_text() == "new content"
+        # File should be tracked as created
+        assert file_ops._tracker.was_created(str(new_file))
 
 
 class TestFileOperationsSandbox:
