@@ -803,9 +803,17 @@ def _assemble_final_results(output_dir, hardware_results, pipeline_data, target_
         measurements = hardware_results.get("measurements", {})
         output = dict(measurements)
 
-        # Add pipeline data for fields not covered by hardware
+        # Extract pipeline measurements (nested in pipeline_data["measurements"])
+        pipeline_measurements = pipeline_data.get("measurements", {})
+
+        # Add pipeline measurements for keys NOT already in hardware output
+        for k, v in pipeline_measurements.items():
+            if k not in output:
+                output[k] = v
+
+        # Add other pipeline data (metadata, outputs)
         for k, v in pipeline_data.items():
-            if k == "_pipeline_metadata":
+            if k in ("_pipeline_metadata", "measurements"):
                 continue
             if k not in output:
                 output[k] = v

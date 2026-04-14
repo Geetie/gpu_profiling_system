@@ -75,6 +75,7 @@ class Pipeline:
         self._persister.log_entry("pipeline_start", details={"target_spec": target_spec})
 
         prev_result: SubAgentResult | None = None
+        code_gen_data: dict | None = None  # Preserve CodeGen measurements for final output
 
         for step in self._stages:
             # P7 gate
@@ -93,7 +94,20 @@ class Pipeline:
                 )
                 return result
 
+            # Preserve CodeGen measurements for final result assembly
+            if step.stage == PipelineStage.CODE_GEN and result.is_success():
+                code_gen_data = dict(result.data)
+
             prev_result = result
+
+        # Bubble up CodeGen measurements to final result
+        if code_gen_data and prev_result and prev_result.is_success():
+            if "measurements" in code_gen_data:
+                prev_result.data["measurements"] = code_gen_data["measurements"]
+            if "analysis_method" in code_gen_data:
+                prev_result.data["analysis_method"] = code_gen_data["analysis_method"]
+            if "code_gen_output" in code_gen_data:
+                prev_result.data["code_gen_output"] = code_gen_data["code_gen_output"]
 
         # Persist final result
         if prev_result:
@@ -526,18 +540,62 @@ class Pipeline:
 
         elif stage == PipelineStage.CODE_GEN:
             data["code_gen_output"] = final_text[:2000]
+            # Fix: tool handlers return "success" (boolean), not "status" (string)
+            # compile_cuda → {"success": True, "output": "...", "binary_path": "..."}
+            # execute_binary → {"stdout": "...", "stderr": "...", "return_code": 0}
             tool_succeeded = any(
-                r.get("status") in ("success", True) for r in tool_results
+                r.get("status") in ("success", True) or
+                r.get("success") is True
+                for r in tool_results
+            )
+            has_binary = any(r.get("binary_path") for r in tool_results)
+            has_output = any(r.get("stdout") for r in tool_results)
+            # Also check execute_binary success: return_code == 0
+            exec_succeeded = any(
+                r.get("return_code", -1) == 0 for r in tool_results
+                if "return_code" in r or "stdout" in r
             )
             output_succeeded = bool(final_text) and not any(
                 kw in final_text.lower() for kw in ["failed", "error:", "could not", "cannot"]
             )
-            if tool_succeeded or output_succeeded:
+            if tool_succeeded or has_binary or has_output or exec_succeeded or output_succeeded:
                 status = SubAgentStatus.SUCCESS
             else:
                 status = SubAgentStatus.FAILED
-                if not final_text:
+                if not final_text and not tool_results:
                     data["error_detail"] = "CodeGen produced no output"
+                elif not tool_succeeded and not has_binary:
+                    data["error_detail"] = "CodeGen compilation failed"
+
+            # Extract structured measurements from CodeGen tool results
+            # This feeds into _assemble_final_results in main.py
+            measurements = {}
+            methodology_parts = []
+            for r in tool_results:
+                if "stdout" in r:
+                    stdout = r.get("stdout", "")
+                    for line in stdout.splitlines():
+                        line = line.strip()
+                        if ":" in line and not line.startswith("//"):
+                            parts = line.split(":", 1)
+                            if len(parts) == 2:
+                                key = parts[0].strip()
+                                val_str = parts[1].strip()
+                                try:
+                                    measurements[key] = float(val_str)
+                                    continue
+                                except ValueError:
+                                    pass
+                if "output" in r and r.get("output"):
+                    out = r["output"]
+                    if len(out) < 500:
+                        methodology_parts.append(out[:200])
+            if measurements:
+                data["measurements"] = measurements
+            if final_text:
+                methodology_parts.append(final_text[:1000])
+            if methodology_parts:
+                data["analysis_method"] = "\n---\n".join(methodology_parts[:5])
 
         elif stage == PipelineStage.METRIC_ANALYSIS:
             data["analysis_output"] = final_text[:2000]
