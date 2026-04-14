@@ -113,34 +113,58 @@ int main() {
             cc_binary = os.path.join(work_dir, "cc_detect")
             run_result = runner.run(command=cc_binary, args=[], work_dir=work_dir)
             if run_result and run_result.success:
-                parsed = parse_nvcc_output(run_result.stdout)
-                cc_val = parsed.get("sm_60") or parsed.get("sm_70") or \
-                         parsed.get("sm_75") or parsed.get("sm_80") or \
-                         parsed.get("sm_86") or parsed.get("sm_90")
-                if cc_val:
+                # cc_detect outputs "sm_75" without colon — parse directly, not via parse_nvcc_output
+                cc_line = run_result.stdout.strip().splitlines()[-1] if run_result.stdout.strip() else ""
+                if cc_line.startswith("sm_"):
+                    cc_val = cc_line.strip()
                     print(f"[_detect_arch] cc={cc_val} (from cudaDeviceGetAttribute)")
                     return cc_val
 
-    # Method 2: Parse nvidia-smi output
+    # Method 2: Parse nvidia-smi output (via sandbox runner if available)
     try:
-        r = _sub.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-                     capture_output=True, text=True, timeout=10)
-        if r.returncode == 0 and r.stdout.strip():
-            gpu_name = r.stdout.strip().lower()
-            gpu_to_cc = {
-                "a100": "sm_80", "a800": "sm_80",
-                "h100": "sm_90", "h800": "sm_90",
-                "v100": "sm_70",
-                "t4": "sm_75",
-                "p100": "sm_60", "p40": "sm_61", "p4": "sm_61",
-                "k80": "sm_37", "k40": "sm_35",
-                "rtx 20": "sm_75", "rtx 30": "sm_86",
-                "rtx 40": "sm_89", "rtx 50": "sm_120",
-            }
-            for pattern, cc in gpu_to_cc.items():
-                if pattern in gpu_name:
-                    print(f"[_detect_arch] cc={cc} (from nvidia-smi: {r.stdout.strip()})")
-                    return cc
+        if runner is not None:
+            # Use sandbox runner to respect container environment
+            r = runner.run(
+                command="nvidia-smi",
+                args=["--query-gpu=name", "--format=csv,noheader"],
+                work_dir=getattr(runner, "sandbox_root", None) or os.getcwd(),
+            )
+            if r and r.success and r.stdout.strip():
+                gpu_name = r.stdout.strip().lower()
+                gpu_to_cc = {
+                    "a100": "sm_80", "a800": "sm_80",
+                    "h100": "sm_90", "h800": "sm_90",
+                    "v100": "sm_70",
+                    "t4": "sm_75",
+                    "p100": "sm_60", "p40": "sm_61", "p4": "sm_61",
+                    "k80": "sm_37", "k40": "sm_35",
+                    "rtx 20": "sm_75", "rtx 30": "sm_86",
+                    "rtx 40": "sm_89", "rtx 50": "sm_120",
+                }
+                for pattern, cc in gpu_to_cc.items():
+                    if pattern in gpu_name:
+                        print(f"[_detect_arch] cc={cc} (from nvidia-smi: {r.stdout.strip()})")
+                        return cc
+        else:
+            # No sandbox runner — use direct subprocess as fallback
+            r = _sub.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                         capture_output=True, text=True, timeout=10)
+            if r.returncode == 0 and r.stdout.strip():
+                gpu_name = r.stdout.strip().lower()
+                gpu_to_cc = {
+                    "a100": "sm_80", "a800": "sm_80",
+                    "h100": "sm_90", "h800": "sm_90",
+                    "v100": "sm_70",
+                    "t4": "sm_75",
+                    "p100": "sm_60", "p40": "sm_61", "p4": "sm_61",
+                    "k80": "sm_37", "k40": "sm_35",
+                    "rtx 20": "sm_75", "rtx 30": "sm_86",
+                    "rtx 40": "sm_89", "rtx 50": "sm_120",
+                }
+                for pattern, cc in gpu_to_cc.items():
+                    if pattern in gpu_name:
+                        print(f"[_detect_arch] cc={cc} (from nvidia-smi: {r.stdout.strip()})")
+                        return cc
     except Exception:
         pass
 

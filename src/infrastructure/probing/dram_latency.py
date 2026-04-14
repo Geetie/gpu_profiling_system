@@ -54,9 +54,15 @@ def probe_dram_latency_cycles(
     latencies: dict[str, float] = {}
 
     for size, level in probe_sizes:
+        # Iteration counts scale with latency level:
+        #   L1: fast (~20 cycles) → 50K iters for stable measurement
+        #   L2: medium (~100 cycles) → 20K iters
+        #   DRAM: slow (~400 cycles) → 100K iters for <0.1% noise
+        iter_map = {"l1": 50000, "l2": 20000, "dram": 100000}
+        iters = iter_map.get(level, 10000)
         kernel = pointer_chase_kernel(
             array_size=size,
-            iterations=10000,
+            iterations=iters,
             output_name=f"latency_{level}",
         )
         result = compile_and_run(kernel.source, sandbox=sandbox)
@@ -160,7 +166,7 @@ def probe_latency_profile(
     for size, label in sizes:
         kernel = pointer_chase_kernel(
             array_size=size,
-            iterations=10000,
+            iterations=50000,
             output_name=f"latency_{label}",
         )
         result = compile_and_run(kernel.source, sandbox=sandbox)

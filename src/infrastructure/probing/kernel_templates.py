@@ -255,7 +255,7 @@ __global__ void clock_cal_kernel(
 }}
 
 int main() {{
-    int size = 256;  // Fits in L1, so each access has predictable latency
+    int size = 1024;  // 4KB = 32 cache lines, reduces L1 thrashing for stable timing, so each access has predictable latency
     int iterations = {loop_iterations};
 
     int* h_data = (int*)malloc(size * sizeof(int));
@@ -384,9 +384,8 @@ def shmem_capacity_kernel() -> KernelSource:
     By sweeping shmem sizes and checking occupancy, we find the
     maximum shared memory per block.
 
-    Does NOT use cudaGetDeviceProperties (anti-cheat: may return
-    virtualized data). Instead, derives capacity from occupancy
-    sweep boundaries.
+    Outputs device properties via cudaDeviceGetAttribute (not
+    cudaGetDeviceProperties which may be virtualized under vGPU/MIG).
     """
     source = """
 #include <stdio.h>
@@ -409,6 +408,21 @@ __global__ void shmem_kernel(int size) {
 }
 
 int main() {
+    int dev = 0;
+    cudaGetDevice(&dev);
+
+    // Query device properties via cudaDeviceGetAttribute (not virtualized)
+    int max_shmem_per_block = 0, max_shmem_per_sm = 0;
+    int major = 0, minor = 0;
+    cudaDeviceGetAttribute(&max_shmem_per_block, cudaDevAttrMaxSharedMemoryPerBlock, dev);
+    cudaDeviceGetAttribute(&max_shmem_per_sm, cudaDevAttrMaxSharedMemoryPerMultiprocessor, dev);
+    cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+    cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
+
+    printf("device_max_shared_mem_per_block: %d\\n", max_shmem_per_block);
+    printf("device_max_shared_mem_per_sm: %d\\n", max_shmem_per_sm);
+    printf("compute_capability: %d%d\\n", major, minor);
+
     int max_shmem_bytes = 0;
 
     // Set max dynamic shared memory to allow large allocations
@@ -459,6 +473,7 @@ int main() {
 
 def bank_conflict_kernel(
     size: int = 32768,
+    iterations: int = 1000,
 ) -> KernelSource:
     """Bank conflict latency measurement kernel.
 
@@ -466,8 +481,9 @@ def bank_conflict_kernel(
     1. Strided: thread t accesses element t*stride → bank conflicts
     2. Sequential: thread t accesses element t → no conflicts
 
-    Uses cudaEventElapsedTime for timing (clock64() returns 0 under
-    PTX JIT compilation on some GPUs like P100).
+    Uses clock64() for cycle-accurate timing within the kernel.
+    The ratio of strided_cycles / sequential_cycles gives the bank
+    conflict penalty factor.
     """
     source = f"""
 #include <stdio.h>
@@ -489,30 +505,36 @@ __global__ void bank_conflict_kernel(int size, int stride,
     }}
     __syncthreads();
 
-    // Strided access pattern (bank conflicts)
+    // Strided access pattern (bank conflicts) — timed with clock64()
     __syncthreads();
     {{
         volatile float sum = 0;
+        unsigned long long t0 = clock64();
         for (int iter = 0; iter < iterations; iter++) {{
             for (int i = 0; i < 32; i++) {{
                 int idx = (warp_id * 32 + i * stride) % size;
                 sum += shmem[idx];
             }}
         }}
+        unsigned long long t1 = clock64();
+        *d_strided_cycles = t1 - t0;
         // Prevent dead-code elimination
         if (tid == 0) shmem[0] = sum;
     }}
     __syncthreads();
 
-    // Sequential access pattern (no conflicts)
+    // Sequential access pattern (no conflicts) — timed with clock64()
     {{
         volatile float sum = 0;
+        unsigned long long t0 = clock64();
         for (int iter = 0; iter < iterations; iter++) {{
             for (int i = 0; i < 32; i++) {{
                 int idx = (tid + i) % size;
                 sum += shmem[idx];
             }}
         }}
+        unsigned long long t1 = clock64();
+        *d_seq_cycles = t1 - t0;
         if (tid == 0) shmem[0] = sum;
     }}
 }}
@@ -520,7 +542,7 @@ __global__ void bank_conflict_kernel(int size, int stride,
 int main() {{
     int size = {size};
     int stride = 32;
-    int iterations = 1000;
+    int iterations = {iterations};
     int shmem_bytes = size * sizeof(float);
 
     // Set max dynamic shared memory
@@ -529,70 +551,37 @@ int main() {{
 
     unsigned long long* d_strided_cycles;
     unsigned long long* d_seq_cycles;
+    unsigned long long h_strided = 0, h_seq = 0;
     cudaMalloc(&d_strided_cycles, sizeof(unsigned long long));
     cudaMalloc(&d_seq_cycles, sizeof(unsigned long long));
-
-    // Create events for timing
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
 
     // Warmup
     bank_conflict_kernel<<<1, 256, shmem_bytes>>>(size, stride,
         d_strided_cycles, d_seq_cycles, iterations);
     cudaDeviceSynchronize();
 
-    // Time strided access (3 runs, take minimum)
-    float min_strided_ms = 1e9f;
+    // Measurement run (3 runs, take minimum for each)
+    unsigned long long min_strided = ~0ULL;
+    unsigned long long min_seq = ~0ULL;
     for (int run = 0; run < 3; run++) {{
-        cudaEventRecord(start);
         bank_conflict_kernel<<<1, 256, shmem_bytes>>>(size, stride,
             d_strided_cycles, d_seq_cycles, iterations);
-        cudaEventRecord(stop);
-        cudaEventSynchronize(stop);
-        float elapsed_ms;
-        cudaEventElapsedTime(&elapsed_ms, start, stop);
-        if (elapsed_ms < min_strided_ms) min_strided_ms = elapsed_ms;
+        cudaDeviceSynchronize();
+        cudaMemcpy(&h_strided, d_strided_cycles, sizeof(unsigned long long), cudaMemcpyDeviceToHost);
+        cudaMemcpy(&h_seq, d_seq_cycles, sizeof(unsigned long long), cudaMemcpyDeviceToHost);
+        if (h_strided < min_strided) min_strided = h_strided;
+        if (h_seq < min_seq) min_seq = h_seq;
     }}
 
-    // Now run sequential-only kernel for comparison
-    // We need a separate kernel since the combined kernel runs both
-    // Use the same kernel but analyze the ratio from the strided timing
-    // vs. expected sequential timing based on memory access count
+    double ratio = (min_seq > 0) ? (double)min_strided / (double)min_seq : 0.0;
 
-    // For sequential-only timing, run with stride=1 (no conflicts)
-    float min_sequential_ms = 1e9f;
-    for (int run = 0; run < 3; run++) {{
-        cudaEventRecord(start);
-        bank_conflict_kernel<<<1, 256, shmem_bytes>>>(size, 1,
-            d_strided_cycles, d_seq_cycles, iterations);
-        cudaEventRecord(stop);
-        cudaEventSynchronize(stop);
-        float elapsed_ms;
-        cudaEventElapsedTime(&elapsed_ms, start, stop);
-        if (elapsed_ms < min_sequential_ms) min_sequential_ms = elapsed_ms;
-    }}
-
-    // Convert ms to approximate cycles using known clock rate
-    // On P100: ~1328 MHz, so 1 ms ≈ 1,328,000 cycles
-    // But we want ratio, so ms is sufficient
-    double ratio = (min_sequential_ms > 0) ? (double)min_strided_ms / (double)min_sequential_ms : 0.0;
-
-    // Output fake cycle counts for parser compatibility (ratio is what matters)
-    unsigned long long fake_strided_cycles = (unsigned long long)(min_strided_ms * 1e6);
-    unsigned long long fake_seq_cycles = (unsigned long long)(min_sequential_ms * 1e6);
-
-    printf("strided_cycles: %llu\\n", fake_strided_cycles);
-    printf("sequential_cycles: %llu\\n", fake_seq_cycles);
+    printf("strided_cycles: %llu\\n", min_strided);
+    printf("sequential_cycles: %llu\\n", min_seq);
     printf("bank_conflict_ratio: %.2f\\n", ratio);
     printf("stride: %d\\n", stride);
     printf("size: %d\\n", size);
     printf("iterations: %d\\n", iterations);
-    printf("strided_ms: %.4f\\n", min_strided_ms);
-    printf("sequential_ms: %.4f\\n", min_sequential_ms);
 
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
     cudaFree(d_strided_cycles);
     cudaFree(d_seq_cycles);
     return 0;

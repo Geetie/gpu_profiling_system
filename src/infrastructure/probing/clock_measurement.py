@@ -204,7 +204,11 @@ def _measure_with_host_timing_fallback(
         # ncu exists but failed above — still try host timing as last resort
         pass  # Don't skip — host timing is our last chance
 
-    # Run binary 3 times, collect BOTH cycles and timing from each run.
+    # Warm up: run binary once to initialize CUDA context, then discard.
+    # This separates context init (~50-200ms) from actual kernel timing.
+    runner.run(command=binary_path, args=[], work_dir=work_dir)
+
+    # Run binary 3 more times (context already warm), collect cycles and timing.
     # Take the minimum elapsed run and use its paired cycles value.
     best_cycles = None
     best_elapsed_s = None
@@ -249,10 +253,12 @@ def _measure_with_ncu_timing(
         return None, None
 
     try:
-        # P1-5: Run ncu 3 times, take minimum elapsed time
-        # P2-9: Save raw ncu output from best run
+        # Run ncu 3 times, take minimum elapsed time.
+        # Extract BOTH wall-clock timing and SM cycles from the SAME execution
+        # to avoid frequency drift between runs.
         min_elapsed_ns = None
         best_ncu_raw = None
+        best_cycles = None
         for _ in range(3):
             r = runner.run(
                 command=ncu,
@@ -263,23 +269,28 @@ def _measure_with_ncu_timing(
             if not r or not r.success:
                 continue
             elapsed_ns = parse_ncu_gpu_time(r.stdout + r.stderr)
+            parsed_cycles = parse_nvcc_output(r.stdout)
+            cycles = parsed_cycles.get("total_cycles", 0)
             if elapsed_ns and elapsed_ns > 0:
                 if min_elapsed_ns is None or elapsed_ns < min_elapsed_ns:
                     min_elapsed_ns = elapsed_ns
                     best_ncu_raw = r.stdout + r.stderr
+                    best_cycles = cycles if cycles > 0 else best_cycles
         if min_elapsed_ns is None:
             return None, None
 
-        # Re-run binary to get SM cycles
-        r2 = runner.run(
-            command=binary_path,
-            args=[],
-            work_dir=work_dir,
-        )
-        if not r2 or not r2.success:
-            return None, None
-        parsed = parse_nvcc_output(r2.stdout)
-        sm_cycles = parsed.get("total_cycles", 0)
+        # Use cycles from the same ncu execution for consistency
+        sm_cycles = best_cycles or 0
+        if sm_cycles <= 0:
+            # Fallback: re-run binary to get cycles (less accurate)
+            r2 = runner.run(
+                command=binary_path,
+                args=[],
+                work_dir=work_dir,
+            )
+            if r2 and r2.success:
+                parsed = parse_nvcc_output(r2.stdout)
+                sm_cycles = parsed.get("total_cycles", 0)
 
         if sm_cycles > 0 and min_elapsed_ns > 0:
             # freq_MHz = cycles / time_us = cycles / (ns / 1000)
@@ -407,6 +418,7 @@ def _wrap_with_events(original_source: str) -> str | None:
             new_lines.append('    cudaEventCreate(&evt_stop);')
             new_lines.append('    cudaEventRecord(evt_start);')
             new_lines.append(line)  # original kernel launch
+            new_lines.append('    cudaEventRecord(evt_stop);')
             new_lines.append('    cudaEventSynchronize(evt_stop);')
             new_lines.append('    float elapsed_ms;')
             new_lines.append('    cudaEventElapsedTime(&elapsed_ms, evt_start, evt_stop);')
