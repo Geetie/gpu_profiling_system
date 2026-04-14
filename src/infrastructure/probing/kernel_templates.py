@@ -510,9 +510,16 @@ __global__ void bank_conflict_kernel(int size, int stride,
     // All warps map to the same bank, creating an extreme worst-case scenario
     // where all 256 threads queue on 1 bank. The measured ratio may exceed
     // the theoretical 32x because of inter-warp scheduling serialization.
+    //
+    // Use asm volatile("bar.sync 0") as compiler barrier to prevent
+    // clock64() hoisting. Without this, nvcc -O3 optimizes the loop
+    // away and clock64() returns 0 difference.
     __syncthreads();
     {{
         volatile float sum = 0;
+        // Prevent clock64() hoisting: inline PTX barrier forces the compiler
+        // to treat everything between the two barriers as having side effects.
+        __asm__ __volatile__("bar.sync 0;");
         unsigned long long t0 = clock64();
         for (int iter = 0; iter < iterations; iter++) {{
             for (int i = 0; i < 32; i++) {{
@@ -521,6 +528,7 @@ __global__ void bank_conflict_kernel(int size, int stride,
             }}
         }}
         unsigned long long t1 = clock64();
+        __asm__ __volatile__("bar.sync 0;");
         *d_strided_cycles = t1 - t0;
         // Prevent dead-code elimination
         if (tid == 0) shmem[0] = sum;
@@ -530,6 +538,7 @@ __global__ void bank_conflict_kernel(int size, int stride,
     // Sequential access pattern (no conflicts) — timed with clock64()
     {{
         volatile float sum = 0;
+        __asm__ __volatile__("bar.sync 0;");
         unsigned long long t0 = clock64();
         for (int iter = 0; iter < iterations; iter++) {{
             for (int i = 0; i < 32; i++) {{
@@ -538,6 +547,7 @@ __global__ void bank_conflict_kernel(int size, int stride,
             }}
         }}
         unsigned long long t1 = clock64();
+        __asm__ __volatile__("bar.sync 0;");
         *d_seq_cycles = t1 - t0;
         if (tid == 0) shmem[0] = sum;
     }}

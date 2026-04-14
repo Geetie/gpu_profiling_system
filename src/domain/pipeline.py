@@ -289,8 +289,12 @@ class Pipeline:
                 f"YOUR JOB: Write CUDA code → compile → execute → report values\n"
                 f"DO NOT: run ncu (that's MetricAnalysis's job)\n"
                 f"DO NOT: verify results (that's Verification's job)\n\n"
+                f"IMPORTANT: You MUST call tools as JSON objects, one at a time:\n"
+                f'{{"tool": "compile_cuda", "args": {{"source": "...code...", "flags": ["-O3"]}}}}\n\n'
+                f"After each tool call, you will see the result. Then call the next tool.\n"
+                f"DO NOT just describe what you would do — actually call the tools.\n\n"
                 f"WORKFLOW: For each target in the task list:\n"
-                f"1. compile_cuda(source=\"...full .cu code...\", flags=[\"-O3\", \"-arch=sm_XX\"])\n"
+                f"1. compile_cuda(source=\"...full .cu source code...\", flags=[\"-O3\", \"-arch=sm_XX\"])\n"
                 f"2. execute_binary(binary_path=\"<path_from_compile_cuda>\")\n"
                 f"3. Parse the output for 'target_name: numeric_value'\n"
                 f"4. If compilation fails: read the error, fix the code, retry (max 3 retries)\n"
@@ -719,9 +723,17 @@ class Pipeline:
 
         elif stage == PipelineStage.CODE_GEN:
             data["code_gen_output"] = final_text[:2000]
-            # Fix: tool handlers return "success" (boolean), not "status" (string)
-            # compile_cuda → {"success": True, "output": "...", "binary_path": "..."}
-            # execute_binary → {"stdout": "...", "stderr": "...", "return_code": 0}
+            # CodeGen MUST call tools — talking about code is not enough.
+            # compile_cuda returns {"success": True, "output": "...", "binary_path": "..."}
+            # execute_binary returns {"stdout": "...", "return_code": 0, ...}
+            has_compile = any(
+                r.get("tool") == "compile_cuda" or r.get("binary_path")
+                for r in tool_results
+            )
+            has_execute = any(
+                r.get("tool") == "execute_binary" or r.get("return_code") is not None
+                for r in tool_results
+            )
             tool_succeeded = any(
                 r.get("status") in ("success", True) or
                 r.get("success") is True
@@ -729,22 +741,25 @@ class Pipeline:
             )
             has_binary = any(r.get("binary_path") for r in tool_results)
             has_output = any(r.get("stdout") for r in tool_results)
-            # Also check execute_binary success: return_code == 0
             exec_succeeded = any(
                 r.get("return_code", -1) == 0 for r in tool_results
                 if "return_code" in r or "stdout" in r
             )
-            output_succeeded = bool(final_text) and not any(
-                kw in final_text.lower() for kw in ["failed", "error:", "could not", "cannot"]
-            )
-            if tool_succeeded or has_binary or has_output or exec_succeeded or output_succeeded:
+            # CodeGen requires at least one tool call — text-only output is a failure
+            if tool_results and (tool_succeeded or has_binary or has_output or exec_succeeded):
                 status = SubAgentStatus.SUCCESS
             else:
                 status = SubAgentStatus.FAILED
-                if not final_text and not tool_results:
-                    data["error_detail"] = "CodeGen produced no output"
+                if not tool_results and not final_text:
+                    data["error_detail"] = "CodeGen produced no output and made no tool calls"
+                elif not tool_results:
+                    data["error_detail"] = (
+                        f"CodeGen output was text-only (no tool calls). "
+                        f"Model must call compile_cuda to generate benchmarks. "
+                        f"Output preview: {final_text[:200]}"
+                    )
                 elif not tool_succeeded and not has_binary:
-                    data["error_detail"] = "CodeGen compilation failed"
+                    data["error_detail"] = "CodeGen compilation failed — check tool call results for errors"
 
             # Extract structured measurements from CodeGen tool results
             # This feeds into _assemble_final_results in main.py
