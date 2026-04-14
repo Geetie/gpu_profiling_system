@@ -449,11 +449,21 @@ class Pipeline:
         else:
             status = SubAgentStatus.SUCCESS
 
+        # Propagate error_detail to result.error for UI visibility
+        if status == SubAgentStatus.FAILED:
+            error_msg = data.get("error_detail", "")
+            if not error_msg and not final_text and not tool_results:
+                error_msg = f"Stage {stage.value} produced no output"
+            elif not error_msg and final_text:
+                # Show a snippet of what the model actually output
+                error_msg = f"Stage {stage.value} failed. Output: {final_text[:500]}"
+
         result = SubAgentResult(
             agent_role=agent.role,
             status=status,
             data=data,
             artifacts=[],
+            error=error_msg if status == SubAgentStatus.FAILED else None,
         )
 
         result.context_fingerprint = result.compute_fingerprint(agent.context_manager)
