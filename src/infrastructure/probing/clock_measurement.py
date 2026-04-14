@@ -201,8 +201,8 @@ def _measure_with_host_timing_fallback(
 
     ncu = shutil.which("ncu")
     if ncu is not None:
-        # ncu exists but failed above — skip host timing too
-        return None, None
+        # ncu exists but failed above — still try host timing as last resort
+        pass  # Don't skip — host timing is our last chance
 
     # Run binary 3 times, collect BOTH cycles and timing from each run.
     # Take the minimum elapsed run and use its paired cycles value.

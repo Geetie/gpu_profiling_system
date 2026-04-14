@@ -98,6 +98,20 @@ def probe_dram_bandwidth(
     except Exception:
         pass
 
+    # ncu timing failed — fall back to cudaEventElapsedTime
+    gpu_time_ns = _measure_with_cuda_events(32 * 1024 * 1024, sandbox)
+    if gpu_time_ns and gpu_time_ns > 0:
+        result = _build_result(elements, bytes_copied, parsed, gpu_time_ns)
+        if result:
+            result["_confidence"] = round(
+                _assess_confidence(
+                    bytes_copied / gpu_time_ns,
+                    low=50.0, high=2000.0,
+                    ideal_low=100.0, ideal_high=1600.0,
+                ) * 0.8, 2  # Lower confidence for event timing
+            )
+        return result
+
     return _build_result(elements, bytes_copied, parsed, None)
 
 

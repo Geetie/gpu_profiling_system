@@ -41,31 +41,47 @@ def probe_bank_conflict_latency(
     result = compile_and_run(kernel.source, sandbox=sandbox)
 
     if not result or not result.success:
+        print(f"[bank_conflict] compile_and_run failed")
+        if result:
+            print(f"  stdout: {result.stdout[:500]}")
+            print(f"  stderr: {result.stderr[:500]}")
         return None
 
     parsed = parse_nvcc_output(result.stdout)
+    print(f"[bank_conflict] parsed: {parsed}")
 
     results: dict[str, Any] = {
         "method": "strided_vs_sequential_shmem_comparison",
     }
 
-    if "strided_cycles" in parsed:
-        results["strided_cycles"] = int(parsed["strided_cycles"])
-    if "sequential_cycles" in parsed:
-        results["sequential_cycles"] = int(parsed["sequential_cycles"])
-    if "bank_conflict_ratio" in parsed:
-        results["bank_conflict_ratio"] = float(parsed["bank_conflict_ratio"])
+    strided = parsed.get("strided_cycles", 0)
+    sequential = parsed.get("sequential_cycles", 0)
+    ratio = parsed.get("bank_conflict_ratio", 0)
+
+    if strided:
+        results["strided_cycles"] = int(strided)
+    if sequential:
+        results["sequential_cycles"] = int(sequential)
+    if ratio:
+        results["bank_conflict_ratio"] = float(ratio)
     if "stride" in parsed:
         results["stride"] = int(parsed["stride"])
 
+    # If ratio is 0 but we have cycle data, compute it ourselves
+    if not results.get("bank_conflict_ratio") and strided and sequential:
+        results["bank_conflict_ratio"] = round(float(strided) / float(sequential), 2)
+        print(f"[bank_conflict] computed ratio from cycles: {results['bank_conflict_ratio']}")
+
     # Confidence: bank conflict ratio should be > 1.0 and typically < 32×
-    # T4 32-way bank conflict theoretical max ~25-30×,实测约 15-20×
+    # T4 32-way bank conflict theoretical max ~25-30×
     bc_ratio = results.get("bank_conflict_ratio")
     if bc_ratio and bc_ratio > 1.0:
         results["_confidence"] = round(
             _assess_from_ratio(bc_ratio, ideal=16.0, tolerance=0.6), 2
         )
-    else:
+    elif bc_ratio and bc_ratio > 0:
         results["_confidence"] = 0.2
 
+    if not results.get("bank_conflict_ratio"):
+        print(f"[bank_conflict] no ratio found, returning None")
     return results if results.get("bank_conflict_ratio") else None
