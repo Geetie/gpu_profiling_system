@@ -805,6 +805,7 @@ class Pipeline:
             status = SubAgentStatus.SUCCESS
 
         # Propagate error_detail to result.error for UI visibility
+        error_msg = ""
         if status == SubAgentStatus.FAILED:
             error_msg = data.get("error_detail", "")
             if not error_msg and not final_text and not tool_results:
@@ -812,13 +813,28 @@ class Pipeline:
             elif not error_msg and final_text:
                 # Show a snippet of what the model actually output
                 error_msg = f"Stage {stage.value} failed. Output: {final_text[:500]}"
+            else:
+                error_msg = error_msg or f"Stage {stage.value} failed"
+
+        elif status == SubAgentStatus.REJECTED:
+            review = data.get("review", [])
+            concerns = data.get("concerns", [])
+            review_text = data.get("review_text", "")[:300]
+            if concerns:
+                error_msg = f"Verification rejected: {'; '.join(concerns)}"
+            elif review:
+                error_msg = f"Verification rejected: {'; '.join(str(r) for r in review[:5])}"
+            elif review_text:
+                error_msg = f"Verification rejected: {review_text[:300]}"
+            else:
+                error_msg = "Verification rejected (no reason provided)"
 
         result = SubAgentResult(
             agent_role=agent.role,
             status=status,
             data=data,
             artifacts=[],
-            error=error_msg if status == SubAgentStatus.FAILED else None,
+            error=error_msg or None,
         )
 
         result.context_fingerprint = result.compute_fingerprint(agent.context_manager)

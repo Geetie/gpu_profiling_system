@@ -805,8 +805,15 @@ def _run_pipeline_mode(args, sandbox):
                     output_dir=output_dir,
                 )
         else:
-            ui.show_tool_error("pipeline", result.error or "Unknown failure")
-            audit.record_error(result.error or "Unknown failure")
+            error_info = result.error or ""
+            if not error_info:
+                error_info = (
+                    f"Pipeline {result.status.value} — "
+                    f"stage: {result.agent_role.value}, "
+                    f"data keys: {', '.join(result.data.keys())}"
+                )
+            ui.show_tool_error("pipeline", error_info)
+            audit.record_error(error_info)
             return 1
     except KeyboardInterrupt:
         ui.show_message("Interrupted by user")
