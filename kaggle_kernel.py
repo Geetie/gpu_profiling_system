@@ -24,7 +24,12 @@ from pathlib import Path
 WORKING_DIR = "/kaggle/working"
 os.makedirs(WORKING_DIR, exist_ok=True)
 LOG_FILE = os.path.join(WORKING_DIR, "execution.log")
-log_fh = open(LOG_FILE, "w", buffering=1)  # line-buffered
+SESSION_LOG = os.path.join(WORKING_DIR, "session_log.jsonl")  # M3 invariant
+
+try:
+    log_fh = open(LOG_FILE, "w", buffering=1)  # line-buffered
+except (OSError, IOError):
+    log_fh = None  # fallback: stdout only
 
 
 class TeeWriter:
@@ -34,12 +39,14 @@ class TeeWriter:
 
     def write(self, s):
         self._stream.write(s)
-        self._file.write(s)
-        self._file.flush()
+        if self._file:
+            self._file.write(s)
+            self._file.flush()
 
     def flush(self):
         self._stream.flush()
-        self._file.flush()
+        if self._file:
+            self._file.flush()
 
 
 sys.stdout = TeeWriter(sys.stdout, log_fh)
@@ -56,6 +63,23 @@ def banner(title):
     print("=" * 60)
     print(f"  {title}")
     print("=" * 60)
+
+
+def log_step(step_name: str, status: str, details: dict | None = None):
+    """Append one line to session_log.jsonl (M3 invariant)."""
+    import time as _time
+    entry = {
+        "timestamp": _time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "step": step_name,
+        "status": status,
+        "details": details or {},
+    }
+    line = json.dumps(entry)
+    try:
+        with open(SESSION_LOG, "a") as f:
+            f.write(line + "\n")
+    except (OSError, IOError):
+        pass
 
 
 def run_cmd(cmd, timeout=300, description="", wd=None, extra_env=None):
@@ -75,6 +99,13 @@ def run_cmd(cmd, timeout=300, description="", wd=None, extra_env=None):
         if r.stdout:
             out = r.stdout
             if len(out) > 5000:
+                # Save full output to a file so nothing is lost
+                full_out_path = os.path.join(WORKING_DIR, f".cmd_output_{len(cmd)-1}.log")
+                try:
+                    with open(full_out_path, "w") as _f:
+                        _f.write(out)
+                except (OSError, IOError):
+                    pass
                 print(f"... ({len(out)} chars total, showing first 3000 + last 2000)")
                 print(out[:3000])
                 print("\n... [truncated] ...\n")
@@ -98,15 +129,16 @@ def run_cmd(cmd, timeout=300, description="", wd=None, extra_env=None):
 def get_kaggle_secret(secret_name: str) -> str | None:
     """Read a secret from Kaggle's Secrets storage (4 methods)."""
     # Method 1: kaggle_secrets module (available in Kaggle kernels)
+    masked_name = secret_name[:3] + "***" if len(secret_name) > 3 else "***"
     try:
         from kaggle_secrets import UserSecretsClient
         client = UserSecretsClient()
         val = client.get_secret(secret_name)
         if val:
-            print(f"[secret] {secret_name}: found via kaggle_secrets")
+            print(f"[secret] {masked_name}: found via kaggle_secrets")
             return val
     except Exception as e:
-        print(f"[secret] kaggle_secrets failed for {secret_name}: {e}")
+        print(f"[secret] {masked_name}: kaggle_secrets failed: {e}")
 
     # Method 2: /kaggle/secrets/ file mount
     secret_path = f"/kaggle/secrets/{secret_name}"
@@ -114,13 +146,13 @@ def get_kaggle_secret(secret_name: str) -> str | None:
         with open(secret_path) as f:
             val = f.read().strip()
         if val:
-            print(f"[secret] {secret_name}: found via file mount")
+            print(f"[secret] {masked_name}: found via file mount")
             return val
 
     # Method 3: Direct environment variable
     val = os.environ.get(secret_name, "")
     if val:
-        print(f"[secret] {secret_name}: found via env var")
+        print(f"[secret] {masked_name}: found via env var")
         return val
 
     # Method 4: /kaggle/input/ mount
@@ -129,10 +161,11 @@ def get_kaggle_secret(secret_name: str) -> str | None:
         with open(secret_input_path) as f:
             val = f.read().strip()
         if val:
-            print(f"[secret] {secret_name}: found via /kaggle/input")
+            print(f"[secret] {masked_name}: found via /kaggle/input")
             return val
 
-    print(f"[secret] {secret_name}: not found")
+    masked_name = secret_name[:3] + "***" if len(secret_name) > 3 else "***"
+    print(f"[secret] {masked_name}: not found")
     return None
 
 
@@ -152,13 +185,8 @@ def check_environment():
 
     ok, out, err = run_cmd(["nvcc", "--version"], description="nvcc check")
     if not ok:
-        print("nvcc not found, trying install...")
-        run_cmd(["apt-get", "update"], timeout=120)
-        run_cmd(["apt-get", "install", "-y", "cuda-toolkit-12-0"], timeout=300)
-        ok, out, err = run_cmd(["nvcc", "--version"])
-        if not ok:
-            print("nvcc still not available -- aborting")
-            return False
+        print("nvcc not found -- Kaggle GPU image should include CUDA, aborting")
+        return False
 
     ok, _, _ = run_cmd(["which", "ncu"], description="ncu check")
     if ok:
@@ -193,19 +221,11 @@ def configure_api(project_root: str) -> bool:
                 os.environ[k] = v
             return True
 
-    # Read secrets from Kaggle Secrets storage
+    # Read secrets from Kaggle Secrets storage (4 methods each)
     print("Reading secrets from Kaggle...")
     longcat_key = get_kaggle_secret("LONGCAT_API_KEY") or ""
     dashscope_key = get_kaggle_secret("DASHSCOPE_API_KEY") or ""
     anthropic_key = get_kaggle_secret("ANTHROPIC_API_KEY") or ""
-
-    # Also check environment variables (may be set via Kaggle secrets UI)
-    if not longcat_key:
-        longcat_key = os.environ.get("LONGCAT_API_KEY", "")
-    if not dashscope_key:
-        dashscope_key = os.environ.get("DASHSCOPE_API_KEY", "")
-    if not anthropic_key:
-        anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
 
     provider_configs = {}
 
@@ -290,7 +310,8 @@ def configure_api(project_root: str) -> bool:
 def create_target_spec(project_root: str) -> str:
     """Create or load target_spec.json.
 
-    Includes all 10 measurable GPU parameters.
+    Includes 8 GPU parameters (DRAM latency, L2 cache, clock, shmem,
+    bandwidth, bank conflicts, SM count).
     """
     ts_path = os.path.join(project_root, "config", "target_spec.json")
     if not os.path.isfile(ts_path):
@@ -357,7 +378,9 @@ def run_pipeline(project_root: str, target_spec_path: str) -> bool:
     banner("4. Multi-Agent Pipeline")
     print("Planner → CodeGen → MetricAnalysis → Verification")
     print("Agents will autonomously generate CUDA kernels based on targets")
-    print(f"Timeout: 3600s (1 hour)")
+    print(f"Timeout: 3600s (1 hour), overridable via PIPELINE_TIMEOUT env var")
+
+    pipeline_timeout = int(os.environ.get("PIPELINE_TIMEOUT", "3600"))
 
     ok, out, err = run_cmd(
         [
@@ -380,7 +403,7 @@ def run_pipeline(project_root: str, target_spec_path: str) -> bool:
             "--max-tokens",
             "16000",
         ],
-        timeout=3600,
+        timeout=pipeline_timeout,
         wd=project_root,
     )
     print(f"Pipeline completed: success={ok}")
@@ -533,45 +556,54 @@ try:
     print(f"src/main.py exists: {os.path.isfile(os.path.join(PROJECT_ROOT, 'src', 'main.py'))}")
 
     # ── Step 1: Environment ──────────────────────────────────────
-    if not check_environment():
+    env_ok = check_environment()
+    if not env_ok:
         all_errors.append("Environment check failed")
         print("Environment check failed -- aborting")
-        sys.exit(1)
-
-    # ── Step 2: API Config ───────────────────────────────────────
-    api_configured = configure_api(PROJECT_ROOT)
-
-    # ── Step 3: Target Spec ──────────────────────────────────────
-    target_spec_path = create_target_spec(PROJECT_ROOT)
-
-    # ── Step 4: Hardware Probes (always runs) ────────────────────
-    probe_ok = run_probes(PROJECT_ROOT)
-    if not probe_ok:
-        all_errors.append("Hardware probes failed")
-
-    # ── Step 5: Pipeline (only if API configured and probes OK) ──
-    if api_configured and probe_ok:
-        pipeline_ok = run_pipeline(PROJECT_ROOT, target_spec_path)
-        if not pipeline_ok:
-            all_errors.append("Pipeline failed")
     else:
-        banner("Pipeline - SKIPPED")
-        reason = []
-        if not api_configured:
-            reason.append("no API key")
+        log_step("environment", "pass")
+
+        # ── Step 2: API Config ───────────────────────────────────────
+        api_configured = configure_api(PROJECT_ROOT)
+        log_step("api_config", "configured" if api_configured else "skipped")
+
+        # ── Step 3: Target Spec ──────────────────────────────────────
+        target_spec_path = create_target_spec(PROJECT_ROOT)
+        log_step("target_spec", "created")
+
+        # ── Step 4: Hardware Probes (always runs) ────────────────────
+        probe_ok = run_probes(PROJECT_ROOT)
+        log_step("probes", "pass" if probe_ok else "fail")
         if not probe_ok:
-            reason.append("probes failed")
-        msg = f"Pipeline skipped: {', '.join(reason)}"
-        all_errors.append(msg)
-        print(msg)
+            all_errors.append("Hardware probes failed")
 
-    # ── Step 6: Results ──────────────────────────────────────────
-    results_ok = analyze_results()
-    if not results_ok:
-        all_errors.append("Results analysis failed")
+        # ── Step 5: Pipeline (only if API configured and probes OK) ──
+        if api_configured and probe_ok:
+            pipeline_ok = run_pipeline(PROJECT_ROOT, target_spec_path)
+            log_step("pipeline", "pass" if pipeline_ok else "fail")
+            if not pipeline_ok:
+                all_errors.append("Pipeline failed")
+        else:
+            banner("Pipeline - SKIPPED")
+            reason = []
+            if not api_configured:
+                reason.append("no API key")
+            if not probe_ok:
+                reason.append("probes failed")
+            msg = f"Pipeline skipped: {', '.join(reason)}"
+            all_errors.append(msg)
+            print(msg)
+            log_step("pipeline", "skipped", {"reason": msg})
 
-    # ── Step 7: Collect artifacts ────────────────────────────────
-    copy_artifacts(PROJECT_ROOT)
+        # ── Step 6: Results ──────────────────────────────────────────
+        results_ok = analyze_results()
+        log_step("results", "pass" if results_ok else "fail")
+        if not results_ok:
+            all_errors.append("Results analysis failed")
+
+        # ── Step 7: Collect artifacts ────────────────────────────────
+        copy_artifacts(PROJECT_ROOT)
+        log_step("artifacts", "collected")
 
 except Exception as e:
     all_errors.append(f"Fatal error: {str(e)}")
@@ -616,4 +648,5 @@ finally:
 
     print("\nTest complete.")
     print(f"Log file: {LOG_FILE}")
-    log_fh.close()
+    if log_fh:
+        log_fh.close()
