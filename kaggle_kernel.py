@@ -43,16 +43,17 @@ def banner(title):
     print("=" * 60)
 
 
-def run_cmd(cmd, timeout=300, description="", wd=None):
+def run_cmd(cmd, timeout=300, description="", wd=None, extra_env=None):
     if description:
         print(f"  {description}")
-    # FIX: Default to WORKING_DIR. Use wd param or PROJECT_ROOT only when explicitly set.
-    # This avoids using PROJECT_ROOT before git clone creates the directory.
     cwd = wd if wd else WORKING_DIR
     print(f"[cwd={cwd}] $ {' '.join(cmd)}")
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
     try:
         r = subprocess.run(cmd, capture_output=True, text=True,
-                          timeout=timeout, cwd=cwd)
+                          timeout=timeout, cwd=cwd, env=env)
         if r.stdout:
             out = r.stdout
             if len(out) > 5000:
@@ -72,6 +73,52 @@ def run_cmd(cmd, timeout=300, description="", wd=None):
     except Exception as e:
         print(f"Error: {e}")
         return False, "", str(e)
+
+
+def get_kaggle_secret(secret_name: str) -> str | None:
+    """Read a secret from Kaggle's Secrets storage.
+
+    Kaggle Secrets are NOT automatically environment variables.
+    They must be read explicitly via the Kaggle API.
+    """
+    # Method 1: Try kaggle_secrets module (available in Kaggle kernels)
+    try:
+        from kaggle_secrets import UserSecretsClient
+        client = UserSecretsClient()
+        val = client.get_secret(secret_name)
+        if val:
+            print(f"[secret] {secret_name}: found via kaggle_secrets")
+            return val
+    except Exception as e:
+        print(f"[secret] kaggle_secrets failed for {secret_name}: {e}")
+
+    # Method 2: Try reading from /kaggle/secrets/ (mounted secret directory)
+    secret_path = f"/kaggle/secrets/{secret_name}"
+    if os.path.isfile(secret_path):
+        with open(secret_path) as f:
+            val = f.read().strip()
+        if val:
+            print(f"[secret] {secret_name}: found via file mount")
+            return val
+
+    # Method 3: Check environment variable (direct env var)
+    val = os.environ.get(secret_name, "")
+    if val:
+        print(f"[secret] {secret_name}: found via env var")
+        return val
+
+    # Method 4: Check KAGGLE_DATA_PROXY_TOKEN based path
+    # Kaggle also mounts secrets under /kaggle/input/ for some configurations
+    secret_input_path = f"/kaggle/input/{secret_name}"
+    if os.path.isfile(secret_input_path):
+        with open(secret_input_path) as f:
+            val = f.read().strip()
+        if val:
+            print(f"[secret] {secret_name}: found via /kaggle/input")
+            return val
+
+    print(f"[secret] {secret_name}: not found")
+    return None
 
 
 def check_environment():
@@ -104,12 +151,16 @@ def configure_api():
         with open(config_path) as f:
             cfg = json.load(f)
         token = cfg.get("env", {}).get("ANTHROPIC_AUTH_TOKEN", "")
-        if token and len(token) > 30 and not token.startswith("mock") and not token.startswith("YOUR") and len(token) > 30:
+        if token and len(token) > 30 and not token.startswith("mock") and not token.startswith("YOUR"):
             print("API config already exists with valid token")
             return True
-    longcat_key = os.environ.get("LONGCAT_API_KEY", "")
-    dashscope_key = os.environ.get("DASHSCOPE_API_KEY", "")
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+
+    # Read secrets from Kaggle Secrets storage
+    print("Reading secrets from Kaggle...")
+    longcat_key = get_kaggle_secret("LONGCAT_API_KEY") or ""
+    dashscope_key = get_kaggle_secret("DASHSCOPE_API_KEY") or ""
+    anthropic_key = get_kaggle_secret("ANTHROPIC_API_KEY") or ""
+
     if longcat_key and len(longcat_key) > 10:
         env = {
             "ANTHROPIC_BASE_URL": "https://api.longcat.com/openaicompatible/api/v1/chat/completions",
