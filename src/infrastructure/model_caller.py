@@ -12,8 +12,33 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import requests
 from typing import Any, Dict, List, Optional
+
+
+def _retry_request(url, headers, json_payload, max_retries=3, timeout=120):
+    """Retry POST request with exponential backoff for transient errors."""
+    import urllib3
+    last_exc = None
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(
+                url, headers=headers, json=json_payload, timeout=timeout
+            )
+            if response.status_code in (429, 500, 502, 503, 504):
+                wait = min(2 ** attempt * 5, 60)
+                print(f"[model_caller] HTTP {response.status_code}, retrying in {wait}s ({attempt+1}/{max_retries})")
+                time.sleep(wait)
+                last_exc = RuntimeError(f"HTTP {response.status_code}: {response.text[:500]}")
+                continue
+            return response
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            wait = min(2 ** attempt * 5, 60)
+            print(f"[model_caller] Connection error: {type(e).__name__}, retrying in {wait}s ({attempt+1}/{max_retries})")
+            time.sleep(wait)
+            last_exc = e
+    raise last_exc if last_exc else RuntimeError("All retries exhausted")
 
 
 def load_config() -> dict[str, Any]:
@@ -184,7 +209,7 @@ def _call_anthropic(
     if system_message:
         payload["system"] = system_message
 
-    response = requests.post(base_url, headers=headers, json=payload, timeout=120)
+    response = _retry_request(base_url, headers=headers, json_payload=payload, timeout=120)
 
     if response.status_code != 200:
         raise RuntimeError(f"API call failed: {response.status_code} - {response.text[:500]}")
@@ -211,7 +236,7 @@ def _call_openai_compatible(
         "stream": False,
     }
 
-    response = requests.post(base_url, headers=headers, json=payload, timeout=120)
+    response = _retry_request(base_url, headers=headers, json_payload=payload, timeout=120)
 
     if response.status_code != 200:
         raise RuntimeError(f"API call failed: {response.status_code} - {response.text[:500]}")
