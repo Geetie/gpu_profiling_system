@@ -70,27 +70,108 @@ def compile_and_run(
 
 
 def _detect_arch(runner: SandboxRunner) -> str:
-    """Detect GPU compute capability via compilation testing.
+    """Detect GPU compute capability via direct CUDA API query.
 
-    Tries compiling a minimal kernel with progressively higher -arch flags.
-    The highest successful architecture is the closest match.
-    Does NOT use cudaGetDeviceProperties (anti-cheat compliance).
+    Uses cudaDeviceGetAttribute to get the actual hardware compute
+    capability, which is more reliable than compilation+run testing.
+    Compilation testing can mislead because nvcc can compile for any
+    arch and the driver JIT-compiles PTX at runtime — but clock()
+    and other timing functions may behave incorrectly under JIT.
+
+    Falls back to nvidia-smi parsing, then compilation testing.
+    """
+    import subprocess as _sub
+
+    # Method 1: Direct CUDA API query — most reliable
+    work_dir = getattr(runner, "sandbox_root", None) or getattr(runner, "_sandbox_root", None)
+    nvcc = shutil.which("nvcc")
+
+    if nvcc and work_dir:
+        cc_source = """
+#include <stdio.h>
+#include <cuda_runtime.h>
+int main() {
+    int dev;
+    cudaError_t err = cudaGetDevice(&dev);
+    if (err != cudaSuccess) { printf("no_device\\n"); return 1; }
+    int major, minor;
+    err = cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev);
+    if (err != cudaSuccess) { printf("no_major\\n"); return 1; }
+    err = cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, dev);
+    if (err != cudaSuccess) { printf("no_minor\\n"); return 1; }
+    printf("sm_%d%d\\n", major, minor);
+    return 0;
+}
+"""
+        cc_result = runner.run(
+            source_code=cc_source,
+            command=nvcc,
+            args=["-o", "cc_detect", "source.cu"],
+            work_dir=work_dir,
+        )
+        if cc_result and cc_result.success:
+            cc_binary = os.path.join(work_dir, "cc_detect")
+            run_result = runner.run(command=cc_binary, args=[], work_dir=work_dir)
+            if run_result and run_result.success:
+                parsed = parse_nvcc_output(run_result.stdout)
+                cc_val = parsed.get("sm_60") or parsed.get("sm_70") or \
+                         parsed.get("sm_75") or parsed.get("sm_80") or \
+                         parsed.get("sm_86") or parsed.get("sm_90")
+                if cc_val:
+                    print(f"[_detect_arch] cc={cc_val} (from cudaDeviceGetAttribute)")
+                    return cc_val
+
+    # Method 2: Parse nvidia-smi output
+    try:
+        r = _sub.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                     capture_output=True, text=True, timeout=10)
+        if r.returncode == 0 and r.stdout.strip():
+            gpu_name = r.stdout.strip().lower()
+            gpu_to_cc = {
+                "a100": "sm_80", "a800": "sm_80",
+                "h100": "sm_90", "h800": "sm_90",
+                "v100": "sm_70",
+                "t4": "sm_75",
+                "p100": "sm_60", "p40": "sm_61", "p4": "sm_61",
+                "k80": "sm_37", "k40": "sm_35",
+                "rtx 20": "sm_75", "rtx 30": "sm_86",
+                "rtx 40": "sm_89", "rtx 50": "sm_120",
+            }
+            for pattern, cc in gpu_to_cc.items():
+                if pattern in gpu_name:
+                    print(f"[_detect_arch] cc={cc} (from nvidia-smi: {r.stdout.strip()})")
+                    return cc
+    except Exception:
+        pass
+
+    # Method 3: Fallback — compilation + run testing with clock() kernel
+    return _detect_arch_by_compilation(runner)
+
+
+def _detect_arch_by_compilation(runner: SandboxRunner) -> str:
+    """Fallback architecture detection via compilation testing.
+
+    Uses a test kernel with clock() to ensure timing functions work
+    correctly under the target architecture.
     """
     nvcc = shutil.which("nvcc")
     if nvcc is None:
         return "sm_50"
 
-    # Minimal kernel for compilation test
     test_source = """
 #include <cuda_runtime.h>
-__global__ void test_kernel() {}
-int main() { return 0; }
+__global__ void test_kernel() {
+    volatile unsigned long long c = clock();
+    (void)c;
+}
+int main() {
+    test_kernel<<<1, 1>>>();
+    cudaDeviceSynchronize();
+    return 0;
+}
 """
     work_dir = getattr(runner, "sandbox_root", None) or getattr(runner, "_sandbox_root", None)
 
-    # Kaggle: nvcc 12.8 can compile sm_80+ even on T4 (sm_75).
-    # We must compile for the RUNNING architecture, not just what nvcc accepts.
-    # Strategy: try running after each compile to find the actual arch.
     arch_list = ["sm_80", "sm_75", "sm_70", "sm_61", "sm_60", "sm_50"]
     for arch in arch_list:
         result = runner.run(
@@ -100,7 +181,6 @@ int main() { return 0; }
             work_dir=work_dir,
         )
         if result and result.success:
-            # Verify it actually runs on this GPU (compile != runtime compat)
             binary = os.path.join(work_dir, "arch_test")
             run_result = runner.run(command=binary, args=[], work_dir=work_dir)
             if run_result and run_result.success:
@@ -110,7 +190,6 @@ int main() { return 0; }
                 print(f"[_detect_arch] arch={arch} compiled but failed to run")
 
     print(f"[_detect_arch] nothing compiled, falling back to sm_50")
-    # Fallback if nothing compiles
     return "sm_50"
 
 
