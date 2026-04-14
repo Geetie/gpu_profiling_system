@@ -198,12 +198,14 @@ def _call_anthropic(
     for msg in messages:
         role = msg.get("role", "")
         content = msg.get("content", "")
+        if content is None:
+            content = ""
         if role == "system":
             system_message = content
         elif role == "user":
-            anthropic_messages.append({"role": "user", "content": content})
+            anthropic_messages.append({"role": "user", "content": str(content)})
         elif role == "assistant":
-            anthropic_messages.append({"role": "assistant", "content": content})
+            anthropic_messages.append({"role": "assistant", "content": str(content)})
 
     payload = {
         "model": model,
@@ -248,9 +250,21 @@ def _call_openai_compatible(
     tools: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Call OpenAI-compatible API endpoint."""
+    # LongCat/DashScope apply_chat_template crashes on None content.
+    # Sanitize all messages defensively before sending.
+    cleaned_messages = []
+    for msg in messages:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if role and content is not None:
+            cleaned_messages.append({"role": role, "content": str(content)})
+        elif role:
+            cleaned_messages.append({"role": role, "content": ""})
+        # Skip messages with no role — malformed, safer to omit
+
     payload = {
         "model": model,
-        "messages": messages,
+        "messages": cleaned_messages,
         "max_tokens": max_tokens,
         "stream": False,
     }
