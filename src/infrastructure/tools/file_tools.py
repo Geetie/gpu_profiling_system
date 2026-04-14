@@ -51,14 +51,17 @@ def make_read_file_handler(file_ops: FileOperations) -> Callable[[dict[str, Any]
 def make_write_file_handler(file_ops: FileOperations) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """Create a write_file handler bound to the given FileOperations instance.
 
-    BUG-P4-1 fix: properly propagate errors instead of silently returning 0.
-    VULN-P4-1 fix: strictly enforce M1 — no create() fallback.
+    M1 handling:
+    - If the target file doesn't exist on disk, use create() to create it
+      (new file creation doesn't require prior read).
+    - If the target file exists, use write() which requires prior read (M1).
 
     Returns (from output_schema):
         bytes_written: int — size of written content in bytes
     """
 
     def handler(arguments: dict[str, Any]) -> dict[str, Any]:
+        import os
         file_path = arguments.get("file_path", "")
         content = arguments.get("content", "")
 
@@ -66,6 +69,11 @@ def make_write_file_handler(file_ops: FileOperations) -> Callable[[dict[str, Any
             return {"bytes_written": 0}
 
         try:
+            resolved = os.path.abspath(file_path)
+            # New file: use create() which bypasses M1 (nothing to read)
+            if not os.path.exists(resolved):
+                return {"bytes_written": file_ops.create(file_path, content)}
+            # Existing file: use write() which requires prior read (M1)
             return {"bytes_written": file_ops.write(file_path, content)}
         except PermissionError as e:
             # M1 violation — re-raise so ToolRunner can log and propagate
@@ -73,7 +81,6 @@ def make_write_file_handler(file_ops: FileOperations) -> Callable[[dict[str, Any
                 raise
             return {"bytes_written": 0, "error": str(e)}
         except Exception as e:
-            # BUG-P4-1 fix: report actual errors instead of silently returning 0
             return {"bytes_written": 0, "error": str(e)}
 
     return handler
