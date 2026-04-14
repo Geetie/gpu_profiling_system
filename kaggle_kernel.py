@@ -251,6 +251,10 @@ def analyze_results():
 
 PROJECT_ROOT = None
 all_errors = []
+# Defaults — safe for finally block if error occurs before assignment
+probe_ok = False
+pipeline_ok = False
+api_configured = False
 
 try:
     banner("GPU Profiling System - Kaggle Test")

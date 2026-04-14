@@ -189,7 +189,7 @@ int main() {{
     unsigned long long* d_cycles;
     cudaMalloc(&d_cycles, 2 * sizeof(unsigned long long));
 
-    sweep<<<1, 1>>>(d_cycles, d_chain, size, iterations);
+    sweep_kernel<<<1, 1>>>(d_cycles, d_chain, size, iterations);
     cudaDeviceSynchronize();
 
     unsigned long long h_cycles[2];
@@ -310,6 +310,7 @@ def stream_copy_kernel(
     """
     source = f"""
 #include <stdio.h>
+#include <stdint.h>
 #include <cuda_runtime.h>
 
 #define BLOCK_SIZE 256
