@@ -43,13 +43,15 @@ def banner(title):
     print("=" * 60)
 
 
-def run_cmd(cmd, timeout=300, description=""):
+def run_cmd(cmd, timeout=300, description="", wd=None):
     if description:
         print(f"  {description}")
-    print(f"$ {' '.join(cmd)}")
+    # Use explicit working directory: prefer wd param, then PROJECT_ROOT if set, else WORKING_DIR
+    cwd = wd if wd else (PROJECT_ROOT if PROJECT_ROOT else WORKING_DIR)
+    print(f"[cwd={cwd}] $ {' '.join(cmd)}")
     try:
         r = subprocess.run(cmd, capture_output=True, text=True,
-                          timeout=timeout, cwd=WORKING_DIR)
+                          timeout=timeout, cwd=cwd)
         if r.stdout:
             out = r.stdout
             if len(out) > 5000:
@@ -271,6 +273,8 @@ try:
     os.chdir(PROJECT_ROOT)
     sys.path.insert(0, PROJECT_ROOT)
     print(f"Project root: {PROJECT_ROOT}")
+    print(f"Current working dir: {os.getcwd()}")
+    print(f"src/main.py exists: {os.path.isfile(os.path.join(PROJECT_ROOT, 'src', 'main.py'))}")
 
 
     if not check_environment():
