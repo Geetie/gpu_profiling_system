@@ -473,10 +473,16 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _build_pipeline(args, sandbox, registry, session):
-    """Build a Pipeline with all 4 subagents wired to the sandbox."""
+    """Build a Pipeline with all 4 subagents wired to the sandbox.
+
+    P2 (fail-closed): each agent only gets tools for its specific role.
+    P1 (tools define boundaries): an agent cannot perform operations
+    outside its registered tool contracts.
+    """
     from src.application.context import ContextManager
     from src.domain.pipeline import Pipeline, PipelineStep
     from src.domain.subagent import AgentRole, PipelineStage
+    from src.domain.tool_contract import build_agent_registry
     from src.application.subagents.codegen import CodeGenAgent
     from src.application.subagents.metric_analysis import MetricAnalysisAgent
     from src.application.subagents.planner import PlannerAgent
@@ -484,36 +490,45 @@ def _build_pipeline(args, sandbox, registry, session):
 
     perm_mode = _map_permission_mode(args.mode)
 
-    # Planner
+    # P2: per-agent tool registries — agents can ONLY use their role's tools
+    planner_tools = {"read_file", "write_file"}
+    codegen_tools = {"compile_cuda", "execute_binary", "write_file", "read_file"}
+    metric_tools = {"run_ncu", "read_file"}
+    verification_tools = {"read_file"}  # read-only evidence review (P7)
+
+    planner_reg = build_agent_registry(planner_tools)
+    codegen_reg = build_agent_registry(codegen_tools)
+    metric_reg = build_agent_registry(metric_tools)
+    verification_reg = build_agent_registry(verification_tools)
+
+    # Planner — global coordinator, task decomposition only
     planner = PlannerAgent(
         context_manager=ContextManager(max_tokens=args.max_tokens),
-        tool_registry=registry,
+        tool_registry=planner_reg,
         state_dir=args.state_dir,
         permission_mode=perm_mode,
     )
 
-    # Code generator
+    # CodeGen — write CUDA, compile, execute, parse output
     code_gen = CodeGenAgent(
         context_manager=ContextManager(max_tokens=args.max_tokens),
-        tool_registry=registry,
+        tool_registry=codegen_reg,
         state_dir=args.state_dir,
         permission_mode=perm_mode,
         sandbox=sandbox,
     )
 
-    # Metric analyst
+    # MetricAnalysis — NCU profiling, bottleneck identification
     metric_analysis = MetricAnalysisAgent(
         context_manager=ContextManager(max_tokens=args.max_tokens),
-        tool_registry=registry,
+        tool_registry=metric_reg,
         state_dir=args.state_dir,
         permission_mode=perm_mode,
     )
 
-    # Verification (clean context — P7)
-    # Note: VerificationAgent always creates its own fresh ContextManager
-    # to enforce P7 (generation/evaluation separation)
+    # Verification — independent review, read-only (P7)
     verification = VerificationAgent(
-        tool_registry=registry,
+        tool_registry=verification_reg,
         state_dir=args.state_dir,
         permission_mode=perm_mode,
         max_tokens=args.max_tokens,

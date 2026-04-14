@@ -115,9 +115,33 @@ def build_standard_registry(
     P5: disabled tools are eliminated at build time — they are never
     registered and therefore cannot be looked up at runtime.
     """
+    return build_agent_registry(
+        {"run_ncu", "compile_cuda", "execute_binary", "read_file", "write_file",
+         "generate_microbenchmark", "kaggle_push"},
+        disabled_tools=disabled_tools,
+    )
+
+
+def build_agent_registry(
+    allowed_tools: set[str],
+    disabled_tools: set[str] | None = None,
+) -> ToolRegistry:
+    """Build a tool registry for a specific agent role.
+
+    P2 (fail-closed): agents can ONLY use tools explicitly allowed for their role.
+    P1 (tools define boundaries): an agent cannot invent behaviors outside its
+    registered tool contracts.
+
+    Agent tool assignments per spec.md §5.1:
+    - Planner: read_file, write_file (coordination only)
+    - CodeGen: compile_cuda, execute_binary, write_file, read_file
+    - MetricAnalysis: run_ncu, read_file
+    - Verification: read_file (evidence review only)
+    """
     disabled = disabled_tools or set()
     registry = ToolRegistry(disabled_tools=disabled)
-    contracts = [
+
+    all_contracts = [
         ToolContract(
             name="run_ncu",
             description="Execute NVIDIA Nsight Compute analysis on a target binary",
@@ -203,5 +227,12 @@ def build_standard_registry(
         ),
     ]
 
-    registry.register_bulk(contracts)
+    # P2: only register tools allowed for this agent role
+    for contract in all_contracts:
+        if contract.name not in allowed_tools:
+            continue  # P2: tool is compile-time eliminated for this agent
+        if contract.name in disabled:
+            continue  # P5: disabled tools eliminated at build time
+        registry.register(contract)
+
     return registry

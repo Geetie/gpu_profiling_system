@@ -219,7 +219,11 @@ class Pipeline:
         tool_guidance = ""
         if stage_name == PipelineStage.CODE_GEN.value:
             tool_guidance = (
-                f"\n\nWORKFLOW: For each target in the task list:\n"
+                f"\n\nYOUR TOOLS: compile_cuda, execute_binary, write_file, read_file\n"
+                f"YOUR JOB: Write CUDA code → compile → execute → report values\n"
+                f"DO NOT: run ncu (that's MetricAnalysis's job)\n"
+                f"DO NOT: verify results (that's Verification's job)\n\n"
+                f"WORKFLOW: For each target in the task list:\n"
                 f"1. compile_cuda(source=\"...full .cu code...\", flags=[\"-O3\", \"-arch=sm_XX\"])\n"
                 f"2. execute_binary(binary_path=\"./benchmark\")\n"
                 f"3. Parse the output for 'target_name: numeric_value'\n"
@@ -228,8 +232,16 @@ class Pipeline:
             )
         elif stage_name == PipelineStage.METRIC_ANALYSIS.value:
             tool_guidance = (
-                f"\n\nWORKFLOW: Parse CodeGen output, extract numeric metrics, "
-                f"assess confidence. Use read_file if evidence files exist."
+                f"\n\nYOUR TOOLS: run_ncu, read_file\n"
+                f"YOUR JOB: Profile CodeGen's binaries with ncu → analyze bottlenecks → extract metrics\n"
+                f"DO NOT: write/compile CUDA code (that's CodeGen's job)\n"
+                f"DO NOT: verify results (that's Verification's job)\n\n"
+                f"WORKFLOW:\n"
+                f"1. Read CodeGen's output and identify compiled binary paths\n"
+                f"2. Use run_ncu on each binary to get hardware performance counters\n"
+                f"3. Parse ncu output: sm__throughput, dram__throughput, occupancy, etc.\n"
+                f"4. Classify bottleneck: compute_bound, memory_bound, latency_bound, cache_capacity\n"
+                f"5. Report metrics with confidence levels"
             )
         elif stage_name == PipelineStage.VERIFICATION.value:
             tool_guidance = (
@@ -318,24 +330,40 @@ class Pipeline:
                 )
 
         elif stage_name == PipelineStage.METRIC_ANALYSIS.value:
-            # MetricAnalysis receives CodeGen's raw output + parsed data
+            # MetricAnalysis profiles CodeGen's binaries with ncu
             code_gen_data = prev_result.get("data", {})
             raw_outputs = {}
+            binary_paths = []
+            for tr in code_gen_data.get("tool_results", []):
+                if tr.get("binary_path"):
+                    binary_paths.append(tr["binary_path"])
             for key, val in code_gen_data.items():
                 if isinstance(val, str):
                     raw_outputs[key] = val[:1000]
 
+            binary_info = f"Compiled binaries found: {len(binary_paths)}"
+            if binary_paths:
+                binary_info += "\nPaths:\n" + "\n".join(f"  - {p}" for p in binary_paths)
+
             return (
-                f"You are analyzing GPU micro-benchmark results.\n\n"
-                f"Benchmark output from CodeGen stage:\n"
+                f"You are the Metric Analysis Agent.\n\n"
+                f"YOUR JOB: Profile compiled binaries with Nsight Compute (ncu) and analyze results.\n\n"
+                f"{binary_info}\n\n"
+                f"CodeGen benchmark output:\n"
                 f"{_json.dumps(raw_outputs, indent=2, ensure_ascii=False)[:2000]}\n\n"
                 f"YOUR TASK:\n"
-                f"1. Parse the raw output — extract all numeric metrics (latency cycles, "
-                f"bandwidth GB/s, cache size MB, clock MHz, SM count, etc.)\n"
-                f"2. For each metric: identify the target name and measured value\n"
-                f"3. Assess confidence: high (>3 trials, consistent), medium (1-2 trials), "
-                f"low (single run, high variance)\n"
-                f"4. Check for anomalies: negative values, zero cycles, implausible ranges\n\n"
+                f"1. For each compiled binary, use run_ncu tool to profile it\n"
+                f"2. Key metrics to collect:\n"
+                f"   - sm__throughput.avg.pct_of_peak_sustained_elapsed (compute utilization)\n"
+                f"   - gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed (memory BW)\n"
+                f"   - dram__throughput.avg.pct_of_peak_sustained_elapsed (VRAM BW)\n"
+                f"   - sm__pipe_tensor_op_hmma_cycle_active.avg.pct_of_peak_sustained_active (tensor cores)\n"
+                f"   - sm__warps_active.avg.pct_of_peak_sustained_active (occupancy)\n"
+                f"   - l1tex__t_sectors_pipe_lsu_mem_global_op_ld (L1 cache sectors)\n"
+                f"   - l2__throughput.avg.pct_of_peak_sustained_elapsed (L2 throughput)\n"
+                f"3. Roofline analysis: if memory BW % > compute %, memory-bound; else compute-bound\n"
+                f"4. Classify bottleneck for each measurement\n"
+                f"5. Report metrics with confidence levels\n\n"
                 f"EXPECTED RANGES (for reference):\n"
                 f"- L1 latency: 50-300 cycles, L2: 100-500, DRAM: 300-1000\n"
                 f"- L2 cache: 2-100 MB (power of 2 typically)\n"
@@ -344,7 +372,7 @@ class Pipeline:
                 f"- SM count: 8-256\n"
                 f"- Shared memory per block: 48-164 KB\n\n"
                 f"Return: for each metric, the target name, measured value, confidence, "
-                f"and whether it passes sanity check."
+                f"and bottleneck classification."
             )
 
         elif stage_name == PipelineStage.VERIFICATION.value:
