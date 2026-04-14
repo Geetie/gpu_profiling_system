@@ -57,11 +57,12 @@ __global__ void measure_latency_kernel(
     __threadfence();
 
     // Main measurement: count cycles for N traversals
-    unsigned long long start = clock();
+    // clock64() works on all architectures (clock() returns 0 under PTX JIT)
+    unsigned long long start = clock64();
     for (int i = 0; i < {iterations}; i++) {{
         idx = d_chain[idx % array_size];
     }}
-    unsigned long long end = clock();
+    unsigned long long end = clock64();
 
     d_cycles[0] = end - start;
     d_cycles[1] = idx;  // prevent dead-code elimination
@@ -154,11 +155,11 @@ __global__ void sweep_kernel(
     }}
     __threadfence();
 
-    unsigned long long start = clock();
+    unsigned long long start = clock64();
     for (int i = 0; i < iterations; i++) {{
         idx = d_chain[idx % size];
     }}
-    unsigned long long end = clock();
+    unsigned long long end = clock64();
 
     d_cycles[0] = end - start;
     d_cycles[1] = idx;
@@ -243,11 +244,11 @@ __global__ void clock_cal_kernel(
     }}
     __threadfence();
 
-    unsigned long long start = clock();
+    unsigned long long start = clock64();
     for (int i = 0; i < iterations; i++) {{
         idx = d_chain[idx % size];
     }}
-    unsigned long long end = clock();
+    unsigned long long end = clock64();
 
     d_cycles[0] = end - start;
     d_cycles[1] = idx;
