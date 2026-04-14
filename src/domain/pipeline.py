@@ -1,14 +1,20 @@
 """Pipeline orchestrator — domain layer.
 
 Coordinates the sequential execution of sub-agents with P7 enforcement,
-retry support, and persistence hooks.
+retry support, persistence hooks, and harness engineering guardrails.
 
 Each stage runs inside an AgentLoop, enabling LLM-driven iteration:
 model calls tool → sees result → retries/refines → calls next tool → ...
 until the model signals completion or max turns reached.
+
+Harness engineering extensions:
+- Handoff validation at every stage boundary
+- Circuit breaker for progressive degradation detection
+- Per-stage timing for audit reporting
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -45,6 +51,11 @@ class Pipeline:
     P7 enforcement:
     - VerificationAgent must have an empty ContextManager before execution.
     - The pipeline checks this explicitly and raises P7ViolationError.
+
+    Harness engineering extensions:
+    - handoff_validator: validates stage outputs against contracts
+    - circuit_breaker: detects progressive degradation and trips circuit
+    - audit_report: collects execution metrics for post-run analysis
     """
 
     def __init__(
@@ -54,6 +65,8 @@ class Pipeline:
         sandbox=None,
         tool_handlers: dict | None = None,
         max_turns_per_stage: int = 15,
+        handoff_validator=None,  # HandoffValidator | None
+        circuit_breaker=None,    # CircuitBreaker | None
     ) -> None:
         self._stages = stages
         self._state_dir = state_dir
@@ -61,6 +74,8 @@ class Pipeline:
         self._sandbox = sandbox
         self._tool_handlers = tool_handlers or {}
         self._max_turns_per_stage = max_turns_per_stage
+        self._handoff_validator = handoff_validator
+        self._circuit_breaker = circuit_breaker
 
     def run(self, target_spec: dict[str, Any]) -> SubAgentResult:
         """Execute the full pipeline.
@@ -76,13 +91,49 @@ class Pipeline:
 
         prev_result: SubAgentResult | None = None
         code_gen_data: dict | None = None  # Preserve CodeGen measurements for final output
+        prev_stage: PipelineStage | None = None
 
         for step in self._stages:
+            stage_start = time.monotonic()
+
             # P7 gate
             self._check_p7(step.stage, prev_result)
 
+            # Harness: validate handoff from previous stage
+            if prev_stage is not None and self._handoff_validator is not None and prev_result is not None:
+                handoff = self._handoff_validator.validate(
+                    prev_stage, step.stage, prev_result
+                )
+                self._persister.log_entry(
+                    "handoff_validation",
+                    details={
+                        "from": handoff.from_stage,
+                        "to": handoff.to_stage,
+                        "is_valid": handoff.is_valid,
+                        "errors": len(handoff.errors),
+                        "warnings": len(handoff.warnings),
+                    },
+                )
+                if not handoff.is_valid:
+                    # Log errors but allow pipeline to continue (stage may still work)
+                    for v in handoff.errors:
+                        self._persister.log_entry(
+                            "handoff_error",
+                            details={"stage": v.stage, "field": v.field, "message": v.message},
+                        )
+
+            # Harness: check circuit breaker before executing stage
+            if self._circuit_breaker is not None and self._circuit_breaker.is_open:
+                return SubAgentResult(
+                    agent_role=step.agent.role,
+                    status=SubAgentStatus.FAILED,
+                    error=f"Circuit breaker open: {self._circuit_breaker._state.trip_reason}",
+                )
+
             # Execute with retries
             result = self._execute_stage(step, prev_result, target_spec)
+
+            stage_duration = time.monotonic() - stage_start
 
             if result.is_failed():
                 self._persister.log_entry(
@@ -90,15 +141,30 @@ class Pipeline:
                     details={
                         "stage": step.stage.value,
                         "error": result.error,
+                        "duration_seconds": round(stage_duration, 2),
                     },
                 )
                 return result
+
+            # Harness: score stage quality on circuit breaker
+            if self._circuit_breaker is not None and self._handoff_validator is not None:
+                handoff = self._handoff_validator.validate(
+                    step.stage, step.stage, result
+                )
+                self._circuit_breaker.score_stage(
+                    stage=step.stage.value,
+                    handoff_errors=len(handoff.errors),
+                    handoff_warnings=len(handoff.warnings),
+                    had_output=bool(result.data.get("final_output")),
+                    tool_calls_made=result.data.get("num_tool_calls", 0),
+                )
 
             # Preserve CodeGen measurements for final result assembly
             if step.stage == PipelineStage.CODE_GEN and result.is_success():
                 code_gen_data = dict(result.data)
 
             prev_result = result
+            prev_stage = step.stage
 
         # Bubble up CodeGen measurements to final result
         if code_gen_data and prev_result and prev_result.is_success():
@@ -225,10 +291,18 @@ class Pipeline:
                 f"DO NOT: verify results (that's Verification's job)\n\n"
                 f"WORKFLOW: For each target in the task list:\n"
                 f"1. compile_cuda(source=\"...full .cu code...\", flags=[\"-O3\", \"-arch=sm_XX\"])\n"
-                f"2. execute_binary(binary_path=\"./benchmark\")\n"
+                f"2. execute_binary(binary_path=\"<path_from_compile_cuda>\")\n"
                 f"3. Parse the output for 'target_name: numeric_value'\n"
-                f"4. If compilation fails or output is invalid, fix the code and retry\n"
-                f"5. After all targets are done, report all measured values"
+                f"4. If compilation fails: read the error, fix the code, retry (max 3 retries)\n"
+                f"5. If execution fails: check binary path, fix, recompile\n"
+                f"6. After all targets are done, report all measured values\n\n"
+                f"ERROR RECOVERY:\n"
+                f"- Compilation error → fix source code → retry compile_cuda\n"
+                f"- Execution error → fix binary path or code → recompile → retry\n"
+                f"- Implausible output (0, negative) → fix measurement logic → retry\n"
+                f"- Each target gets its own source file — do NOT combine targets\n\n"
+                f"PER-TARGET ISOLATION: process targets one at a time. If one fails,\n"
+                f"continue with the remaining targets. Report which succeeded and which failed."
             )
         elif stage_name == PipelineStage.METRIC_ANALYSIS.value:
             tool_guidance = (
@@ -241,12 +315,24 @@ class Pipeline:
                 f"2. Use run_ncu on each binary to get hardware performance counters\n"
                 f"3. Parse ncu output: sm__throughput, dram__throughput, occupancy, etc.\n"
                 f"4. Classify bottleneck: compute_bound, memory_bound, latency_bound, cache_capacity\n"
-                f"5. Report metrics with confidence levels"
+                f"5. Report metrics with confidence levels (high=ncu confirmed, medium=some data, low=printf only)\n\n"
+                f"IF NCU IS NOT AVAILABLE: analyze the raw printf output from CodeGen.\n"
+                f"Report confidence as 'low' with note 'ncu not available'."
             )
         elif stage_name == PipelineStage.VERIFICATION.value:
             tool_guidance = (
-                f"\n\nWORKFLOW: Review all previous stage data independently. "
-                f"Use read_file to check evidence files. State ACCEPT or REJECT."
+                f"\n\nYOUR TOOL: read_file ONLY\n"
+                f"YOUR JOB: Independently review all previous stage results\n"
+                f"You CANNOT: compile, execute, profile, write files, or generate measurements\n\n"
+                f"WORKFLOW: Review all previous stage data independently.\n"
+                f"Use read_file to check evidence files. State ACCEPT or REJECT.\n\n"
+                f"VERIFICATION CHECKS (perform in order):\n"
+                f"1. Data completeness — are ALL targets measured?\n"
+                f"2. Numeric sanity — are values in plausible GPU hardware ranges?\n"
+                f"3. Latency hierarchy — L1 < L2 < DRAM (when both measured)\n"
+                f"4. Cross-validation — do CodeGen and MetricAnalysis agree?\n"
+                f"5. Methodology soundness — were correct techniques used?\n\n"
+                f"State your verdict as: Verdict: ACCEPT or Verdict: REJECT"
             )
 
         return (
@@ -288,19 +374,36 @@ class Pipeline:
                     f"You must generate and execute CUDA micro-benchmarks for "
                     f"{len(tasks_list)} targets:\n\n{task_summary}\n\n"
                     f"PROCESS EACH TARGET ONE BY ONE:\n"
-                    f"1. Pick the first target from the list above\n"
+                    f"1. Pick the next target from the list\n"
                     f"2. Read its design guide below\n"
                     f"3. Write complete CUDA C++ source code\n"
+                    f"   - Use clock64() for cycle timing (NOT clock() — returns 0 on Pascal+)\n"
+                    f"   - Prevent dead code elimination: write results to volatile output pointer\n"
+                    f"   - Use cudaDeviceSynchronize() before reading device-side results\n"
+                    f"   - Run 1 warm-up iteration before timing\n"
                     f"4. Use compile_cuda to compile\n"
-                    f"5. Use execute_binary to run\n"
-                    f"6. Parse the numeric output\n"
-                    f"7. Move to the next target\n\n"
+                    f"5. If compile fails: FIX the code and retry (max 3 retries per target)\n"
+                    f"6. Use execute_binary to run\n"
+                    f"7. Parse the numeric output for 'target_name: numeric_value'\n"
+                    f"8. If output is 0, negative, or implausible: fix code and retry\n"
+                    f"9. Move to the next target\n\n"
                     f"CODING RULES:\n"
-                    f"- Use clock64() for cycle timing (NOT clock())\n"
-                    f"- Use cudaEventElapsedTime for wall-clock timing\n"
-                    f"- Each binary must output: target_name: numeric_value\n"
+                    f"- Use clock64() for cycle timing (NOT clock() — returns 0 on Pascal+)\n"
+                    f"- Use cudaEventElapsedTime for wall-clock timing (bandwidth, frequency)\n"
+                    f"- Prevent compiler dead code elimination (volatile output or asm volatile)\n"
+                    f"- Synchronize before reading: cudaDeviceSynchronize() or cudaEventSynchronize()\n"
+                    f"- Each binary outputs: target_name: numeric_value\n"
                     f"- Include: cuda_runtime.h, main(), cudaMalloc, cudaMemcpy, kernel launch\n"
-                    f"- Detect GPU arch: compile with -arch=sm_XX (from nvidia-smi, e.g. sm_60)\n\n"
+                    f"- Detect GPU arch: compile with -arch=sm_XX (from nvidia-smi, e.g. sm_60)\n"
+                    f"- Run 3 trials, report median\n\n"
+                    f"ERROR RECOVERY:\n"
+                    f"- If a target fails after 3 retries: report the failure and continue\n"
+                    f"- Do NOT let one failed target block the rest\n\n"
+                    f"SELF-CORRECTION CHECKLIST (before final answer):\n"
+                    f"- Every target has a numeric value (no zeros, no negatives for latency/bandwidth)\n"
+                    f"- Values are plausible (DRAM latency 300-1000, SM count 8-256, etc.)\n"
+                    f"- Used clock64() NOT clock()? Prevented dead code elimination? Synchronized?\n"
+                    f"- If implausible: re-examine the code and retry\n\n"
                     f"DESIGN GUIDES (one per target):\n\n{all_design}"
                 )
             else:
@@ -317,7 +420,7 @@ class Pipeline:
                     f"{design_guide}\n\n"
                     f"Steps:\n"
                     f"1. Write complete CUDA C++ source code implementing the above design\n"
-                    f"   - Use clock64() for cycle timing (NOT clock())\n"
+                    f"   - Use clock64() for cycle timing (NOT clock() — returns 0 on Pascal+)\n"
                     f"   - Use cudaEventElapsedTime for wall-clock timing when needed\n"
                     f"   - Output parseable key: value pairs via printf\n"
                     f"   - Include: cuda_runtime.h, main(), cudaMalloc, cudaMemcpy, kernel launch\n"
@@ -334,36 +437,67 @@ class Pipeline:
             code_gen_data = prev_result.get("data", {})
             raw_outputs = {}
             binary_paths = []
+            measurements = {}
             for tr in code_gen_data.get("tool_results", []):
+                if not isinstance(tr, dict):
+                    continue
                 if tr.get("binary_path"):
                     binary_paths.append(tr["binary_path"])
+                if tr.get("stdout"):
+                    raw_outputs[f"stdout_{len(raw_outputs)}"] = tr["stdout"][:1000]
+                if tr.get("output"):
+                    raw_outputs[f"compile_{len(raw_outputs)}"] = tr["output"][:500]
+            # Also capture direct measurements if present
             for key, val in code_gen_data.items():
-                if isinstance(val, str):
-                    raw_outputs[key] = val[:1000]
+                if isinstance(val, dict) and key == "measurements":
+                    measurements = val
 
             binary_info = f"Compiled binaries found: {len(binary_paths)}"
             if binary_paths:
                 binary_info += "\nPaths:\n" + "\n".join(f"  - {p}" for p in binary_paths)
 
+            measurements_info = ""
+            if measurements:
+                measurements_info = (
+                    f"\n\nCodeGen reported measurements:\n"
+                    + "\n".join(f"  - {k}: {v}" for k, v in sorted(measurements.items()))
+                )
+
             return (
                 f"You are the Metric Analysis Agent.\n\n"
                 f"YOUR JOB: Profile compiled binaries with Nsight Compute (ncu) and analyze results.\n\n"
-                f"{binary_info}\n\n"
-                f"CodeGen benchmark output:\n"
+                f"{binary_info}{measurements_info}\n\n"
+                f"CodeGen raw output:\n"
                 f"{_json.dumps(raw_outputs, indent=2, ensure_ascii=False)[:2000]}\n\n"
                 f"YOUR TASK:\n"
                 f"1. For each compiled binary, use run_ncu tool to profile it\n"
-                f"2. Key metrics to collect:\n"
-                f"   - sm__throughput.avg.pct_of_peak_sustained_elapsed (compute utilization)\n"
-                f"   - gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed (memory BW)\n"
-                f"   - dram__throughput.avg.pct_of_peak_sustained_elapsed (VRAM BW)\n"
-                f"   - sm__pipe_tensor_op_hmma_cycle_active.avg.pct_of_peak_sustained_active (tensor cores)\n"
-                f"   - sm__warps_active.avg.pct_of_peak_sustained_active (occupancy)\n"
-                f"   - l1tex__t_sectors_pipe_lsu_mem_global_op_ld (L1 cache sectors)\n"
-                f"   - l2__throughput.avg.pct_of_peak_sustained_elapsed (L2 throughput)\n"
-                f"3. Roofline analysis: if memory BW % > compute %, memory-bound; else compute-bound\n"
-                f"4. Classify bottleneck for each measurement\n"
-                f"5. Report metrics with confidence levels\n\n"
+                f"2. Key metrics to collect (organized by profiling section):\n"
+                f"   a) SM Throughput: sm__throughput.avg.pct_of_peak_sustained_elapsed\n"
+                f"   b) Memory Throughput: dram__throughput.avg.pct_of_peak_sustained_elapsed\n"
+                f"   c) L2 Throughput: l2__throughput.avg.pct_of_peak_sustained_elapsed\n"
+                f"   d) Warp Occupancy: sm__warps_active.avg.pct_of_peak_sustained_active\n"
+                f"   e) Bank Conflicts: l1tex__data_bank_conflicts.avg.per_request\n"
+                f"   f) L2 Hit Rate: l2__hit_rate.pct\n"
+                f"   g) Achieved Occupancy: sm__achived_occupancy.avg.pct_of_peak_sustained_occupancy\n\n"
+                f"3. BOTTLENECK CLASSIFICATION (roofline analysis):\n"
+                f"   - If dram__throughput% > sm__throughput% → memory_bound\n"
+                f"   - If sm__throughput% > dram__throughput% → compute_bound\n"
+                f"   - If both low (<30%) AND sm__warps_active% <20% → latency_bound\n"
+                f"   - If L2 hit rate <20% AND working set large → cache_capacity\n\n"
+                f"4. CROSS-VALIDATE against CodeGen measurements:\n"
+                f"   - Compare CodeGen's printf values with ncu hardware counter data\n"
+                f"   - If they disagree: report both values and explain the discrepancy\n"
+                f"   - If ncu confirms CodeGen: confidence = 'high'\n\n"
+                f"5. If ncu is NOT available: analyze CodeGen printf data only\n"
+                f"   - Check internal consistency (latency hierarchy: L1 < L2 < DRAM)\n"
+                f"   - Report confidence = 'low' with note 'ncu not available'\n\n"
+                f"OUTPUT FORMAT:\n"
+                f"For each measurement:\n"
+                f"  target_name: measured_value (confidence: high/medium/low) [bottleneck_type]\n\n"
+                f"Confidence levels:\n"
+                f"- high: ncu profiling confirms the value + metrics are internally consistent\n"
+                f"- medium: ncu profiling available but partial, OR printf consistent across trials\n"
+                f"- low: only CodeGen printf output, no ncu confirmation\n\n"
                 f"EXPECTED RANGES (for reference):\n"
                 f"- L1 latency: 50-300 cycles, L2: 100-500, DRAM: 300-1000\n"
                 f"- L2 cache: 2-100 MB (power of 2 typically)\n"
@@ -371,8 +505,9 @@ class Pipeline:
                 f"- SM clock: 1000-2500 MHz\n"
                 f"- SM count: 8-256\n"
                 f"- Shared memory per block: 48-164 KB\n\n"
-                f"Return: for each metric, the target name, measured value, confidence, "
-                f"and bottleneck classification."
+                f"TRUST MODEL: Do NOT blindly trust CodeGen's conclusions.\n"
+                f"Verify against raw ncu output. If ncu is not available, analyze printf output\n"
+                f"and report confidence as 'low'. Report which ncu metrics support each classification."
             )
 
         elif stage_name == PipelineStage.VERIFICATION.value:
@@ -383,18 +518,34 @@ class Pipeline:
                 f"Review from first principles using GPU hardware knowledge.\n\n"
                 f"Previous stage data:\n"
                 f"{_json.dumps(prev_result.get('data', {}), indent=2, ensure_ascii=False)[:2000]}\n\n"
-                f"VERIFICATION CHECKS (perform each):\n"
-                f"1. DATA COMPLETENESS: Are all requested targets measured? Any missing?\n"
+                f"VERIFICATION CHECKS (perform in order):\n\n"
+                f"1. DATA COMPLETENESS: Are ALL requested targets measured? Any missing?\n"
                 f"2. NUMERIC SANITY: Are values within plausible GPU hardware ranges?\n"
-                f"3. LATENCY HIERARCHY: DRAM latency > L2 latency > L1 latency?\n"
+                f"   - L1 latency: 50-300 cycles, L2: 100-500, DRAM: 300-1000\n"
+                f"   - DRAM bandwidth: 100-900 GB/s, SM count: 8-256\n"
+                f"3. LATENCY HIERARCHY: DRAM latency > L2 latency > L1 latency? (when available)\n"
                 f"4. L2 CAPACITY: Is it a power of 2 (2, 4, 8, 40, 50, 60, 72 MB)?\n"
-                f"5. BANDWIDTH: DRAM BW matches known GPU specs (±30%)?\n"
-                f"6. CLOCK FREQ: 1000-2500 MHz range?\n"
-                f"7. SM COUNT: Known configuration (56=P100, 108=A100, 256=H100, etc.)?\n"
-                f"8. SHARED MEMORY: 48 KB or 64 KB or 164 KB per block?\n"
-                f"9. BANK CONFLICTS: ratio >= 1.0 (strided >= sequential)?\n\n"
-                f"State clearly: ACCEPT (all checks pass) or REJECT (specify which failed).\n"
-                f"If REJECT: explain what needs to be re-measured."
+                f"5. CROSS-VALIDATION: Do CodeGen measurements agree with MetricAnalysis?\n"
+                f"   - If confidence is 'low': note why\n"
+                f"   - If values disagree: flag the discrepancy\n"
+                f"6. METHODOLOGY: Were correct techniques used?\n"
+                f"   - Latency: pointer-chasing with random permutation\n"
+                f"   - Bandwidth: STREAM copy\n"
+                f"   - SM count: cudaDeviceGetAttribute\n"
+                f"   - SHMEM capacity: cudaOccupancyMaxActiveBlocksPerMultiprocessor\n\n"
+                f"OUTPUT FORMAT:\n"
+                f"VERIFICATION REPORT\n"
+                f"==================\n"
+                f"1. Completeness: PASS/FAIL\n"
+                f"2. Numeric Sanity: PASS/FAIL\n"
+                f"3. Latency Hierarchy: PASS/FAIL/N/A\n"
+                f"4. Cross-validation: PASS/FAIL/PARTIAL\n"
+                f"5. Methodology: PASS/FAIL\n\n"
+                f"Verdict: ACCEPT — or —\n"
+                f"Verdict: REJECT\n"
+                f"  Reason: <specific reasons>\n\n"
+                f"ACCEPT if: all targets measured + values plausible + hierarchy holds\n"
+                f"REJECT if: missing targets + impossible values + hierarchy violation"
             )
 
         else:
@@ -632,12 +783,22 @@ class Pipeline:
         elif stage == PipelineStage.VERIFICATION:
             data["review_text"] = final_text[:2000]
             lower = final_text.lower()
-            # Use explicit phrases to avoid substring collisions (e.g., "invalid" contains "valid")
-            rejected = "reject" in lower or "not valid" in lower or "not accept" in lower
-            accepted = "accept" in lower and "reject" not in lower and "not valid" not in lower and "not accept" not in lower
-            if rejected and not accepted:
+            # Use word-boundary matching to avoid substring collisions
+            # (e.g., "acceptable" contains "accept", "unacceptable" contains "accept")
+            import re as _re
+            has_accept_word = bool(_re.search(r'\baccept(?:ed|ing)?\b', lower))
+            has_reject_word = bool(_re.search(r'\breject(?:ed|ing|ion)?\b', lower))
+            has_not_valid = "not valid" in lower or "is not valid" in lower
+            has_cannot_accept = "cannot accept" in lower or "do not accept" in lower or "don't accept" in lower
+            # Check for explicit verdict statements (highest priority)
+            verdict_accept = bool(_re.search(r'\bverdict\s*:\s*accept\b', lower))
+            verdict_reject = bool(_re.search(r'\bverdict\s*:\s*reject\b', lower))
+            if verdict_reject or has_reject_word or has_not_valid or has_cannot_accept:
                 status = SubAgentStatus.REJECTED
+            elif verdict_accept or has_accept_word:
+                status = SubAgentStatus.SUCCESS
             else:
+                # No clear verdict — default to SUCCESS (pipeline continues)
                 status = SubAgentStatus.SUCCESS
 
         else:
@@ -684,10 +845,16 @@ class Pipeline:
         sandbox=None,
         tool_handlers: dict | None = None,
         max_turns_per_stage: int = 15,
+        handoff_validator=None,  # HandoffValidator | None
+        circuit_breaker=None,    # CircuitBreaker | None
     ) -> Pipeline:
         """Build a standard pipeline with all 4 agents.
 
         Each stage runs inside an AgentLoop for LLM-driven iteration.
+
+        Harness engineering:
+        - handoff_validator: validates stage outputs against contracts
+        - circuit_breaker: detects progressive degradation
         """
         return cls(
             stages=[
@@ -704,6 +871,8 @@ class Pipeline:
             sandbox=sandbox,
             tool_handlers=tool_handlers,
             max_turns_per_stage=max_turns_per_stage,
+            handoff_validator=handoff_validator,
+            circuit_breaker=circuit_breaker,
         )
 
 

@@ -472,6 +472,21 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _build_handoff_validator():
+    """Build handoff validator for pipeline stage boundaries."""
+    from src.application.handoff_validation import HandoffValidator
+    return HandoffValidator()
+
+
+def _build_circuit_breaker():
+    """Build circuit breaker for progressive degradation detection."""
+    from src.application.circuit_breaker import CircuitBreaker
+    return CircuitBreaker(
+        degradation_threshold=3,
+        min_quality_threshold=0.3,
+    )
+
+
 def _build_pipeline(args, sandbox, registry, session):
     """Build a Pipeline with all 4 subagents wired to the sandbox.
 
@@ -543,6 +558,8 @@ def _build_pipeline(args, sandbox, registry, session):
         sandbox=sandbox,
         tool_handlers=_build_tool_handlers(sandbox),
         max_turns_per_stage=50,
+        handoff_validator=_build_handoff_validator(),
+        circuit_breaker=_build_circuit_breaker(),
     )
 
     # Wire LLM model callers to all subagents
@@ -645,15 +662,23 @@ def _write_results_json(result, target_spec, output_dir):
         artifacts = list(output.get("evidence", []))
 
         if result.data:
+            # Priority 1: structured measurements dict (from CodeGen extraction)
+            measurements = result.data.get("measurements", {})
+            if isinstance(measurements, dict):
+                for k, v in measurements.items():
+                    if isinstance(v, (int, float)):
+                        metrics[k] = v
+
+            # Priority 2: top-level numeric keys in result.data (backward compat)
             for key, value in result.data.items():
+                if key in ("measurements", "tool_results", "final_output",
+                           "code_gen_output", "analysis_method", "review_text",
+                           "plan_text", "analysis_output"):
+                    continue  # skip structured fields
                 if isinstance(value, (int, float)):
                     metrics[key] = value
                 elif isinstance(value, list):
                     artifacts.extend(str(v) for v in value)
-                elif isinstance(value, dict):
-                    for k2, v2 in value.items():
-                        if isinstance(v2, (int, float)):
-                            metrics[k2] = v2
 
         # Merge pipeline metrics (don't overwrite orchestrator measurements)
         for k, v in metrics.items():
@@ -683,6 +708,7 @@ def _write_results_json(result, target_spec, output_dir):
 
 def _run_pipeline_mode(args, sandbox):
     """Execute in multi-agent pipeline mode."""
+    from src.application.audit_report import PipelineAuditReport
     from src.application.context import ContextManager
     from src.application.control_plane import ControlPlane
     from src.application.session import SessionState
@@ -729,9 +755,16 @@ def _run_pipeline_mode(args, sandbox):
     # Wire LLM model caller to AgentLoop (fallback if subagents don't handle it)
     _try_wire_model_caller(agent_loop)
 
+    # Initialize audit report
+    audit = PipelineAuditReport()
+    audit.record_start()
+
     try:
         result = agent_loop.run_pipeline(pipeline, target_spec)
         from src.domain.subagent import SubAgentStatus
+
+        audit.record_end()
+        audit.set_final_result(result)
 
         if result.status == SubAgentStatus.SUCCESS:
             ui.show_message("Pipeline completed successfully")
@@ -773,13 +806,23 @@ def _run_pipeline_mode(args, sandbox):
                 )
         else:
             ui.show_tool_error("pipeline", result.error or "Unknown failure")
+            audit.record_error(result.error or "Unknown failure")
             return 1
     except KeyboardInterrupt:
         ui.show_message("Interrupted by user")
+        audit.record_error("Interrupted by user")
         return 1
     except Exception as e:
         ui.show_tool_error("pipeline", str(e))
+        audit.record_error(str(e))
         return 1
+
+    # Save audit report
+    output_dir = args.output_dir or os.getcwd()
+    audit_dir = os.path.join(output_dir, "audit")
+    os.makedirs(audit_dir, exist_ok=True)
+    json_path, md_path = audit.save(audit_dir)
+    ui.show_message(f"Audit report saved to: {audit_dir}/")
 
     return 0
 
