@@ -230,6 +230,8 @@ def configure_api(project_root: str) -> bool:
     provider_configs = {}
 
     if longcat_key and len(longcat_key) > 10:
+        # LongCat-Flash-Thinking has strongest reasoning — use for CodeGen
+        # (CUDA code generation needs deep reasoning capability)
         provider_configs = {
             "provider": "longcat",
             "env": {
@@ -238,15 +240,20 @@ def configure_api(project_root: str) -> bool:
                 "ANTHROPIC_API_KEY": "",
                 "ANTHROPIC_BASE_URL": "https://api.longcat.chat/openai/v1/chat/completions",
                 "ANTHROPIC_AUTH_TOKEN": longcat_key,
-                "ANTHROPIC_MODEL": "longcat-flash-chat",
-                "ANTHROPIC_REASONING_MODEL": "longcat-flash-chat",
+                # Main model: use thinking model for CodeGen
+                "ANTHROPIC_MODEL": "LongCat-Flash-Thinking-2601",
+                # Code model: use strongest reasoning model
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "LongCat-Flash-Thinking-2601",
+                # Planner/MetricAnalysis: can use regular model
                 "ANTHROPIC_DEFAULT_HAIKU_MODEL": "longcat-flash-chat",
-                "ANTHROPIC_DEFAULT_SONNET_MODEL": "longcat-flash-chat",
-                "ANTHROPIC_DEFAULT_OPUS_MODEL": "longcat-flash-chat",
+                # Verification: use thinking model
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": "LongCat-Flash-Thinking-2601",
+                "ANTHROPIC_REASONING_MODEL": "LongCat-Flash-Thinking-2601",
             },
             "label": "LongCat API",
         }
     elif dashscope_key and len(dashscope_key) > 10:
+        # qwen3.6-plus for general tasks, qwen3-coder-480b for code generation
         provider_configs = {
             "provider": "dashscope",
             "env": {
@@ -255,11 +262,14 @@ def configure_api(project_root: str) -> bool:
                 "ANTHROPIC_API_KEY": "",
                 "ANTHROPIC_BASE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
                 "ANTHROPIC_AUTH_TOKEN": dashscope_key,
-                "ANTHROPIC_MODEL": "qwen-max",
-                "ANTHROPIC_REASONING_MODEL": "qwen-max",
+                # Main model: qwen3.6-plus for Planner/MetricAnalysis
+                "ANTHROPIC_MODEL": "qwen3.6-plus",
+                # Code model: qwen3-coder — strongest for code generation
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "qwen3-coder-480b-a35b-instruct",
+                # Verification: use strongest reasoning model
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": "qwen3.6-plus",
+                "ANTHROPIC_REASONING_MODEL": "qwen3.6-plus",
                 "ANTHROPIC_DEFAULT_HAIKU_MODEL": "qwen-turbo",
-                "ANTHROPIC_DEFAULT_SONNET_MODEL": "qwen-plus",
-                "ANTHROPIC_DEFAULT_OPUS_MODEL": "qwen-max",
             },
             "label": "DashScope (Aliyun)",
         }

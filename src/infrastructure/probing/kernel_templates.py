@@ -489,7 +489,10 @@ def bank_conflict_kernel(
 #include <stdio.h>
 #include <cuda_runtime.h>
 
-extern __shared__ float shmem[];
+// volatile shared memory — prevents nvcc from hoisting reads out of loops
+// or caching values in registers. Every access generates an ld.shared
+// PTX instruction, which is what we need for bank conflict measurement.
+extern volatile __shared__ float shmem[];
 
 __global__ void bank_conflict_kernel(int size, int stride,
     unsigned long long* d_strided_cycles,
@@ -511,15 +514,12 @@ __global__ void bank_conflict_kernel(int size, int stride,
     // where all 256 threads queue on 1 bank. The measured ratio may exceed
     // the theoretical 32x because of inter-warp scheduling serialization.
     //
-    // Use asm volatile("bar.sync 0") as compiler barrier to prevent
-    // clock64() hoisting. Without this, nvcc -O3 optimizes the loop
-    // away and clock64() returns 0 difference.
+    // volatile shmem ensures every iteration generates actual memory reads.
+    // No asm volatile barrier needed — volatile memory accesses are
+    // compiler-ordering points by definition in CUDA.
     __syncthreads();
     {{
         volatile float sum = 0;
-        // Prevent clock64() hoisting: inline PTX barrier forces the compiler
-        // to treat everything between the two barriers as having side effects.
-        __asm__ __volatile__("bar.sync 0;");
         unsigned long long t0 = clock64();
         for (int iter = 0; iter < iterations; iter++) {{
             for (int i = 0; i < 32; i++) {{
@@ -528,8 +528,11 @@ __global__ void bank_conflict_kernel(int size, int stride,
             }}
         }}
         unsigned long long t1 = clock64();
-        __asm__ __volatile__("bar.sync 0;");
-        *d_strided_cycles = t1 - t0;
+        // Only thread 0 writes to avoid race conditions
+        if (tid == 0) {{
+            *d_strided_cycles = t1 - t0;
+            *d_seq_cycles = 0;  // will be set by sequential section
+        }}
         // Prevent dead-code elimination
         if (tid == 0) shmem[0] = sum;
     }}
@@ -538,7 +541,6 @@ __global__ void bank_conflict_kernel(int size, int stride,
     // Sequential access pattern (no conflicts) — timed with clock64()
     {{
         volatile float sum = 0;
-        __asm__ __volatile__("bar.sync 0;");
         unsigned long long t0 = clock64();
         for (int iter = 0; iter < iterations; iter++) {{
             for (int i = 0; i < 32; i++) {{
@@ -547,8 +549,10 @@ __global__ void bank_conflict_kernel(int size, int stride,
             }}
         }}
         unsigned long long t1 = clock64();
-        __asm__ __volatile__("bar.sync 0;");
-        *d_seq_cycles = t1 - t0;
+        // Only thread 0 writes to avoid race conditions
+        if (tid == 0) {{
+            *d_seq_cycles = t1 - t0;
+        }}
         if (tid == 0) shmem[0] = sum;
     }}
 }}
@@ -601,4 +605,4 @@ int main() {{
     return 0;
 }}
 """
-    return KernelSource(name="bank_conflict", source=source)
+    return KernelSource(name="bank_conflict", source=source, nvcc_flags=["-O0"])
