@@ -162,6 +162,10 @@ def configure_api():
     anthropic_key = get_kaggle_secret("ANTHROPIC_API_KEY") or ""
 
     if longcat_key and len(longcat_key) > 10:
+        # Also set env vars so ProviderManager.detect_provider() can find them
+        os.environ["LONGCAT_API_KEY"] = longcat_key
+        os.environ["DASHSCOPE_API_KEY"] = ""
+        os.environ["ANTHROPIC_API_KEY"] = ""
         env = {
             "ANTHROPIC_BASE_URL": "https://api.longcat.com/openaicompatible/api/v1/chat/completions",
             "ANTHROPIC_AUTH_TOKEN": longcat_key,
@@ -178,6 +182,9 @@ def configure_api():
         print("API configured from LONGCAT_API_KEY")
         return True
     elif dashscope_key and len(dashscope_key) > 10:
+        os.environ["LONGCAT_API_KEY"] = ""
+        os.environ["DASHSCOPE_API_KEY"] = dashscope_key
+        os.environ["ANTHROPIC_API_KEY"] = ""
         env = {
             "ANTHROPIC_BASE_URL": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
             "ANTHROPIC_AUTH_TOKEN": dashscope_key,
@@ -194,6 +201,9 @@ def configure_api():
         print("API configured from DASHSCOPE_API_KEY")
         return True
     elif anthropic_key and len(anthropic_key) > 30:
+        os.environ["LONGCAT_API_KEY"] = ""
+        os.environ["DASHSCOPE_API_KEY"] = ""
+        os.environ["ANTHROPIC_API_KEY"] = anthropic_key
         env = {
             "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
             "ANTHROPIC_AUTH_TOKEN": anthropic_key,
