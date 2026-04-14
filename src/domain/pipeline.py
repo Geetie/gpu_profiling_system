@@ -220,15 +220,28 @@ class Pipeline:
             category = task.get("category", "unknown")
             method = task.get("method", "custom micro-benchmark")
 
+            # Append design principles for specific targets
+            design_guide = _get_design_principle(target)
+
             return (
                 f"Generate and execute a CUDA micro-benchmark to measure '{target}'.\n"
                 f"Category: {category}\n"
                 f"Method: {method}\n\n"
+                f"{design_guide}\n\n"
                 f"Steps:\n"
-                f"1. Use compile_cuda to write and compile CUDA source code for the benchmark\n"
-                f"2. Use execute_binary to run the compiled benchmark\n"
-                f"3. Analyze the output and report the measured value\n\n"
-                f"Report the final measured value clearly."
+                f"1. Write complete CUDA C++ source code implementing the above design\n"
+                f"   - Use clock64() for cycle timing (NOT clock())\n"
+                f"   - Use cudaEventElapsedTime for wall-clock timing when needed\n"
+                f"   - Output parseable key: value pairs via printf\n"
+                f"   - Include: cuda_runtime.h, main(), cudaMalloc, cudaMemcpy, kernel launch\n"
+                f"2. Use compile_cuda tool to compile the CUDA source\n"
+                f"   - source: the full .cu source code string\n"
+                f"   - flags: [\"-O3\", \"-arch=sm_XX\"] (detect arch from nvidia-smi)\n"
+                f"3. Use execute_binary tool to run the compiled benchmark\n"
+                f"4. Parse the numeric output from printf results\n"
+                f"5. If results are invalid (0, negative, implausible), revise the code and retry\n\n"
+                f"Output the measured value with: {target}: <numeric_value>\n"
+                f"Also report: confidence (0.0-1.0), method_used, num_trials."
             )
 
         elif stage_name == PipelineStage.METRIC_ANALYSIS.value:
@@ -511,3 +524,96 @@ class Pipeline:
             tool_handlers=tool_handlers,
             max_turns_per_stage=max_turns_per_stage,
         )
+
+
+def _get_design_principle(target: str) -> str:
+    """Return design principle for a specific profiling target.
+
+    This is the design thinking injected into the CodeGen agent's prompt.
+    The agent generates CUDA code based on these principles — no hardcoded source.
+    """
+    principles: dict[str, str] = {
+        "dram_latency_cycles": (
+            "Design: Pointer-chasing with random permutation chains (LCG-seeded Knuth shuffle).\n"
+            "- Allocate 32M uint32_t indices (=128 MB, >> any L2), fill with random permutation\n"
+            "- Single thread follows chain: idx = next[idx] for 10M iterations\n"
+            "- Use clock64() to measure total cycles; latency = cycles / iterations\n"
+            "- Why random: hardware prefetchers detect strided patterns; random permutation defeats all prefetching\n"
+            "- Run 3 trials, report median cycles/access"
+        ),
+        "l2_latency_cycles": (
+            "Design: Pointer-chasing with 2 MB working set (512K uint32_t).\n"
+            "- Working set fits in L2 cache but exceeds L1 on all GPUs\n"
+            "- Same random permutation chain approach as DRAM latency\n"
+            "- Use clock64(); latency = total_cycles / iterations\n"
+            "- Expected: 100-500 cycles"
+        ),
+        "l1_latency_cycles": (
+            "Design: Pointer-chasing with 8 KB working set (2K uint32_t).\n"
+            "- Working set fits in all GPU L1 data caches\n"
+            "- Use clock64(); latency = total_cycles / iterations\n"
+            "- Expected: 50-300 cycles"
+        ),
+        "l2_cache_size_mb": (
+            "Design: Working-set sweep with pointer-chasing at 14 sizes.\n"
+            "- Sizes: 1, 2, 4, 8, 12, 16, 20, 24, 32, 40, 48, 64, 96, 128 MB\n"
+            "- At each size: run pointer-chasing, measure cycles/access with clock64()\n"
+            "- Detect 'cliff': the size where latency jumps >3x (L2 miss → DRAM)\n"
+            "- L2 size = last size before cliff (typically power of 2: 4, 8, 40, 50, 60, 72 MB)"
+        ),
+        "actual_boost_clock_mhz": (
+            "Design: SM clock cycles / wall-clock time.\n"
+            "- Kernel: 10M iterations of random permutation, measure total clock64() cycles\n"
+            "- Host timing: cudaEventElapsedTime (GPU-side wall-clock, NOT host clock)\n"
+            "- Record events before/after kernel, elapsed_us = cudaEventElapsedTime(stop, start)\n"
+            "- freq_MHz = total_cycles / elapsed_us\n"
+            "- Run 3 trials, report median frequency\n"
+            "- Expected: 1000-2500 MHz"
+        ),
+        "dram_bandwidth_gbps": (
+            "Design: STREAM copy — sequential memory write saturation.\n"
+            "- Kernel: dst[i] = src[i] for 32M floats (128 MB)\n"
+            "- Launch 65535 blocks to fully saturate memory bandwidth\n"
+            "- Use cudaEventElapsedTime for timing (GPU-side, more precise than host)\n"
+            "- BW = bytes_copied / elapsed_ns * 1e9 / 1e9 = bytes / ns = GB/s"
+        ),
+        "max_shmem_per_block_kb": (
+            "Design: CUDA occupancy API sweep — no timing needed.\n"
+            "- For each shmem size (1K, 2K, 4K, 8K, 16K, 32K, 48K, 64K, 96K, 100K):\n"
+            "  Call cudaOccupancyMaxActiveBlocksPerMultiprocessor with dummy kernel\n"
+            "- Max shmem where blocks_per_sm > 0 = per-block capacity\n"
+            "- This is a direct CUDA API query — most reliable probe in the suite"
+        ),
+        "bank_conflict_penalty_ratio": (
+            "Design: Shared memory bank conflict via strided vs sequential access.\n"
+            "- Use cudaEventElapsedTime (NOT clock64()) — bank conflicts are too fast for clock64()\n"
+            "- Run TWO separate kernel calls in same program:\n"
+            "  (a) Strided: thread t accesses shared_mem[t * 32] — all threads hit bank 0\n"
+            "  (b) Sequential: thread t accesses shared_mem[(t + offset) % 256] — one thread per bank\n"
+            "- 1 block, 256 threads, __shared__ uint32_t[256]\n"
+            "- ratio = strided_ms / sequential_ms (>1.0 means bank conflicts)\n"
+            "- Run 3 trials, report minimum ratio (eliminates noise)"
+        ),
+        "shmem_bandwidth_gbps": (
+            "Design: Cooperative shared memory read/write within single block.\n"
+            "- 1 block, 256 threads, __shared__ uint32_t[256]\n"
+            "- Each iteration: all threads cooperatively read + write shared memory\n"
+            "- Use cudaEventElapsedTime for timing\n"
+            "- BW = (iterations * 256 threads * 2 ops * 4 bytes) / elapsed_ns GB/s\n"
+            "- Note: this measures per-SM bandwidth (shared memory is per-SM resource)"
+        ),
+        "sm_count": (
+            "Design: cudaDeviceGetAttribute for MultiProcessorCount.\n"
+            "- Use cudaDeviceGetAttribute(&count, cudaDevAttrMultiProcessorCount, device)\n"
+            "- This directly queries hardware — NOT cudaGetDeviceProperties (can be virtualized)\n"
+            "- Also query: maxThreadsPerBlock, warpSize, maxThreadsPerMultiProcessor\n"
+            "- Print all values for cross-validation"
+        ),
+    }
+    return principles.get(target, (
+        f"Design: Custom micro-benchmark for '{target}'.\n"
+        "- Write a complete CUDA .cu file with proper includes and main()\n"
+        "- Use clock64() for cycle timing, cudaEventElapsedTime for wall-clock timing\n"
+        "- Output must be parseable: printf(\"key: value\\n\")\n"
+        "- Run multiple trials, report median"
+    ))

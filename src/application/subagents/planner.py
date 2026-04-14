@@ -93,7 +93,10 @@ class PlannerAgent(BaseSubAgent):
             f"Return a JSON array of task objects, each with: "
             f'"target", "category" (one of: latency_measurement, '
             f'capacity_measurement, clock_measurement, bandwidth_measurement, unknown), '
-            f'"method" (one sentence description of approach).'
+            f'"method" (detailed description of the measurement approach — '
+            f"include key techniques: pointer-chasing with random permutation, "
+            f"clock64() timing, cudaEventElapsedTime for wall-clock, working-set sweep, "
+            f"STREAM copy, occupancy API, etc.)."
         )
         messages = self.context_manager.to_messages()
         messages.append({"role": "user", "content": user_msg})
@@ -176,14 +179,35 @@ class PlannerAgent(BaseSubAgent):
         }
 
     def _suggest_method(self, target: str, category: str) -> str:
-        """Suggest a measurement method based on target category."""
+        """Suggest a measurement method based on target category.
+
+        Returns a detailed design methodology description that flows through
+        to the CodeGen agent's prompt (see pipeline.py _build_task_prompt).
+        The CodeGen agent uses this to write CUDA code from design principles.
+        """
         methods = {
-            "latency_measurement": "pointer-chasing kernel with stride variation",
-            "capacity_measurement": "working-set sweep with cache cliff detection",
-            "clock_measurement": "timing loop with hardware counter readback",
-            "bandwidth_measurement": "streaming load/store throughput test",
+            "latency_measurement": (
+                "pointer-chasing with random permutation chains (LCG-seeded Knuth shuffle), "
+                "clock64() for cycle timing, latency = total_cycles / iterations, "
+                "working set sized for target memory level"
+            ),
+            "capacity_measurement": (
+                "working-set sweep with pointer-chasing at multiple sizes "
+                "(1, 2, 4, 8, 16, 32, 64, 128 MB), detect latency cliff "
+                "where cycles/access jumps >3x (L2 miss → DRAM)"
+            ),
+            "clock_measurement": (
+                "SM clock cycles divided by wall-clock time: "
+                "kernel measures 10M iterations of random permutation with clock64(), "
+                "host measures elapsed microseconds with cudaEventElapsedTime, "
+                "freq_MHz = total_cycles / elapsed_us"
+            ),
+            "bandwidth_measurement": (
+                "STREAM copy (dst[i] = src[i]) with large arrays (32M floats = 128 MB), "
+                "cudaEventElapsedTime for timing, BW = bytes / elapsed_ns GB/s"
+            ),
         }
-        return methods.get(category, "custom micro-benchmark")
+        return methods.get(category, "custom micro-benchmark with clock64() timing and parseable printf output")
 
     def _route_task(self, task: dict[str, Any]) -> AgentRole:
         """Route a task to the appropriate specialist agent."""

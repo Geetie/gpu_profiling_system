@@ -2,6 +2,13 @@
 
 Operates in an isolated context with sandbox access for compilation
 and execution of generated code.
+
+The agent generates CUDA code from design principles (no hardcoded templates):
+1. Receives design methodology from prompt (see _build_system_prompt in subagent.py)
+2. LLM writes complete CUDA C++ source implementing the design
+3. compile_cuda tool compiles the source
+4. execute_binary tool runs the compiled binary
+5. Agent parses the numeric output and reports the measured value
 """
 from __future__ import annotations
 
@@ -21,7 +28,11 @@ from src.infrastructure.sandbox import LocalSandbox, SandboxConfig, SandboxRunne
 
 
 class CodeGenAgent(BaseSubAgent):
-    """Generates, compiles, and executes CUDA micro-benchmark kernels."""
+    """Generates, compiles, and executes CUDA micro-benchmark kernels.
+
+    Uses LLM to generate CUDA source code from design principles.
+    No hardcoded templates — the agent writes code based on methodology descriptions.
+    """
 
     def __init__(
         self,
@@ -61,7 +72,7 @@ class CodeGenAgent(BaseSubAgent):
             token_count=20,
         )
 
-        # Generate source code (via model caller or template)
+        # Generate source code via LLM (no template fallbacks)
         source_code = self._generate_kernel(target, category, method)
 
         # Compile and execute in sandbox
@@ -98,98 +109,21 @@ class CodeGenAgent(BaseSubAgent):
         return result
 
     def _generate_kernel(self, target: str, category: str, method: str) -> str:
-        """Generate CUDA kernel source code.
+        """Generate CUDA kernel source code via LLM.
 
-        Uses model caller if available, otherwise falls back to templates.
+        The LLM receives design principles in the system prompt and writes
+        complete CUDA C++ source code. There are no hardcoded templates.
         """
         if self._model_caller is not None:
             messages = self.context_manager.to_messages()
             return self._model_caller(messages)
 
-        # Fallback: generate a basic template kernel
-        return self._template_kernel(target, category, method)
-
-    def _template_kernel(self, target: str, category: str, method: str) -> str:
-        """Generate a template CUDA kernel when no model caller is available."""
-        templates = {
-            "latency_measurement": self._pointer_chasing_kernel,
-            "capacity_measurement": self._working_set_kernel,
-            "clock_measurement": self._timing_loop_kernel,
-            "bandwidth_measurement": self._stream_kernel,
-        }
-        generator = templates.get(category, self._generic_kernel)
-        return generator(target, method)
-
-    def _pointer_chasing_kernel(self, target: str, method: str) -> str:
-        return f"""// Pointer-chasing kernel for {target}
-// Method: {method}
-#include <cuda_runtime.h>
-
-__global__ void pointer_chase(uint32_t* next, uint32_t* latency) {{
-    uint32_t idx = threadIdx.x;
-    uint32_t start = idx;
-    uint32_t iterations = 100000;
-
-    clock_t t0 = clock();
-    for (uint32_t i = 0; i < iterations; i++) {{
-        idx = next[idx];
-    }}
-    clock_t t1 = clock();
-
-    latency[start] = t1 - t0;
-}}
-"""
-
-    def _working_set_kernel(self, target: str, method: str) -> str:
-        return f"""// Working-set sweep kernel for {target}
-// Method: {method}
-#include <cuda_runtime.h>
-
-__global__ void working_set(int* data, int* result, int size) {{
-    int idx = threadIdx.x + blockIdx.x * blockDim.x;
-    int sum = 0;
-    for (int stride = 1; stride < size; stride *= 2) {{
-        sum += data[(idx + stride) % size];
-    }}
-    result[idx] = sum;
-}}
-"""
-
-    def _timing_loop_kernel(self, target: str, method: str) -> str:
-        return f"""// Timing loop kernel for {target}
-// Method: {method}
-#include <cuda_runtime.h>
-
-__global__ void timing_loop(uint64_t* out) {{
-    clock_t t0 = clock();
-    for (volatile int i = 0; i < 1000000; i++) {{}}
-    clock_t t1 = clock();
-    out[threadIdx.x] = t1 - t0;
-}}
-"""
-
-    def _stream_kernel(self, target: str, method: str) -> str:
-        return f"""// Stream kernel for {target}
-// Method: {method}
-#include <cuda_runtime.h>
-
-__global__ void stream_copy(float* out, const float* in, int n) {{
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) {{
-        out[i] = in[i] * 2.0f + 1.0f;
-    }}
-}}
-"""
-
-    def _generic_kernel(self, target: str, method: str) -> str:
-        return f"""// Generic kernel for {target}
-// Method: {method}
-#include <cuda_runtime.h>
-
-__global__ void generic_kernel(int* out) {{
-    out[threadIdx.x] = threadIdx.x;
-}}
-"""
+        # No model caller — this is a critical error, not a template fallback
+        raise RuntimeError(
+            f"CodeGen requires LLM to generate CUDA code. "
+            f"No model caller configured for target '{target}'. "
+            f"The agent must write CUDA code from design principles — no templates available."
+        )
 
     def _compile(self, source_code: str) -> Any:
         """Compile CUDA source code in the sandbox.
