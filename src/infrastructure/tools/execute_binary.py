@@ -33,6 +33,7 @@ def execute_binary_handler(
 
     if not binary_path:
         return {
+            "status": "error",
             "stdout": "",
             "stderr": "No binary path specified",
             "return_code": -1,
@@ -40,6 +41,7 @@ def execute_binary_handler(
 
     if not os.path.isfile(binary_path):
         return {
+            "status": "error",
             "stdout": "",
             "stderr": f"Binary not found: {binary_path}",
             "return_code": -1,
@@ -61,12 +63,14 @@ def execute_binary_handler(
     except PermissionError as e:
         # INT-4 fix: sandbox path validation failed — return error dict
         return {
+            "status": "error",
             "stdout": "",
             "stderr": f"Permission denied: {e}",
             "return_code": -1,
         }
 
     return {
+        "status": "success" if result.return_code == 0 else "error",
         "stdout": result.stdout,
         "stderr": result.stderr,
         "return_code": result.return_code,

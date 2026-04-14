@@ -36,6 +36,7 @@ def compile_cuda_handler(
 
     if not source:
         return {
+            "status": "error",
             "success": False,
             "output": "",
             "errors": "No source code provided",
@@ -45,6 +46,7 @@ def compile_cuda_handler(
     nvcc_path = shutil.which("nvcc")
     if nvcc_path is None:
         return {
+            "status": "error",
             "success": False,
             "output": "",
             "errors": "nvcc not found in PATH",
@@ -60,11 +62,12 @@ def compile_cuda_handler(
     for f in flags:
         if not all(c.isalnum() or c in _SAFE_FLAG_CHARS for c in f):
             return {
-                "success": False,
-                "output": "",
-                "errors": f"Invalid compiler flag: {f!r}",
-                "binary_path": "",
-            }
+                    "status": "error",
+                    "success": False,
+                    "output": "",
+                    "errors": f"Invalid compiler flag: {f!r}",
+                    "binary_path": "",
+                }
         safe_flags.append(f)
 
     # INT-9 fix: compile inside sandbox so output binary is in sandbox root
@@ -83,6 +86,7 @@ def compile_cuda_handler(
         binary_path = os.path.join(runner.sandbox_root, binary_name)
 
     return {
+        "status": "success" if result.success else "error",
         "success": result.success,
         "output": result.stdout,
         "errors": result.stderr if not result.success else "",

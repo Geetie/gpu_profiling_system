@@ -299,20 +299,87 @@ class AgentLoop:
     def _parse_tool_call(self) -> ToolCall | None:
         """Parse a tool call from the model's output.
 
-        Expected format: {"tool": "name", "args": {...}}
+        Accepts:
+        1. Pure JSON: {"tool": "name", "args": {...}}
+        2. JSON with alternative keys: {"tool_name": "...", "arguments": {...}}
+        3. Markdown-wrapped JSON: ```json\n{...}\n``` or ```\n{...}\n```
+        4. Multiple JSON blocks — returns the first one with a tool name
         """
         if not self._model_output:
             return None
+
+        # Try parsing the full output as JSON first
+        parsed = self._try_parse_json(self._model_output)
+        if parsed:
+            result = self._extract_tool_call(parsed)
+            if result:
+                return result
+
+        # If not pure JSON, search for JSON blocks in the output
+        text = self._model_output
+        # Find content between ```json and ``` markers
+        import re
+        json_blocks = re.findall(r'```(?:json)?\s*\n(.*?)\n```', text, re.DOTALL)
+        for block in json_blocks:
+            parsed = self._try_parse_json(block)
+            if parsed:
+                result = self._extract_tool_call(parsed)
+                if result:
+                    return result
+
+        # Try finding standalone JSON objects in text
+        # Look for outermost { ... } pairs
+        depth = 0
+        start = None
+        for i, ch in enumerate(text):
+            if ch == '{':
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0 and start is not None:
+                    candidate = text[start:i+1]
+                    parsed = self._try_parse_json(candidate)
+                    if parsed:
+                        result = self._extract_tool_call(parsed)
+                        if result:
+                            return result
+                    start = None
+
+        return None
+
+    def _try_parse_json(self, text: str) -> dict | None:
+        """Try to parse text as JSON, return dict or None."""
         try:
-            data = json.loads(self._model_output)
-            if "tool" in data:
-                return ToolCall(
-                    name=data["tool"],
-                    arguments=data.get("args", {}),
-                )
+            data = json.loads(text)
+            if isinstance(data, dict):
+                return data
         except (json.JSONDecodeError, TypeError):
             pass
         return None
+
+    def _extract_tool_call(self, data: dict) -> ToolCall | None:
+        """Extract tool name and arguments from parsed JSON dict.
+
+        Supports multiple key naming conventions:
+        - "tool" or "tool_name" for the tool name
+        - "args", "arguments", or "params" for the arguments
+        """
+        # Find tool name
+        tool_name = data.get("tool") or data.get("tool_name")
+        if not tool_name:
+            return None
+
+        # Find arguments
+        arguments = (
+            data.get("args")
+            or data.get("arguments")
+            or data.get("params")
+            or {}
+        )
+
+        return ToolCall(name=tool_name, arguments=arguments)
 
     def _execute_tool_call(self, tool_call: ToolCall) -> dict[str, Any]:
         """Execute a tool call through the registry and executor hook.
