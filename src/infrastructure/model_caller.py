@@ -30,14 +30,14 @@ def _retry_request(url, headers, json_payload, max_retries=2, timeout=60):
             )
             print(f"[model_caller] Response status: {response.status_code}")
             if response.status_code in (429, 500, 502, 503, 504):
-                wait = min(2 ** attempt * 3, 30)  # 减少等待时间
+                wait = min(5 + attempt * 2, 10)  # 缩短等待时间到5-10秒
                 print(f"[model_caller] HTTP {response.status_code}, retrying in {wait}s ({attempt+1}/{max_retries})")
                 time.sleep(wait)
                 last_exc = RuntimeError(f"HTTP {response.status_code}: {response.text[:500]}")
                 continue
             return response
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
-            wait = min(2 ** attempt * 3, 30)  # 减少等待时间
+            wait = min(5 + attempt * 2, 10)  # 缩短等待时间到5-10秒
             print(f"[model_caller] Connection error: {type(e).__name__}, retrying in {wait}s ({attempt+1}/{max_retries})")
             time.sleep(wait)
             last_exc = e
