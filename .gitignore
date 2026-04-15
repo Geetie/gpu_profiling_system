@@ -31,3 +31,15 @@ config/api_config.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Kaggle output
+Kaggle*/
+
+# Audit reports
+audit/
+
+# Command logs
+.cmd_*.log
+
+# Agent logs
+agent_logs/
