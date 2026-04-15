@@ -176,28 +176,41 @@ def _wire_all_subagents(planner, code_gen, metric_analysis, verification) -> boo
     # even if the config token fails placeholder checks. make_model_caller()
     # does its own validation at actual call time.
 
+    # 尝试获取 provider_manager 以显示实际使用的提供商
+    provider_name = "unknown"
+    actual_model = "unknown"
+    try:
+        from src.infrastructure.provider_manager import get_provider_manager
+        provider_manager = get_provider_manager()
+        provider = provider_manager.get_provider()
+        if provider:
+            provider_name = provider.provider
+            actual_model = provider.get_model("default")
+    except Exception:
+        pass
+
     main_model = env.get("ANTHROPIC_MODEL", "qwen3.6-plus")
     code_model = env.get("ANTHROPIC_DEFAULT_SONNET_MODEL", main_model)
     reasoning_model = env.get("ANTHROPIC_REASONING_MODEL", main_model)
 
     # Planner: main model
     planner.set_model_caller(make_model_caller(model_name=main_model))
-    print(f"[llm] PlannerAgent -> {main_model}")
+    print(f"[llm] PlannerAgent -> {main_model} (Provider: {provider_name})")
 
     # CodeGen: code model
     code_gen.set_model_caller(make_model_caller(model_name=code_model))
-    print(f"[llm] CodeGenAgent -> {code_model}")
+    print(f"[llm] CodeGenAgent -> {code_model} (Provider: {provider_name})")
 
     # MetricAnalysis: main model
     metric_analysis.set_model_caller(make_model_caller(model_name=main_model))
-    print(f"[llm] MetricAnalysisAgent -> {main_model}")
+    print(f"[llm] MetricAnalysisAgent -> {main_model} (Provider: {provider_name})")
 
     # Verification: reasoning model (independent review needs deeper thinking)
     verification.set_model_caller(make_model_caller(
         model_name=reasoning_model,
         max_tokens=8192,
     ))
-    print(f"[llm] VerificationAgent -> {reasoning_model}")
+    print(f"[llm] VerificationAgent -> {reasoning_model} (Provider: {provider_name})")
 
     return True
 
