@@ -10,36 +10,31 @@ class TestMainEntryPoint:
     """验证 main.py 入口点能正确接线所有组件。"""
 
     def test_main_builds_all_components(self, tmp_path):
-        """_build_loop_components 应创建并接线所有层。"""
-        from src.main import _build_loop_components, _build_sandbox, _map_permission_mode
+        """SystemBuilder 应创建并接线所有层。"""
+        from src.application.system_builder import SystemBuilder
         from src.application.session import SessionState
-        from argparse import Namespace
+        from src.domain.permission import PermissionMode
 
         os.chdir(str(tmp_path))
-        sandbox = _build_sandbox(no_docker=True)
-
-        args = Namespace(
-            mode="default",
-            state_dir=str(tmp_path),
-            max_tokens=4000,
-            max_turns=20,
-            rule_dir=None,
+        builder = (
+            SystemBuilder()
+            .with_state_dir(str(tmp_path))
+            .with_permission_mode(PermissionMode.DEFAULT)
+            .with_max_tokens(4000)
+            .with_max_turns(20)
+            .with_no_docker(True)
         )
 
         session = SessionState(session_id="test", goal="verify wiring")
-        agent_loop, ui, tool_runner = _build_loop_components(args, session, sandbox)
+        agent_loop = builder.build_agent_loop(session)
 
-        # Verify all layers connected
-        assert agent_loop._tool_executor is not None
-        assert agent_loop._approval_callback is not None
-        assert len(agent_loop._event_handlers) == 1
+        assert agent_loop is not None
+        assert agent_loop.tool_registry is not None
 
     def test_main_cli_parses_goal(self):
         """CLI 应能解析 goal 参数。"""
         from src.main import main
 
-        # Should not raise — just parse and validate
-        # We test with --help to avoid full execution
         with pytest.raises(SystemExit) as exc:
             main(["--help"])
         assert exc.value.code == 0
@@ -54,30 +49,30 @@ class TestMainEntryPoint:
 
     def test_main_no_docker_mode(self, tmp_path):
         """--no-docker 应强制使用 LocalSandbox。"""
-        from src.main import _build_sandbox
+        from src.application.system_builder import SystemBuilder
         from src.infrastructure.sandbox import LocalSandbox
 
-        sandbox = _build_sandbox(no_docker=True)
+        builder = SystemBuilder().with_no_docker(True)
+        sandbox = builder.sandbox
         assert isinstance(sandbox, LocalSandbox)
 
     def test_main_pipeline_mode_builds_pipeline(self, tmp_path):
         """--pipeline 模式应能构建 Pipeline。"""
-        from src.main import _build_pipeline, _build_sandbox
-        from argparse import Namespace
-        from src.domain.tool_contract import build_standard_registry
+        from src.application.system_builder import SystemBuilder
         from src.application.session import SessionState
+        from src.domain.permission import PermissionMode
 
         os.chdir(str(tmp_path))
-        sandbox = _build_sandbox(no_docker=True)
-        registry = build_standard_registry()
-        session = SessionState(session_id="pipeline_test", goal="test")
-
-        args = Namespace(
-            mode="default",
-            state_dir=str(tmp_path),
-            max_tokens=4000,
+        builder = (
+            SystemBuilder()
+            .with_state_dir(str(tmp_path))
+            .with_permission_mode(PermissionMode.DEFAULT)
+            .with_max_tokens(4000)
+            .with_no_docker(True)
         )
 
-        pipeline = _build_pipeline(args, sandbox, registry, session)
+        session = SessionState(session_id="pipeline_test", goal="test")
+        pipeline = builder.build_pipeline(session)
+
         assert pipeline is not None
         assert len(pipeline._stages) == 4

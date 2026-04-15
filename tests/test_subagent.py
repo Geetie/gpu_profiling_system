@@ -171,18 +171,12 @@ class TestP7ViolationError:
 class ConcreteTestAgent(BaseSubAgent):
     """Concrete implementation for testing BaseSubAgent."""
 
-    def run(self, message: CollaborationMessage) -> SubAgentResult:
-        self.context_manager.add_entry(
-            Role.SYSTEM, self._build_system_prompt(), token_count=10
-        )
-        result = SubAgentResult(
+    def _process(self, message: CollaborationMessage) -> SubAgentResult:
+        return SubAgentResult(
             agent_role=self.role,
             status=SubAgentStatus.SUCCESS,
             data={"ran": True},
         )
-        result.context_fingerprint = result.compute_fingerprint(self.context_manager)
-        self._persist_result(result)
-        return result
 
 
 class TestBaseSubAgent:

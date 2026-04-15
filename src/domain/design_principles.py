@@ -1,0 +1,312 @@
+"""Design principles for GPU profiling targets.
+
+Extracted from pipeline.py to separate prompt engineering from
+orchestration logic.  Each principle provides the CodeGen agent
+with architectural insight, measurement strategy, anti-cheat
+awareness, expected ranges, and validation criteria.
+
+This module is a pure data lookup — no side effects.
+"""
+from __future__ import annotations
+
+
+def get_design_principle(target: str) -> str:
+    """Return design principle for a specific profiling target.
+
+    The agent generates CUDA code based on these principles —
+    no hardcoded source templates.
+    """
+    principles: dict[str, str] = {
+        "dram_latency_cycles": _DRAM_LATENCY,
+        "l2_latency_cycles": _L2_LATENCY,
+        "l1_latency_cycles": _L1_LATENCY,
+        "l2_cache_size_mb": _L2_CACHE_SIZE,
+        "actual_boost_clock_mhz": _BOOST_CLOCK,
+        "dram_bandwidth_gbps": _DRAM_BANDWIDTH,
+        "max_shmem_per_block_kb": _SHMEM_CAPACITY,
+        "bank_conflict_penalty_ratio": _BANK_CONFLICT,
+        "shmem_bandwidth_gbps": _SHMEM_BANDWIDTH,
+        "sm_count": _SM_COUNT,
+        "shmem_bank_conflict_penalty_ns": _BANK_CONFLICT_NS,
+        "l1_cache_size_kb": _L1_CACHE_SIZE,
+    }
+    return principles.get(target, _DEFAULT_PRINCIPLE)
+
+
+_DEFAULT_PRINCIPLE = (
+    "🎯 DESIGN THINKING: Custom Micro-Benchmark for '{target}'\n\n"
+    "📐 ARCHITECTURAL INSIGHT:\n"
+    "- Analyze the hardware resource being measured\n"
+    "- Identify potential interference (cache, prefetchers, virtualization)\n"
+    "- Design measurement to isolate target behavior\n\n"
+    "🔬 MEASUREMENT STRATEGY:\n"
+    "1. Write a complete CUDA .cu file with proper includes and main()\n"
+    "2. Choose appropriate timing method:\n"
+    "   - clock64() for cycle-accurate timing (cache latency, compute)\n"
+    "   - cudaEventElapsedTime for wall-clock timing (bandwidth, kernel execution)\n"
+    "3. Use multiple trials (minimum 3) and report MEDIAN for latency, MAXIMUM for bandwidth\n"
+    "4. Output must be parseable: printf(\"key: value\\n\")\n\n"
+    "⚠️ ANTI-CHEAT REQUIREMENTS:\n"
+    "- Do NOT rely solely on cudaGetDeviceProperties or cudaDeviceGetAttribute\n"
+    "  These may return virtualized data in cloud/containerized environments\n"
+    "- ALWAYS measure actual hardware behavior using:\n"
+    "  - clock64() for GPU core cycles\n"
+    "  - cudaEventElapsedTime for GPU wall-clock time\n"
+    "  - Empirical measurement (block ID sweep, pointer-chasing)\n"
+    "- Use at least 2 measurement strategies and cross-validate results\n"
+    "- Report confidence level and methodology used\n\n"
+    "📊 EXPECTED RANGE: Research typical values for target hardware\n"
+    "🔍 VALIDATION: If result is outside expected range, REWRITE measurement code"
+)
+
+_DRAM_LATENCY = (
+    "🎯 DESIGN THINKING: DRAM Latency Measurement via Pointer-Chasing\n\n"
+    "📐 ARCHITECTURAL INSIGHT:\n"
+    "- DRAM latency is exposed when cache hierarchy is completely bypassed\n"
+    "- Hardware prefetchers can hide latency by pre-loading data before it's needed\n"
+    "- To measure TRUE latency: must defeat ALL prefetchers (streaming + stride)\n"
+    "- Modern GPUs have sophisticated prefetchers that detect sequential/strided patterns\n"
+    "- Random pointer-chasing creates serial dependency that prefetchers cannot predict\n\n"
+    "🔬 MEASUREMENT STRATEGY:\n"
+    "1. Working Set: Allocate 32M uint32_t indices (=128 MB)\n"
+    "   - Rationale: >> L2 cache size on ALL GPUs (typically 4-72 MB)\n"
+    "   - Ensures every access misses L1, L2, and goes to DRAM\n"
+    "   - Memory layout: linear array of random indices\n\n"
+    "2. Access Pattern: Random permutation chain (Knuth shuffle with LCG seed)\n"
+    "   - CRITICAL: Random access defeats hardware prefetchers\n"
+    "   - Strided patterns (arr[i], arr[i+stride]) are detected and prefetched\n"
+    "   - Random chains force serial dependency: next = array[current]\n"
+    "   - Implementation: Fisher-Yates shuffle with LCG (a=1664525, c=1013904223)\n\n"
+    "3. CUDA KERNEL STRUCTURE:\n"
+    "   ```cuda\n"
+    "   __global__ void measure_dram_latency(uint32_t* indices, uint64_t* cycles, size_t size) {\n"
+    "       if (threadIdx.x != 0 || blockIdx.x != 0) return;  // Single thread\n"
+    "       uint32_t idx = 0;\n"
+    "       uint64_t start = clock64();\n"
+    "       for (uint64_t i = 0; i < 10000000; i++) {\n"
+    "           idx = indices[idx];  // Serial dependency chain\n"
+    "       }\n"
+    "       uint64_t end = clock64();\n"
+    "       *cycles = (end - start) / 10000000;  // Average cycles per access\n"
+    "   }\n"
+    "   ```\n\n"
+    "4. Timing Method: clock64() for cycle-accurate measurement\n"
+    "   - Single thread: idx = next[idx] for 10M iterations\n"
+    "   - Measure total_cycles = clock64(end) - clock64(start)\n"
+    "   - latency_cycles = total_cycles / iterations\n"
+    "   - MUST use clock64(), NOT clock() (returns 0 on Pascal+)\n\n"
+    "5. Statistical Rigor: Run 3 trials, report MEDIAN\n"
+    "   - Median eliminates outliers from context switches, thermal throttling\n"
+    "   - Discard max/min if variance > 10%\n\n"
+    "⚠️ ANTI-CHEAT AWARENESS:\n"
+    "- Do NOT use sequential access (prefetcher hides true latency)\n"
+    "- Do NOT use strided access (hardware detects and prefetches)\n"
+    "- Do NOT use cudaGetDeviceProperties — may return virtualized data\n"
+    "- Do NOT measure with host timers (PCIe transfer overhead contaminates)\n"
+    "- MUST use clock64() — measures GPU core cycles directly\n"
+    "- MUST ensure working set >> L2 cache (test with 128 MB)\n"
+    "- MUST use single thread (parallel threads pollute measurement)\n\n"
+    "📊 EXPECTED RANGE: 400-800 cycles (varies by GPU generation, DDR speed)\n"
+    "🔍 VALIDATION: \n"
+    "- If result < 200 cycles → prefetcher succeeded → REWRITE code\n"
+    "- If result > 1000 cycles → possible measurement error → check clock64() usage\n"
+    "- If variance > 10% → increase iterations or check for context switches"
+)
+
+_L2_LATENCY = (
+    "🎯 DESIGN THINKING: L2 Cache Latency Measurement via Pointer-Chasing\n\n"
+    "📐 ARCHITECTURAL INSIGHT:\n"
+    "- L2 latency is exposed when working set fits in L2 but exceeds L1\n"
+    "- L2 is typically 512 KB - 72 MB on modern GPUs\n"
+    "- L1 is typically 32-128 KB per SM\n"
+    "- L2 is shared across all SMs, accessed via crossbar\n\n"
+    "🔬 MEASUREMENT STRATEGY:\n"
+    "1. Working Set: 2 MB (512K uint32_t indices)\n"
+    "   - Rationale: >> L1 cache (32-128 KB), << typical L2 cache\n"
+    "   - Ensures L1 miss, L2 hit on every access\n\n"
+    "2. Access Pattern: Random permutation chain (same as DRAM)\n"
+    "   - Defeats L1 hardware prefetchers\n"
+    "   - Implementation: Fisher-Yates shuffle with LCG\n\n"
+    "3. CUDA KERNEL: Same structure as DRAM latency, working set = 2 MB\n"
+    "4. Timing: clock64() for cycle accuracy, 10M iterations\n"
+    "5. Run 3 trials, report MEDIAN\n\n"
+    "⚠️ ANTI-CHEAT:\n"
+    "- Do NOT use sequential access (prefetcher hides latency)\n"
+    "- Do NOT use working set < 64 KB (may fit in L1)\n"
+    "- Do NOT use working set > L2 size (will miss to DRAM)\n\n"
+    "📊 EXPECTED RANGE: 100-500 cycles\n"
+    "🔍 VALIDATION: If result < 50 cycles → L1 hit → INCREASE working set"
+)
+
+_L1_LATENCY = (
+    "🎯 DESIGN THINKING: L1 Cache Latency Measurement via Pointer-Chasing\n\n"
+    "📐 ARCHITECTURAL INSIGHT:\n"
+    "- L1 cache is smallest, fastest cache (typically 32-128 KB per SM)\n"
+    "- Must ensure working set fits ENTIRELY in L1\n\n"
+    "🔬 MEASUREMENT STRATEGY:\n"
+    "1. Working Set: 8 KB (2K uint32_t indices)\n"
+    "   - Rationale: << L1 cache on ALL GPUs (32-128 KB)\n"
+    "2. Access Pattern: Random permutation chain\n"
+    "3. CUDA KERNEL: Same structure, working set = 8 KB\n"
+    "4. Timing: clock64(), 10M iterations, single thread\n"
+    "5. Run 3 trials, report MEDIAN\n\n"
+    "⚠️ ANTI-CHEAT:\n"
+    "- Do NOT use working set > 64 KB (may miss L1)\n"
+    "- MUST verify working set fits in L1: size < 32 KB\n\n"
+    "📊 EXPECTED RANGE: 50-300 cycles\n"
+    "🔍 VALIDATION: If result > 400 cycles → L1 miss → DECREASE working set"
+)
+
+_L2_CACHE_SIZE = (
+    "🎯 DESIGN THINKING: L2 Cache Capacity Detection via Working-Set Sweep\n\n"
+    "📐 ARCHITECTURAL INSIGHT:\n"
+    "- Cache capacity is exposed by measuring latency vs working-set size\n"
+    "- At cache capacity, latency jumps dramatically (cache cliff)\n"
+    "- L2 miss → DRAM access causes 3-10x latency increase\n\n"
+    "🔬 MEASUREMENT STRATEGY:\n"
+    "1. Sweep across 14 sizes: 1, 2, 4, 8, 12, 16, 20, 24, 32, 40, 48, 64, 96, 128 MB\n"
+    "2. At each size: run pointer-chasing, measure cycles/access with clock64()\n"
+    "3. Detect 'cliff': the size where latency jumps >3x\n"
+    "4. L2 size = last size before cliff\n\n"
+    "⚠️ ANTI-CHEAT:\n"
+    "- MUST use random permutation to defeat prefetchers\n"
+    "- MUST test enough sizes to capture cliff (minimum 10 points)\n\n"
+    "📊 EXPECTED RANGE: 4-72 MB (varies by GPU)\n"
+    "🔍 VALIDATION: If no clear cliff → INCREASE sweep points"
+)
+
+_BOOST_CLOCK = (
+    "🎯 DESIGN THINKING: GPU Boost Clock Measurement via Cycle Counter\n\n"
+    "📐 ARCHITECTURAL INSIGHT:\n"
+    "- True frequency = GPU cycles / wall-clock time\n"
+    "- Reported clock may not reflect actual runtime frequency\n\n"
+    "🔬 MEASUREMENT STRATEGY:\n"
+    "1. Compute-Intensive Kernel: 10M iterations of arithmetic operations\n"
+    "2. Dual Timing: clock64() for GPU cycles + cudaEventElapsedTime for wall-clock\n"
+    "3. freq_MHz = total_cycles / elapsed_microseconds\n"
+    "4. Run 3 trials, report MEDIAN\n\n"
+    "⚠️ ANTI-CHEAT:\n"
+    "- Do NOT use cudaGetDeviceProperties — returns base/max clock, not actual\n"
+    "- MUST use cudaEventElapsedTime for wall-clock timing\n"
+    "- Ensure kernel is compute-bound (no global memory access)\n\n"
+    "📊 EXPECTED RANGE: 1000-2500 MHz\n"
+    "🔍 VALIDATION: If result < 500 MHz → thermal throttling or error"
+)
+
+_DRAM_BANDWIDTH = (
+    "🎯 DESIGN THINKING: DRAM Bandwidth Measurement via STREAM Copy\n\n"
+    "📐 ARCHITECTURAL INSIGHT:\n"
+    "- DRAM bandwidth is exposed by saturating memory bus with sequential access\n"
+    "- Must launch enough threads to fully utilize memory controller\n\n"
+    "🔬 MEASUREMENT STRATEGY:\n"
+    "1. STREAM Copy: dst[i] = src[i] for 32M floats (128 MB)\n"
+    "2. Launch 65535 blocks, 256 threads/block\n"
+    "3. Timing: cudaEventElapsedTime(start, stop)\n"
+    "4. BW_GBps = bytes_transferred / elapsed_ns * 1e9\n"
+    "5. Run 3 trials, report MAXIMUM\n\n"
+    "⚠️ ANTI-CHEAT:\n"
+    "- Do NOT use host timers — PCIe overhead contaminates measurement\n"
+    "- Do NOT use small working set (< 64 MB) — L2 cache may satisfy\n"
+    "- MUST use cudaEventElapsedTime, NOT clock64()\n\n"
+    "📊 EXPECTED RANGE: 200-1000+ GB/s\n"
+    "🔍 VALIDATION: If result < 100 GB/s → insufficient parallelism"
+)
+
+_SHMEM_CAPACITY = (
+    "🎯 DESIGN THINKING: Shared Memory Capacity via Occupancy API Sweep\n\n"
+    "📐 ARCHITECTURAL INSIGHT:\n"
+    "- Shared memory is a per-SM resource, partitioned among blocks\n"
+    "- CUDA occupancy API directly queries this hardware limit\n\n"
+    "🔬 MEASUREMENT STRATEGY:\n"
+    "1. Sweep sizes: 1K, 2K, 4K, 8K, 16K, 32K, 48K, 64K, 96K, 100K, 128K, 164K\n"
+    "2. At each size: call cudaOccupancyMaxActiveBlocksPerMultiprocessor\n"
+    "3. Max shmem where blocks_per_sm > 0 = per-block capacity\n"
+    "4. Direct CUDA API query — most reliable probe in the suite\n\n"
+    "⚠️ ANTI-CHEAT:\n"
+    "- Do NOT rely solely on cudaGetDeviceProperties — may be virtualized\n"
+    "- Occupancy API is more reliable\n\n"
+    "📊 EXPECTED RANGE: 48-232 KB\n"
+    "🔍 VALIDATION: If result < 16 KB → likely error"
+)
+
+_BANK_CONFLICT = (
+    "🎯 DESIGN THINKING: Shared Memory Bank Conflict Penalty\n\n"
+    "📐 ARCHITECTURAL INSIGHT:\n"
+    "- Shared memory is divided into 32 banks\n"
+    "- Concurrent accesses to same bank are serialized\n"
+    "- 32-way bank conflict = 32x slowdown (worst case)\n\n"
+    "🔬 MEASUREMENT STRATEGY:\n"
+    "1. Two-Kernel Comparison:\n"
+    "   Kernel A (Strided): thread t accesses shared_mem[t * 32] — all hit bank 0\n"
+    "   Kernel B (Sequential): thread t accesses shared_mem[t] — one per bank\n"
+    "2. 1 block, 256 threads, __shared__ uint32_t[256]\n"
+    "3. Timing: cudaEventElapsedTime (NOT clock64())\n"
+    "4. ratio = strided_ms / sequential_ms\n"
+    "5. Run 3 trials, report MINIMUM ratio\n\n"
+    "⚠️ ANTI-CHEAT:\n"
+    "- Do NOT use clock64() — insufficient resolution\n"
+    "- MUST use cudaEventElapsedTime\n\n"
+    "📊 EXPECTED RANGE: 2x-32x\n"
+    "🔍 VALIDATION: If ratio < 1.5 → measurement error"
+)
+
+_SHMEM_BANDWIDTH = (
+    "🎯 DESIGN THINKING: Shared Memory Bandwidth Measurement\n\n"
+    "📐 ARCHITECTURAL INSIGHT:\n"
+    "- Shared memory bandwidth is MUCH higher than DRAM (on-chip)\n"
+    "- Shared memory is per-SM resource — measure per-SM bandwidth\n\n"
+    "🔬 MEASUREMENT STRATEGY:\n"
+    "1. 1 block, 256 threads, __shared__ uint32_t[256]\n"
+    "2. Each iteration: every thread reads one element, writes one element\n"
+    "3. BW = (iterations * 256 * 2 * sizeof(uint32_t)) / elapsed_us / 1000 GB/s\n"
+    "4. Timing: cudaEventElapsedTime\n\n"
+    "📊 EXPECTED RANGE: 5000-20000+ GB/s\n"
+    "🔍 VALIDATION: If result < 1000 GB/s → likely using DRAM"
+)
+
+_SM_COUNT = (
+    "🎯 DESIGN THINKING: Multi-Strategy SM Count Detection\n\n"
+    "📐 ARCHITECTURAL INSIGHT:\n"
+    "- SM count is fundamental GPU topology\n"
+    "- Virtualization can hide SMs\n"
+    "- Must cross-validate with multiple strategies\n\n"
+    "🔬 MEASUREMENT STRATEGY:\n"
+    "Strategy 1: CUDA API Query — cudaGetDeviceProperties\n"
+    "Strategy 2: Block ID Sweep (Empirical) — MOST TRUSTWORTHY\n"
+    "Strategy 3: Occupancy API Cross-Validation\n\n"
+    "⚠️ ANTI-CHEAT:\n"
+    "- Do NOT rely solely on cudaGetDeviceProperties — may be virtualized\n"
+    "- MUST use empirical measurement\n"
+    "- MUST cross-validate\n\n"
+    "📊 EXPECTED RANGE: 8-132 SMs\n"
+    "🔍 VALIDATION: If empirical < API → virtualization detected"
+)
+
+_BANK_CONFLICT_NS = (
+    "🎯 DESIGN THINKING: Shared Memory Bank Conflict Absolute Penalty\n\n"
+    "📐 ARCHITECTURAL INSIGHT:\n"
+    "- Bank conflicts cause absolute latency increase (nanoseconds)\n"
+    "- Penalty_ns = (conflict_cycles - no_conflict_cycles) / clock_MHz\n\n"
+    "🔬 MEASUREMENT STRATEGY:\n"
+    "1. Two-Kernel Comparison (same as ratio measurement)\n"
+    "2. Timing: cudaEventElapsedTime\n"
+    "3. penalty_ns = strided_latency_ns - sequential_latency_ns\n"
+    "4. Run 3 trials, report MEDIAN penalty\n\n"
+    "📊 EXPECTED RANGE: 10-500 ns\n"
+    "🔍 VALIDATION: If penalty < 0 ns → measurement error"
+)
+
+_L1_CACHE_SIZE = (
+    "🎯 DESIGN THINKING: L1 Cache Capacity Detection via Working-Set Sweep\n\n"
+    "📐 ARCHITECTURAL INSIGHT:\n"
+    "- L1 cache capacity is exposed by latency vs working-set size\n"
+    "- L1 is typically 32-128 KB per SM\n"
+    "- At L1 capacity, latency jumps 2x-4x (L1 miss → L2 access)\n\n"
+    "🔬 MEASUREMENT STRATEGY:\n"
+    "1. Sweep sizes: 1, 2, 4, 8, 16, 32, 48, 64, 96, 128, 192, 256 KB\n"
+    "2. At each size: pointer-chasing, measure cycles/access\n"
+    "3. Detect 'L1 Cliff': size where latency jumps >2x\n"
+    "4. L1 size = last size before cliff\n\n"
+    "📊 EXPECTED RANGE: 32-128 KB\n"
+    "🔍 VALIDATION: If no clear cliff → INCREASE sweep points"
+)

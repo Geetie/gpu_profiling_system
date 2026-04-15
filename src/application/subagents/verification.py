@@ -46,23 +46,12 @@ class VerificationAgent(BaseSubAgent):
             max_tokens=max_tokens,
         )
 
-    def run(self, message: CollaborationMessage) -> SubAgentResult:
+    def _process(self, message: CollaborationMessage) -> SubAgentResult:
         """Review the previous stage's result independently.
 
         Receives only the structured SubAgentResult (data + artifacts +
         context fingerprint) — NOT the generation process or context.
         """
-        # P7 guard: verify context is empty at start
-        if self.context_manager.total_tokens > 0:
-            raise P7ViolationError(
-                "VerificationAgent context must be empty at start of run(). "
-                f"Found {self.context_manager.total_tokens} tokens."
-            )
-
-        self.context_manager.add_entry(
-            Role.SYSTEM, self._build_system_prompt(), token_count=30
-        )
-
         prev_result = message.payload.get("prev_result", {})
         prev_fingerprint = message.payload.get("prev_fingerprint", "none")
         target_spec = message.payload.get("target_spec", {})  # For completeness check
@@ -91,8 +80,6 @@ class VerificationAgent(BaseSubAgent):
             },
         )
 
-        result.context_fingerprint = result.compute_fingerprint(self.context_manager)
-        self._persist_result(result)
         return result
 
     def _review(

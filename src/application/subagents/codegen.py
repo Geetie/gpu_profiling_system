@@ -53,18 +53,13 @@ class CodeGenAgent(BaseSubAgent):
         )
         self._sandbox = sandbox or LocalSandbox(SandboxConfig())
 
-    def run(self, message: CollaborationMessage) -> SubAgentResult:
+    def _process(self, message: CollaborationMessage) -> SubAgentResult:
         """Generate a CUDA micro-benchmark based on the task description."""
-        self.context_manager.add_entry(
-            Role.SYSTEM, self._build_system_prompt(), token_count=30
-        )
-
         task = message.payload.get("task", {})
         target = task.get("target", "unknown")
         category = task.get("category", "unknown")
         method = task.get("method", "custom micro-benchmark")
 
-        # Build context with task description
         self.context_manager.add_entry(
             Role.USER,
             f"Generate a CUDA micro-benchmark for target '{target}' "
@@ -72,8 +67,14 @@ class CodeGenAgent(BaseSubAgent):
             token_count=20,
         )
 
-        # Generate source code via LLM (no template fallbacks)
-        source_code = self._generate_kernel(target, category, method)
+        try:
+            source_code = self._generate_kernel(target, category, method)
+        except RuntimeError as e:
+            return SubAgentResult(
+                agent_role=self.role,
+                status=SubAgentStatus.FAILED,
+                error=str(e),
+            )
 
         # Compile and execute in sandbox
         compile_result = self._compile(source_code)
@@ -134,8 +135,6 @@ class CodeGenAgent(BaseSubAgent):
             artifacts=list(compile_result.artifacts.values()),
         )
 
-        result.context_fingerprint = result.compute_fingerprint(self.context_manager)
-        self._persist_result(result)
         return result
 
     def _generate_kernel(self, target: str, category: str, method: str) -> str:

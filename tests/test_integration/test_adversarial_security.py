@@ -123,7 +123,7 @@ class TestAPIInterference:
         loop.loop_state.is_running = True
 
         # Parse should return None (not valid tool call format)
-        tool_call = loop._parse_tool_call()
+        tool_call = loop._tool_call_parser.parse(loop._model_output, loop.tool_registry)
         assert tool_call is None, "Non-tool-call JSON should not be parsed as tool call"
 
     def test_tool_runner_validates_output_schema(self, tmp_path):

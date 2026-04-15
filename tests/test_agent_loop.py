@@ -10,8 +10,8 @@ from src.application.agent_loop import (
     AgentLoop,
     LoopEvent,
     LoopState,
-    ToolCall,
 )
+from src.application.tool_call_parser import ToolCall
 from src.application.control_plane import ControlPlane
 from src.application.context import ContextManager
 from src.application.session import SessionState
@@ -145,14 +145,14 @@ class TestAgentLoop:
     def test_tool_call_parsing(self, loop):
         """Parse a tool call from model output."""
         loop._model_output = json.dumps({"tool": "echo", "args": {"text": "hi"}})
-        tc = loop._parse_tool_call()
+        tc = loop._tool_call_parser.parse(loop._model_output, loop.tool_registry)
         assert tc is not None
         assert tc.name == "echo"
         assert tc.arguments == {"text": "hi"}
 
     def test_tool_call_none_when_no_json(self, loop):
         loop._model_output = "I think the L2 cache is 4MB."
-        tc = loop._parse_tool_call()
+        tc = loop._tool_call_parser.parse(loop._model_output, loop.tool_registry)
         assert tc is None
 
     def test_tool_call_for_unregistered_raises(self, loop):

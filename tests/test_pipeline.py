@@ -73,6 +73,13 @@ class MockAgent(BaseSubAgent):
     def call_count(self) -> int:
         return self._call_count
 
+    def _process(self, message: CollaborationMessage) -> SubAgentResult:
+        return SubAgentResult(
+            agent_role=self.role,
+            status=SubAgentStatus.SUCCESS,
+            data={"mock": True},
+        )
+
     def run(self, message: CollaborationMessage) -> SubAgentResult:
         """Fallback — not used by AgentLoop-based pipeline, but kept for interface."""
         self.context_manager.add_entry(Role.USER, f"task for {self.role.value}")
@@ -96,8 +103,7 @@ class CapturingMockAgent(MockAgent):
         super().__init__(role, model_response, state_dir, simulate_tool_results=simulate_tool_results)
         self.captured_messages: list[CollaborationMessage] = []
 
-    def run(self, message: CollaborationMessage) -> SubAgentResult:
-        """Kept for interface compatibility; AgentLoop uses model caller."""
+    def _process(self, message: CollaborationMessage) -> SubAgentResult:
         self.captured_messages.append(message)
         return SubAgentResult(
             agent_role=self.role,

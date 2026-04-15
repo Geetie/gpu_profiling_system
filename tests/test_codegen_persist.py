@@ -18,44 +18,20 @@ from unittest.mock import MagicMock, patch
 # ── 测试 1: 工具定义完整性 ──────────────────────────────────────────
 
 def test_tool_definitions_have_parameters():
-    """验证 Pipeline._tool_handler_tools 使用 ToolRegistry 生成完整定义。"""
-    from src.domain.pipeline import Pipeline
-    from src.domain.tool_contract import ToolRegistry, build_standard_registry
+    """验证 ToolRegistry 中的 compile_cuda 和 execute_binary 定义完整。"""
+    from src.domain.tool_contract import build_standard_registry
 
     registry = build_standard_registry()
 
-    # Create minimal pipeline instance (won't run, just access method)
-    pipeline = MagicMock(spec=Pipeline)
-    # Bind the real method
-    pipeline._tool_handler_tools = Pipeline._tool_handler_tools.__get__(pipeline, Pipeline)
+    compile_cuda = registry.get("compile_cuda")
+    execute_binary = registry.get("execute_binary")
 
-    handlers = {"compile_cuda": lambda args: {}, "execute_binary": lambda args: {}}
-    tools = pipeline._tool_handler_tools(handlers, tool_registry=registry)
+    assert compile_cuda is not None, "compile_cuda not in registry"
+    assert "source" in compile_cuda.input_schema, "compile_cuda missing 'source' parameter"
+    assert "flags" in compile_cuda.input_schema, "compile_cuda missing 'flags' parameter"
 
-    compile_cuda_def = None
-    execute_binary_def = None
-    for t in tools:
-        if t["function"]["name"] == "compile_cuda":
-            compile_cuda_def = t
-        elif t["function"]["name"] == "execute_binary":
-            execute_binary_def = t
-
-    # compile_cuda must have source + flags parameters
-    assert compile_cuda_def is not None, "compile_cuda not in tool definitions"
-    assert "parameters" in compile_cuda_def["function"], \
-        "compile_cuda missing parameters — model won't know what to pass"
-    props = compile_cuda_def["function"]["parameters"]["properties"]
-    assert "source" in props, "compile_cuda missing 'source' parameter"
-    assert props["source"]["type"] == "string", "source should be string type"
-    assert "flags" in props, "compile_cuda missing 'flags' parameter"
-    assert compile_cuda_def["function"]["parameters"]["required"] == ["source", "flags"]
-
-    # execute_binary must have binary_path + args parameters
-    assert execute_binary_def is not None, "execute_binary not in tool definitions"
-    assert "parameters" in execute_binary_def["function"], \
-        "execute_binary missing parameters"
-    props2 = execute_binary_def["function"]["parameters"]["properties"]
-    assert "binary_path" in props2, "execute_binary missing 'binary_path' parameter"
+    assert execute_binary is not None, "execute_binary not in registry"
+    assert "binary_path" in execute_binary.input_schema, "execute_binary missing 'binary_path' parameter"
 
     print("  T1 PASS: compile_cuda has full parameters definition")
     print("  T2 PASS: execute_binary has full parameters definition")

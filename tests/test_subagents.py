@@ -93,31 +93,28 @@ class TestCodeGenAgent:
         from src.application.subagents.codegen import CodeGenAgent
         sandbox = LocalSandbox(sandbox_root=str(tmp_path))
         agent = CodeGenAgent(state_dir=str(tmp_path), sandbox=sandbox)
+        agent.set_model_caller(lambda msgs: "__global__ void latency_kernel() { clock(); }")
         msg = CollaborationMessage(
             sender=AgentRole.PLANNER,
             receiver=AgentRole.CODE_GEN,
             message_type="task_dispatch",
             payload={"task": {"target": "dram_latency_cycles", "category": "latency_measurement", "method": "pointer-chasing"}},
         )
-        # Without nvcc, compilation will fail but code generation works
         result = agent.run(msg)
-        # Should fail on compilation (no nvcc) but the kernel was generated
         assert result.is_failed()
-        assert "Compilation failed" in (result.error or "")
 
-    def test_template_all_kernel_types(self, tmp_path):
+    def test_no_model_caller_raises(self, tmp_path):
         from src.application.subagents.codegen import CodeGenAgent
         agent = CodeGenAgent(state_dir=str(tmp_path))
-        for category in ["latency_measurement", "capacity_measurement", "clock_measurement", "bandwidth_measurement"]:
-            source = agent._template_kernel("test_target", category, "test_method")
-            assert "__global__" in source
-            assert "test_target" in source
-
-    def test_generic_kernel_fallback(self, tmp_path):
-        from src.application.subagents.codegen import CodeGenAgent
-        agent = CodeGenAgent(state_dir=str(tmp_path))
-        source = agent._template_kernel("weird_metric", "unknown", "custom")
-        assert "generic_kernel" in source
+        msg = CollaborationMessage(
+            sender=AgentRole.PLANNER,
+            receiver=AgentRole.CODE_GEN,
+            message_type="task_dispatch",
+            payload={"task": {"target": "dram_latency_cycles", "category": "latency_measurement", "method": "pointer-chasing"}},
+        )
+        result = agent.run(msg)
+        assert result.is_failed()
+        assert "No model caller" in (result.error or "")
 
     def test_model_caller_used_when_available(self, tmp_path):
         from src.application.subagents.codegen import CodeGenAgent

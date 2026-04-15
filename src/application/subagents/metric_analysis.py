@@ -40,12 +40,8 @@ class MetricAnalysisAgent(BaseSubAgent):
             max_tokens=max_tokens,
         )
 
-    def run(self, message: CollaborationMessage) -> SubAgentResult:
+    def _process(self, message: CollaborationMessage) -> SubAgentResult:
         """Analyze metrics from the previous stage's output."""
-        self.context_manager.add_entry(
-            Role.SYSTEM, self._build_system_prompt(), token_count=30
-        )
-
         prev_result = message.payload.get("prev_result", {})
         raw_output = prev_result.get("data", {}).get("raw_output", "")
 
@@ -75,8 +71,6 @@ class MetricAnalysisAgent(BaseSubAgent):
             metadata={"analysis_method": "llm" if self._model_caller else "pattern_matching"},
         )
 
-        result.context_fingerprint = result.compute_fingerprint(self.context_manager)
-        self._persist_result(result)
         return result
 
     def _llm_analyze(self, raw_output: str) -> tuple[dict[str, Any], str]:
