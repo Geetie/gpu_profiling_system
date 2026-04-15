@@ -271,7 +271,29 @@ def configure_api(project_root: str) -> bool:
 
     provider_configs = {}
 
-    if dashscope_key and len(dashscope_key) > 10:
+    if longcat_key and len(longcat_key) > 10:
+        # LongCat-Flash-Thinking has strongest reasoning — use for CodeGen
+        # (CUDA code generation needs deep reasoning capability)
+        provider_configs = {
+            "provider": "longcat",
+            "env": {
+                "LONGCAT_API_KEY": longcat_key,
+                "DASHSCOPE_API_KEY": "",
+                "ANTHROPIC_API_KEY": "",
+                "ANTHROPIC_BASE_URL": "https://api.longcat.chat/openai/v1/chat/completions",
+                "ANTHROPIC_AUTH_TOKEN": longcat_key,
+                # Main model: use thinking model for CodeGen
+                "ANTHROPIC_MODEL": "LongCat-Flash-Thinking-2601",
+                # Code model: use strongest reasoning model
+                "ANTHROPIC_DEFAULT_SONNET_MODEL": "LongCat-Flash-Thinking-2601",
+                # Verification: use strongest reasoning model
+                "ANTHROPIC_DEFAULT_OPUS_MODEL": "LongCat-Flash-Thinking-2601",
+                "ANTHROPIC_REASONING_MODEL": "LongCat-Flash-Thinking-2601",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": "LongCat-Flash-Thinking-2601",
+            },
+            "label": "LongCat API",
+        }
+    elif dashscope_key and len(dashscope_key) > 10:
         # qwen3.6-plus for general tasks, qwen3-coder-480b for code generation
         provider_configs = {
             "provider": "dashscope",
@@ -291,29 +313,6 @@ def configure_api(project_root: str) -> bool:
                 "ANTHROPIC_DEFAULT_HAIKU_MODEL": "qwen-turbo",
             },
             "label": "DashScope (Aliyun)",
-        }
-    elif longcat_key and len(longcat_key) > 10:
-        # LongCat-Flash-Thinking has strongest reasoning — use for CodeGen
-        # (CUDA code generation needs deep reasoning capability)
-        provider_configs = {
-            "provider": "longcat",
-            "env": {
-                "LONGCAT_API_KEY": longcat_key,
-                "DASHSCOPE_API_KEY": "",
-                "ANTHROPIC_API_KEY": "",
-                "ANTHROPIC_BASE_URL": "https://api.longcat.chat/openai/v1/chat/completions",
-                "ANTHROPIC_AUTH_TOKEN": longcat_key,
-                # Main model: use thinking model for CodeGen
-                "ANTHROPIC_MODEL": "LongCat-Flash-Thinking-2601",
-                # Code model: use strongest reasoning model
-                "ANTHROPIC_DEFAULT_SONNET_MODEL": "LongCat-Flash-Thinking-2601",
-                # Planner/MetricAnalysis: can use regular model
-                "ANTHROPIC_DEFAULT_HAIKU_MODEL": "longcat-flash-chat",
-                # Verification: use thinking model
-                "ANTHROPIC_DEFAULT_OPUS_MODEL": "LongCat-Flash-Thinking-2601",
-                "ANTHROPIC_REASONING_MODEL": "LongCat-Flash-Thinking-2601",
-            },
-            "label": "LongCat API",
         }
     elif anthropic_key and len(anthropic_key) > 30:
         provider_configs = {
