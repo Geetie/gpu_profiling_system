@@ -192,7 +192,16 @@ class AgentLoop:
     # ── Inner Loop Step ──────────────────────────────────────────────
 
     def _inner_loop_step(self) -> None:
-        """Execute a single turn of the inner loop."""
+        """Execute a single turn of the inner loop.
+
+        Resilience improvements:
+        - Non-tool output does NOT immediately stop the loop.
+          The model may be explaining before calling a tool.
+        - M4 anti-loop protects against infinite repetition.
+        - All model caller exceptions are caught and recovered.
+        - Completion is detected via explicit patterns, not just
+          the absence of a tool call.
+        """
         if not self.loop_state.is_running:
             return
 
@@ -204,7 +213,6 @@ class AgentLoop:
         self.loop_state.turn_count += 1
         self.session.increment_step()
 
-        # M4: check if we should terminate due to repeated failures
         if self._failure_pattern and self._failure_tracker.should_terminate(self._failure_pattern):
             self._emit(EventKind.STOP, {
                 "reason": "M4_anti_loop",
@@ -213,38 +221,62 @@ class AgentLoop:
             self.stop()
             return
 
-        # 1. Inject control plane context (replace existing, don't duplicate — BUG-1)
         injected = self.control_plane.inject()
         self.context_manager.update_system_entry(
             injected.render(), token_count=50
         )
 
-        # 2. Check if over budget → compress
         if self.context_manager.is_over_budget():
             removed = self.context_manager.compress()
             self._emit(EventKind.COMPRESS, {"entries_removed": removed})
 
-        # 3. Get model output (via hook or default)
-        if self._model_caller:
-            messages = self.context_manager.to_messages()
-            # Pass available tools for OpenAI function calling
-            try:
-                self._model_output = self._model_caller(messages, self._available_tools)
-            except TypeError:
-                # Backward compat: older callers that don't accept tools param
-                self._model_output = self._model_caller(messages)
-        # _model_output is pre-set for testing
+        try:
+            if self._model_caller:
+                messages = self.context_manager.to_messages()
+                try:
+                    self._model_output = self._model_caller(messages, self._available_tools)
+                except TypeError:
+                    self._model_output = self._model_caller(messages)
+            # _model_output is pre-set for testing
+        except Exception as e:
+            self.loop_state.last_error = str(e)
+            self._failure_pattern = f"api_error:{type(e).__name__}"
+            self._failure_tracker.record_failure(self._failure_pattern)
+            self._emit(EventKind.ERROR, {"error": str(e), "type": type(e).__name__})
+            self._persister.log_error(
+                error_type=type(e).__name__,
+                context="model_caller",
+                message=str(e),
+            )
+            self.context_manager.add_entry(
+                Role.ASSISTANT,
+                f"[API Error - will retry] {type(e).__name__}: {str(e)[:200]}",
+                token_count=20,
+            )
+            self._persist_state()
+            return
 
-        # 4. Parse tool call
+        if not self._model_output or not self._model_output.strip():
+            self._failure_pattern = "empty_output"
+            self._failure_tracker.record_failure(self._failure_pattern)
+            self._emit(EventKind.ERROR, {"error": "Model returned empty output"})
+            self.context_manager.add_entry(
+                Role.ASSISTANT,
+                "[Empty model output - will retry next turn]",
+                token_count=10,
+            )
+            self._persist_state()
+            return
+
         tool_call = self._parse_tool_call()
         self._model_tool_call = tool_call
 
         if tool_call is not None:
+            self._failure_pattern = None
             self._emit(EventKind.TOOL_CALL, {
                 "tool": tool_call.name,
                 "args": tool_call.arguments,
             })
-            # 5. Execute tool
             try:
                 result = self._execute_tool_call(tool_call)
                 self._emit(EventKind.TOOL_RESULT, {
@@ -256,13 +288,11 @@ class AgentLoop:
                     json.dumps(result, ensure_ascii=False),
                     token_count=20,
                 )
-                # Continue loop — model may want to do more
             except Exception as e:
                 self.loop_state.last_error = str(e)
                 self._failure_pattern = f"tool_error:{tool_call.name}"
                 self._failure_tracker.record_failure(self._failure_pattern)
                 self._emit(EventKind.ERROR, {"error": str(e)})
-                # M4: track failure pattern
                 if self.loop_state.last_error:
                     self._persister.log_error(
                         error_type=type(e).__name__,
@@ -274,51 +304,98 @@ class AgentLoop:
                     f"Tool execution failed: {e}",
                     token_count=20,
                 )
-                # Continue loop — model may retry or adapt
         else:
-            # No tool call — turn ends
-            # Save model output to context so it can be extracted later
-            if self._model_output:
-                self.context_manager.add_entry(
-                    Role.ASSISTANT,
-                    self._model_output,
-                    token_count=20,
-                )
+            self.context_manager.add_entry(
+                Role.ASSISTANT,
+                self._model_output,
+                token_count=20,
+            )
             self._emit(EventKind.TURN, {
                 "turn": self.loop_state.turn_count,
                 "output": self._model_output[:200],
             })
-            # No more tool calls → stop
-            self.stop()
+            if self._is_completion_signal(self._model_output):
+                self._emit(EventKind.STOP, {"reason": "completion_signal"})
+                self.stop()
+                return
+            no_tool_pattern = "no_tool_call"
+            self._failure_tracker.record_failure(no_tool_pattern)
+            if self._failure_tracker.should_terminate(no_tool_pattern):
+                self._emit(EventKind.STOP, {
+                    "reason": "M4_no_tool_repeat",
+                    "pattern": no_tool_pattern,
+                })
+                self.stop()
+                return
 
-        # 6. Persist state (P6)
         self._persist_state()
+
+    def _is_completion_signal(self, text: str) -> bool:
+        """Detect if the model's text output signals task completion.
+
+        Instead of stopping on ANY non-tool output, we only stop when
+        the model explicitly signals it's done. This prevents premature
+        termination when the model explains before calling tools.
+        """
+        lower = text.lower().strip()
+        if len(lower) < 10:
+            return False
+        completion_patterns = [
+            "verdict: accept",
+            "verdict: reject",
+            "all targets measured",
+            "all targets have been measured",
+            "measurement complete",
+            "profiling complete",
+            "task complete",
+            "final answer:",
+            "final results:",
+            "summary of findings",
+            "verification report",
+        ]
+        for pattern in completion_patterns:
+            if pattern in lower:
+                return True
+        has_key_value_pairs = False
+        has_done_statement = False
+        import re
+        kv_matches = re.findall(r'^[a-z_]+:\s*\d+\.?\d*', lower, re.MULTILINE)
+        if len(kv_matches) >= 3:
+            has_key_value_pairs = True
+        done_phrases = [
+            "i have completed", "i am done", "i'm done",
+            "here are the final", "here is the final",
+            "these are the measured", "the measured values",
+        ]
+        for phrase in done_phrases:
+            if phrase in lower:
+                has_done_statement = True
+                break
+        return has_key_value_pairs and has_done_statement
 
     # ── Tool Parsing & Execution ─────────────────────────────────────
 
     def _parse_tool_call(self) -> ToolCall | None:
         """Parse a tool call from the model's output.
 
-        Accepts:
+        Accepts (in priority order):
         1. Pure JSON: {"tool": "name", "args": {...}}
         2. JSON with alternative keys: {"tool_name": "...", "arguments": {...}}
         3. Markdown-wrapped JSON: ```json\n{...}\n``` or ```\n{...}\n```
         4. Multiple JSON blocks — returns the first one with a tool name
+        5. Fuzzy: looks for tool-like patterns in text (e.g., "compile_cuda(...)")
         """
         if not self._model_output:
             return None
 
-        # Try parsing the full output as JSON first
         parsed = self._try_parse_json(self._model_output)
         if parsed:
             result = self._extract_tool_call(parsed)
             if result:
                 return result
 
-        # If not pure JSON, search for JSON blocks in the output
-        text = self._model_output
-        # Find content between ```json and ``` markers
         import re
+        text = self._model_output
         json_blocks = re.findall(r'```(?:json)?\s*\n(.*?)\n```', text, re.DOTALL)
         for block in json_blocks:
             parsed = self._try_parse_json(block)
@@ -327,8 +404,6 @@ class AgentLoop:
                 if result:
                     return result
 
-        # Try finding standalone JSON objects in text
-        # Look for outermost { ... } pairs
         depth = 0
         start = None
         for i, ch in enumerate(text):
@@ -347,7 +422,7 @@ class AgentLoop:
                             return result
                     start = None
 
-        return None
+        return self._fuzzy_parse_tool_call(text)
 
     def _try_parse_json(self, text: str) -> dict | None:
         """Try to parse text as JSON, return dict or None."""
@@ -359,25 +434,110 @@ class AgentLoop:
             pass
         return None
 
+    def _fuzzy_parse_tool_call(self, text: str) -> ToolCall | None:
+        """Fuzzy parser for tool calls in natural language output.
+
+        Handles patterns like:
+        - "I'll call compile_cuda with source=..."
+        - "compile_cuda(source='...', flags=[...])"
+        - "Let me use the run_ncu tool on ..."
+        """
+        import re
+        known_tools = set(self.tool_registry.list_tools()) if self.tool_registry else {
+            "run_ncu", "compile_cuda", "execute_binary",
+            "write_file", "read_file", "generate_microbenchmark",
+        }
+
+        for tool_name in known_tools:
+            patterns = [
+                rf'\b{re.escape(tool_name)}\s*\(([^)]*)\)',
+                rf'\b{re.escape(tool_name)}\s*\{{([^}}]*)\}}',
+                rf'(?:call|use|invoke|run)\s+(?:the\s+)?{re.escape(tool_name)}\b',
+                rf'{re.escape(tool_name)}\s+with\s',
+            ]
+            for pattern in patterns:
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    args = {}
+                    if match.lastindex and match.group(1):
+                        arg_text = match.group(1).strip()
+                        args = self._parse_fuzzy_args(arg_text, tool_name)
+                    return ToolCall(name=tool_name, arguments=args)
+
+        return None
+
+    def _parse_fuzzy_args(self, arg_text: str, tool_name: str) -> dict[str, Any]:
+        """Parse fuzzy argument text into a dict.
+
+        Handles: key=value, key='value', key="value", key: value
+        """
+        import re
+        args: dict[str, Any] = {}
+        pairs = re.findall(
+            r'(\w+)\s*[=:]\s*(?:["\']([^"\']*)["\']|(\[[^\]]*\])|(\{[^}]*\})|(\S+))',
+            arg_text,
+        )
+        for pair in pairs:
+            key = pair[0]
+            value = pair[1] or pair[2] or pair[3] or pair[4]
+            if value is None:
+                continue
+            if value.startswith('['):
+                try:
+                    value = json.loads(value)
+                except json.JSONDecodeError:
+                    value = [v.strip().strip("'\"") for v in value[1:-1].split(',')]
+            elif value.startswith('{'):
+                try:
+                    value = json.loads(value)
+                except json.JSONDecodeError:
+                    pass
+            args[key] = value
+
+        if not args and arg_text.strip():
+            contract = None
+            try:
+                contract = self.tool_registry.get(tool_name)
+            except KeyError:
+                pass
+            if contract and "source" in contract.input_schema:
+                args["source"] = arg_text
+            elif contract and "executable" in contract.input_schema:
+                args["executable"] = arg_text.strip().strip("'\"")
+            elif contract and "file_path" in contract.input_schema:
+                args["file_path"] = arg_text.strip().strip("'\"")
+
+        return args
+
     def _extract_tool_call(self, data: dict) -> ToolCall | None:
         """Extract tool name and arguments from parsed JSON dict.
 
         Supports multiple key naming conventions:
-        - "tool" or "tool_name" for the tool name
-        - "args", "arguments", or "params" for the arguments
+        - "tool" or "tool_name" or "name" or "action" or "command" for the tool name
+        - "args" or "arguments" or "params" or "parameters" or "input" for the arguments
         """
-        # Find tool name
-        tool_name = data.get("tool") or data.get("tool_name")
+        tool_name = (
+            data.get("tool")
+            or data.get("tool_name")
+            or data.get("name")
+            or data.get("action")
+            or data.get("command")
+        )
         if not tool_name:
             return None
+        if isinstance(tool_name, str):
+            tool_name = tool_name.strip()
 
-        # Find arguments
         arguments = (
             data.get("args")
             or data.get("arguments")
             or data.get("params")
+            or data.get("parameters")
+            or data.get("input")
             or {}
         )
+        if not isinstance(arguments, dict):
+            arguments = {}
 
         return ToolCall(name=tool_name, arguments=arguments)
 
