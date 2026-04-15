@@ -182,11 +182,22 @@ def _wire_all_subagents(planner, code_gen, metric_analysis, verification) -> boo
     try:
         from src.infrastructure.provider_manager import get_provider_manager
         provider_manager = get_provider_manager()
-        provider = provider_manager.get_provider()
-        if provider:
-            provider_name = provider.provider
-            actual_model = provider.get_model("default")
-    except Exception:
+        # 直接从配置中获取提供商信息，避免触发健康检查
+        if provider_manager.providers:
+            # 优先选择 longcat
+            if "longcat" in provider_manager.providers:
+                provider_name = "longcat"
+                actual_model = provider_manager.providers["longcat"].get_model("default")
+            elif "aliyun_bailian" in provider_manager.providers:
+                provider_name = "aliyun_bailian"
+                actual_model = provider_manager.providers["aliyun_bailian"].get_model("default")
+            else:
+                # 选择第一个可用的提供商
+                first_provider = next(iter(provider_manager.providers.values()))
+                provider_name = first_provider.provider
+                actual_model = first_provider.get_model("default")
+    except Exception as e:
+        print(f"[llm] Failed to get provider info: {e}")
         pass
 
     main_model = env.get("ANTHROPIC_MODEL", "qwen3.6-plus")

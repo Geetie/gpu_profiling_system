@@ -135,9 +135,10 @@ def _caller_from_provider(
     tools: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Use provider_manager for multi-provider support with failover."""
-    # 首先尝试使用当前提供商
-    provider = provider_manager.get_provider()
-    if provider:
+    # 首先尝试使用当前提供商（如果已设置），不触发健康检查
+    if provider_manager.current_provider:
+        provider = provider_manager.current_provider
+        print(f"[model_caller] 使用当前提供商: {provider.provider}")
         try:
             unified_config = provider_manager.create_unified_config()
             if unified_config:
@@ -170,52 +171,46 @@ def _caller_from_provider(
         except Exception as e:
             print(f"[model_caller] 当前提供商失败: {str(e)}")
     
-    # 如果当前提供商失败，尝试其他提供商
+    # 如果当前提供商未设置或失败，尝试直接使用优先提供商，不触发健康检查
     provider_priority = ["longcat", "aliyun_bailian", "anthropic"]
     
     for provider_name in provider_priority:
         # 跳过当前已经尝试过的提供商
-        if provider and provider.provider == provider_name:
+        if provider_manager.current_provider and provider_manager.current_provider.provider == provider_name:
             continue
             
         try:
+            # 直接获取提供商配置，不触发健康检查
+            provider = provider_manager.providers.get(provider_name)
+            if not provider:
+                continue
+            
+            api_key = provider.get_api_key()
+            if not api_key:
+                continue
+            
             # 手动设置提供商
-            if provider_manager.set_provider(provider_name):
-                provider = provider_manager.get_provider()
-                if not provider:
-                    continue
+            provider_manager.set_provider(provider_name)
+            
+            # 创建统一配置
+            base_url = provider.endpoints["chat"]
+            model = model_name or provider.get_model("default")
+            headers = provider.get_headers(api_key)
 
-                unified_config = provider_manager.create_unified_config()
-                if not unified_config:
-                    continue
-
-                env = unified_config["env"]
-                headers = unified_config["headers"]
-
-                api_key = env.get("ANTHROPIC_AUTH_TOKEN", "")
-                try:
-                    check_key(api_key, unified_config["provider_name"])
-                except ValueError:
-                    continue
-
-                base_url = env.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
-                model = model_name or env.get("ANTHROPIC_MODEL", provider.get_model("default"))
-
-                print(f"[model_caller] 尝试提供商: {provider_name}")
-                
-                if provider.provider == "anthropic":
-                    result = _call_anthropic(base_url, headers, model, messages, max_tokens, tools)
-                elif provider.provider in ("aliyun_bailian", "longcat"):
-                    result = _call_openai_compatible(base_url, headers, model, messages, max_tokens, tools)
-                else:
-                    result = _call_api(base_url, api_key, model, messages, max_tokens, tools)
-                
-                # 检查结果是否有效
-                if result.strip():
-                    return result
-                else:
-                    print(f"[model_caller] 提供商 {provider_name} 返回空内容，尝试下一个...")
-                    
+            print(f"[model_caller] 尝试提供商: {provider_name}")
+            
+            if provider.provider == "anthropic":
+                result = _call_anthropic(base_url, headers, model, messages, max_tokens, tools)
+            elif provider.provider in ("aliyun_bailian", "longcat"):
+                result = _call_openai_compatible(base_url, headers, model, messages, max_tokens, tools)
+            else:
+                result = _call_api(base_url, api_key, model, messages, max_tokens, tools)
+            
+            # 检查结果是否有效
+            if result.strip():
+                return result
+            else:
+                print(f"[model_caller] 提供商 {provider_name} 返回空内容，尝试下一个...")
         except Exception as e:
             print(f"[model_caller] 提供商 {provider_name} 失败: {str(e)}")
             continue
