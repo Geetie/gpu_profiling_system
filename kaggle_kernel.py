@@ -91,16 +91,36 @@ def run_cmd(cmd, timeout=300, description="", wd=None, extra_env=None):
     env = os.environ.copy()
     if extra_env:
         env.update(extra_env)
+    
+    # Generate a unique log file for this command
+    import hashlib
+    cmd_hash = hashlib.md5(' '.join(cmd).encode()).hexdigest()[:8]
+    cmd_log_file = os.path.join(WORKING_DIR, f".cmd_{cmd_hash}.log")
+    
     try:
         r = subprocess.run(
             cmd, capture_output=True, text=True,
             timeout=timeout, cwd=cwd, env=env,
         )
+        
+        # Save full output to log file
+        try:
+            with open(cmd_log_file, "w") as log_f:
+                log_f.write(f"Command: {' '.join(cmd)}\n")
+                log_f.write(f"CWD: {cwd}\n")
+                log_f.write(f"Exit code: {r.returncode}\n\n")
+                log_f.write("STDOUT:\n")
+                log_f.write(r.stdout)
+                log_f.write("\n\nSTDERR:\n")
+                log_f.write(r.stderr)
+        except (OSError, IOError) as e:
+            print(f"Failed to write command log: {e}")
+        
         if r.stdout:
             out = r.stdout
             if len(out) > 5000:
                 # Save full output to a file so nothing is lost
-                full_out_path = os.path.join(WORKING_DIR, f".cmd_output_{len(cmd)-1}.log")
+                full_out_path = os.path.join(WORKING_DIR, f".cmd_output_{cmd_hash}.log")
                 try:
                     with open(full_out_path, "w") as _f:
                         _f.write(out)
@@ -110,17 +130,39 @@ def run_cmd(cmd, timeout=300, description="", wd=None, extra_env=None):
                 print(out[:3000])
                 print("\n... [truncated] ...\n")
                 print(out[-2000:])
+                print(f"Full output saved to: .cmd_output_{cmd_hash}.log")
             else:
                 print(out)
         if r.stderr:
             print(f"STDERR: {r.stderr[-1000:]}")
+            if len(r.stderr) > 1000:
+                print(f"Full stderr saved to: .cmd_{cmd_hash}.log")
         print(f"Exit code: {r.returncode}")
+        print(f"Command log: .cmd_{cmd_hash}.log")
         return r.returncode == 0, r.stdout, r.stderr
     except subprocess.TimeoutExpired:
         print(f"Timeout after {timeout}s")
+        # Save timeout information to log file
+        try:
+            with open(cmd_log_file, "w") as log_f:
+                log_f.write(f"Command: {' '.join(cmd)}\n")
+                log_f.write(f"CWD: {cwd}\n")
+                log_f.write(f"Error: Timeout after {timeout}s\n")
+        except (OSError, IOError):
+            pass
         return False, "", "Timeout"
     except Exception as e:
         print(f"Error: {e}")
+        # Save exception information to log file
+        try:
+            with open(cmd_log_file, "w") as log_f:
+                log_f.write(f"Command: {' '.join(cmd)}\n")
+                log_f.write(f"CWD: {cwd}\n")
+                log_f.write(f"Error: {str(e)}\n")
+                import traceback
+                log_f.write(traceback.format_exc())
+        except (OSError, IOError):
+            pass
         return False, "", str(e)
 
 
@@ -389,8 +431,16 @@ def run_pipeline(project_root: str, target_spec_path: str) -> bool:
     print("Planner → CodeGen → MetricAnalysis → Verification")
     print("Agents will autonomously generate CUDA kernels based on targets")
     print(f"Timeout: 3600s (1 hour), overridable via PIPELINE_TIMEOUT env var")
+    print("\nAgent conversation logs will be saved to: agent_logs/ directory")
+    print("Check these files for detailed multi-round dialogues and error reasons")
 
     pipeline_timeout = int(os.environ.get("PIPELINE_TIMEOUT", "3600"))
+
+    # Run with detailed output capture
+    print("\n=== Pipeline Execution Start ===")
+    print("""Note: Agent dialogue will be captured in real-time. 
+Look for agent_logs/*.jsonl files for complete conversation history.""")
+    print()
 
     ok, out, err = run_cmd(
         [
@@ -416,7 +466,24 @@ def run_pipeline(project_root: str, target_spec_path: str) -> bool:
         timeout=pipeline_timeout,
         wd=project_root,
     )
+    
+    print("\n=== Pipeline Execution End ===")
     print(f"Pipeline completed: success={ok}")
+    
+    # Check for agent logs
+    state_dir = os.path.join(WORKING_DIR, ".state")
+    if os.path.isdir(state_dir):
+        state_files = list(Path(state_dir).rglob("*.jsonl"))
+        if state_files:
+            print(f"\nFound {len(state_files)} agent log files:")
+            for sf in state_files:
+                print(f"  - {sf.name}")
+            print("\nThese files contain:")
+            print("  • Multi-round dialogues between agents")
+            print("  • Tool calls and their results")
+            print("  • Error messages and recovery attempts")
+            print("  • Stage transitions and handoffs")
+    
     return ok
 
 
@@ -508,13 +575,25 @@ def copy_artifacts(project_root: str) -> None:
             description="Copy audit reports",
         )
 
-    # Copy state directory
+    # Copy state directory (contains agent conversation logs)
     state_dir = os.path.join(WORKING_DIR, ".state")
     if os.path.isdir(state_dir):
         state_files = list(Path(state_dir).rglob("*.jsonl"))
         print(f"State files: {len(state_files)}")
-        for sf in state_files[:10]:
+        for sf in state_files:
             print(f"  {sf.name} ({sf.stat().st_size} bytes)")
+        
+        # Copy state files to working dir for easy download
+        state_output_dir = os.path.join(WORKING_DIR, "agent_logs")
+        os.makedirs(state_output_dir, exist_ok=True)
+        for sf in state_files:
+            dest_file = os.path.join(state_output_dir, sf.name)
+            try:
+                import shutil
+                shutil.copy2(sf, dest_file)
+                print(f"  Copied to: agent_logs/{sf.name}")
+            except Exception as e:
+                print(f"  Failed to copy {sf.name}: {e}")
 
     # List all output files
     print(f"\nOutput files in {WORKING_DIR}:")
@@ -632,6 +711,21 @@ finally:
     if os.path.isfile(rp):
         print(f"  results.json size: {os.path.getsize(rp):,} bytes")
 
+    # Check for agent logs
+    agent_logs_dir = os.path.join(WORKING_DIR, "agent_logs")
+    if os.path.isdir(agent_logs_dir):
+        log_files = list(Path(agent_logs_dir).glob("*.jsonl"))
+        if log_files:
+            print(f"  Agent logs:      {len(log_files)} files")
+            for lf in log_files[:5]:  # Show first 5 files
+                print(f"    - {lf.name} ({lf.stat().st_size:,} bytes)")
+            if len(log_files) > 5:
+                print(f"    ... and {len(log_files) - 5} more files")
+        else:
+            print(f"  Agent logs:      NONE")
+    else:
+        print(f"  Agent logs:      NONE")
+
     # Write summary file
     summary = {
         "probe_ok": probe_ok,
@@ -642,11 +736,27 @@ finally:
         "errors": all_errors,
         "project_root": PROJECT_ROOT,
         "working_dir": WORKING_DIR,
+        "log_files": [str(f.relative_to(WORKING_DIR)) for f in Path(WORKING_DIR).rglob("*.log")],
+        "agent_logs": [str(f.relative_to(WORKING_DIR)) for f in Path(WORKING_DIR).rglob("agent_logs/*.jsonl")],
     }
     summary_path = os.path.join(WORKING_DIR, "execution_summary.json")
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
     print(f"\nExecution summary written to: {summary_path}")
+
+    # Detailed log file information
+    print("\n=== Log Files for Debugging ===")
+    print("Check the following files for detailed information:")
+    print("  1. execution.log         - Main execution log")
+    print("  2. session_log.jsonl     - Session state changes")
+    print("  3. agent_logs/*.jsonl    - Agent conversation history")
+    print("  4. execution_summary.json - Execution summary")
+    print("  5. results.json          - Final measurement results")
+    print("\nAgent logs contain:")
+    print("  • Multi-round dialogues between agents")
+    print("  • Tool calls and their results")
+    print("  • Error messages and recovery attempts")
+    print("  • Stage transitions and handoffs")
 
     if all_errors:
         print(f"\nERRORS ({len(all_errors)}):")
@@ -654,6 +764,7 @@ finally:
             print(f"  {i}. {err}")
 
     print("\nTest complete.")
-    print(f"Log file: {LOG_FILE}")
+    print(f"Main log file: {LOG_FILE}")
+    print(f"Agent logs directory: {os.path.join(WORKING_DIR, 'agent_logs')}")
     if log_fh:
         log_fh.close()
