@@ -21,11 +21,14 @@ def _retry_request(url, headers, json_payload, max_retries=2, timeout=60):
     """Retry POST request with exponential backoff for transient errors."""
     import urllib3
     last_exc = None
+    print(f"[model_caller] Sending request to: {url}")
     for attempt in range(max_retries):
         try:
+            print(f"[model_caller] Attempt {attempt+1}/{max_retries}")
             response = requests.post(
                 url, headers=headers, json=json_payload, timeout=timeout
             )
+            print(f"[model_caller] Response status: {response.status_code}")
             if response.status_code in (429, 500, 502, 503, 504):
                 wait = min(2 ** attempt * 3, 30)  # 减少等待时间
                 print(f"[model_caller] HTTP {response.status_code}, retrying in {wait}s ({attempt+1}/{max_retries})")
@@ -38,6 +41,7 @@ def _retry_request(url, headers, json_payload, max_retries=2, timeout=60):
             print(f"[model_caller] Connection error: {type(e).__name__}, retrying in {wait}s ({attempt+1}/{max_retries})")
             time.sleep(wait)
             last_exc = e
+    print(f"[model_caller] All retries exhausted")
     raise last_exc if last_exc else RuntimeError("All retries exhausted")
 
 

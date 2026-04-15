@@ -87,6 +87,7 @@ class Pipeline:
             The final SubAgentResult from the VERIFICATION stage,
             or a FAILED result if any stage fails permanently.
         """
+        print(f"[Pipeline] Starting pipeline with targets: {target_spec.get('targets', [])}")
         self._persister.log_entry("pipeline_start", details={"target_spec": target_spec})
 
         prev_result: SubAgentResult | None = None
@@ -95,6 +96,7 @@ class Pipeline:
 
         for step in self._stages:
             stage_start = time.monotonic()
+            print(f"[Pipeline] Executing stage: {step.stage.value}")
 
             # P7 gate
             self._check_p7(step.stage, prev_result)
@@ -104,6 +106,7 @@ class Pipeline:
                 handoff = self._handoff_validator.validate(
                     prev_stage, step.stage, prev_result
                 )
+                print(f"[Pipeline] Handoff validation: from {handoff.from_stage} to {handoff.to_stage} - valid={handoff.is_valid}")
                 self._persister.log_entry(
                     "handoff_validation",
                     details={
@@ -116,6 +119,7 @@ class Pipeline:
                 )
                 if not handoff.is_valid:
                     # Log errors but allow pipeline to continue (stage may still work)
+                    print(f"[Pipeline] Handoff validation failed with {len(handoff.errors)} errors")
                     for v in handoff.errors:
                         self._persister.log_entry(
                             "handoff_error",
@@ -124,16 +128,20 @@ class Pipeline:
 
             # Harness: check circuit breaker before executing stage
             if self._circuit_breaker is not None and self._circuit_breaker.is_open:
+                error_msg = f"Circuit breaker open: {self._circuit_breaker._state.trip_reason}"
+                print(f"[Pipeline] {error_msg}")
                 return SubAgentResult(
                     agent_role=step.agent.role,
                     status=SubAgentStatus.FAILED,
-                    error=f"Circuit breaker open: {self._circuit_breaker._state.trip_reason}",
+                    error=error_msg,
                 )
 
             # Execute with retries
+            print(f"[Pipeline] Running stage {step.stage.value} with {step.retry_on_failure} retries")
             result = self._execute_stage(step, prev_result, target_spec)
 
             stage_duration = time.monotonic() - stage_start
+            print(f"[Pipeline] Stage {step.stage.value} completed in {round(stage_duration, 2)}s with status: {result.status.value}")
 
             if result.is_failed():
                 self._persister.log_entry(
@@ -144,6 +152,7 @@ class Pipeline:
                         "duration_seconds": round(stage_duration, 2),
                     },
                 )
+                print(f"[Pipeline] Stage {step.stage.value} failed: {result.error}")
                 # Don't return immediately for non-critical stages
                 # Allow pipeline to continue with partial results
                 if step.stage in (PipelineStage.CODE_GEN, PipelineStage.METRIC_ANALYSIS):
@@ -154,6 +163,7 @@ class Pipeline:
                             "message": "Continuing with partial results",
                         },
                     )
+                    print(f"[Pipeline] Continuing with partial results for {step.stage.value}")
                     # Create a partial success result with available data
                     if result.data:
                         partial_result = SubAgentResult(
@@ -183,6 +193,7 @@ class Pipeline:
             # Preserve CodeGen measurements for final result assembly
             if step.stage == PipelineStage.CODE_GEN and result.is_success():
                 code_gen_data = dict(result.data)
+                print(f"[Pipeline] Preserved CodeGen measurements: {list(code_gen_data.get('measurements', {}).keys())}")
 
             prev_result = result
             prev_stage = step.stage
@@ -203,6 +214,9 @@ class Pipeline:
         # Persist final result
         if prev_result:
             self._persister.log_entry("pipeline_complete", details=prev_result.to_dict())
+            print(f"[Pipeline] Pipeline completed with status: {prev_result.status.value}")
+        else:
+            print("[Pipeline] Pipeline produced no result")
 
         return prev_result or SubAgentResult(
             agent_role=AgentRole.PLANNER,
@@ -223,6 +237,7 @@ class Pipeline:
             "pipeline_stage_start",
             details={"stage": step.stage.value, "retry_limit": step.retry_on_failure},
         )
+        print(f"[Pipeline] Starting stage {step.stage.value} with {step.retry_on_failure} retries")
         last_result: SubAgentResult | None = None
 
         for attempt in range(1 + step.retry_on_failure):
@@ -231,6 +246,7 @@ class Pipeline:
                     "pipeline_retry",
                     details={"stage": step.stage.value, "attempt": attempt},
                 )
+                print(f"[Pipeline] Retry {attempt} for stage {step.stage.value}")
 
             # Build the collaboration message
             # CRITICAL: target_spec must be available to ALL stages, not just Planner
@@ -249,12 +265,16 @@ class Pipeline:
             )
 
             # Use AgentLoop for iteration within this stage
+            print(f"[Pipeline] Running AgentLoop for stage {step.stage.value}")
             last_result = self._run_with_agent_loop(step, message)
 
+            print(f"[Pipeline] AgentLoop completed with status: {last_result.status.value}")
             if last_result.is_success():
+                print(f"[Pipeline] Stage {step.stage.value} succeeded")
                 break
 
             if last_result.status == SubAgentStatus.REJECTED:
+                print(f"[Pipeline] Stage {step.stage.value} rejected")
                 break
 
             self._persister.log_entry(
@@ -265,6 +285,12 @@ class Pipeline:
                     "error": last_result.error,
                 },
             )
+            print(f"[Pipeline] Attempt {attempt + 1} failed: {last_result.error}")
+
+        if last_result:
+            print(f"[Pipeline] Stage {step.stage.value} finished with status: {last_result.status.value}")
+        else:
+            print(f"[Pipeline] Stage {step.stage.value} produced no result after all retries")
 
         return last_result or SubAgentResult(
             agent_role=step.agent.role,

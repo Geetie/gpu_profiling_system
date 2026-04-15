@@ -111,6 +111,7 @@ class ProviderManager:
         try:
             api_key = provider.get_api_key()
             if not api_key:
+                print(f"[ProviderManager] No API key for {provider.name}")
                 return False
             
             headers = provider.get_headers(api_key)
@@ -121,6 +122,7 @@ class ProviderManager:
                 "temperature": 0.7
             }
             
+            print(f"[ProviderManager] Health checking {provider.name} at {provider.endpoints['chat']}")
             response = requests.post(
                 provider.endpoints["chat"],
                 headers=headers,
@@ -128,6 +130,7 @@ class ProviderManager:
                 timeout=15
             )
             
+            print(f"[ProviderManager] {provider.name} health check response: {response.status_code}")
             if response.status_code == 200:
                 try:
                     result = response.json()
@@ -135,12 +138,20 @@ class ProviderManager:
                     if choices:
                         message = choices[0].get("message", {})
                         content = message.get("content", "")
-                        return len(content.strip()) > 0
-                except:
-                    pass
-            return False
+                        if len(content.strip()) > 0:
+                            print(f"[ProviderManager] {provider.name} health check passed")
+                            return True
+                        else:
+                            print(f"[ProviderManager] {provider.name} returned empty content")
+                            return False
+                except Exception as e:
+                    print(f"[ProviderManager] {provider.name} JSON parsing failed: {e}")
+                    return False
+            else:
+                print(f"[ProviderManager] {provider.name} health check failed with status {response.status_code}")
+                return False
         except Exception as e:
-            print(f"健康检查失败 for {provider.name}: {e}")
+            print(f"[ProviderManager] Health check failed for {provider.name}: {e}")
             return False
 
     def set_provider(self, provider_name: str) -> bool:
