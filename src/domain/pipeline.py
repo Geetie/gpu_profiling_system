@@ -144,6 +144,27 @@ class Pipeline:
                         "duration_seconds": round(stage_duration, 2),
                     },
                 )
+                # Don't return immediately for non-critical stages
+                # Allow pipeline to continue with partial results
+                if step.stage in (PipelineStage.CODE_GEN, PipelineStage.METRIC_ANALYSIS):
+                    self._persister.log_entry(
+                        "pipeline_stage_partial",
+                        details={
+                            "stage": step.stage.value,
+                            "message": "Continuing with partial results",
+                        },
+                    )
+                    # Create a partial success result with available data
+                    if result.data:
+                        partial_result = SubAgentResult(
+                            agent_role=step.agent.role,
+                            status=SubAgentStatus.SUCCESS,
+                            data=result.data,
+                            error=f"Partial execution: {result.error}",
+                        )
+                        prev_result = partial_result
+                        prev_stage = step.stage
+                        continue
                 return result
 
             # Harness: score stage quality on circuit breaker

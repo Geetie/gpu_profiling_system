@@ -41,7 +41,12 @@ class ContextManager:
     # Compression targets ~80% of max_tokens to leave headroom
     COMPRESSION_RATIO = 0.8
 
-    def __init__(self, max_tokens: int = 8000) -> None:
+    def __init__(self, max_tokens: int = 16000) -> None:
+        """Initialize context manager with larger default budget.
+
+        Args:
+            max_tokens: Maximum tokens budget (default: 16000 for 32k context models)
+        """
         self._entries: list[ContextEntry] = []
         self._max_tokens = max_tokens
         self._total_tokens = 0

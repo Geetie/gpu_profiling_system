@@ -77,8 +77,8 @@ class ToolRunner:
         # Step 1: Lookup tool (P2 fail-closed)
         contract = self._registry.get(tool_name)
 
-        # Step 2: Validate input schema
-        self._validator.validate(contract.input_schema, arguments)
+        # Step 2: Validate input schema (returns coerced data)
+        arguments = self._validator.validate(contract.input_schema, arguments)
 
         # Step 3: Check approval requirements
         needs_approval = False
@@ -118,9 +118,9 @@ class ToolRunner:
 
         result = handler(arguments)
 
-        # Step 5: Validate output schema
+        # Step 5: Validate output schema (returns coerced data)
         try:
-            self._validator.validate(contract.output_schema, result)
+            result = self._validator.validate(contract.output_schema, result)
         except SchemaValidationError:
             self._persister.log_error(
                 error_type="SchemaValidationError",
