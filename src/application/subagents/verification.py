@@ -137,6 +137,8 @@ class VerificationAgent(BaseSubAgent):
             f"Independently review this GPU profiling result. "
             f"Check: (1) data completeness (all requested targets measured?), "
             f"(2) numeric sanity, (3) methodology soundness, (4) artifact existence.\n\n"
+            f"IMPORTANT: You are reviewing structured data, not directory contents. "
+            f"The working directory is NOT empty - it contains the complete project code.\n\n"
             f"Review data:\n{_json.dumps(review_payload, indent=2)}\n\n"
             f'Return a JSON object with "findings" (list of strings), '
             f'"concerns" (list of strings), "accepted" (boolean), '
