@@ -17,7 +17,7 @@ import requests
 from typing import Any, Dict, List, Optional
 
 
-def _retry_request(url, headers, json_payload, max_retries=3, timeout=120):
+def _retry_request(url, headers, json_payload, max_retries=2, timeout=60):
     """Retry POST request with exponential backoff for transient errors."""
     import urllib3
     last_exc = None
@@ -27,14 +27,14 @@ def _retry_request(url, headers, json_payload, max_retries=3, timeout=120):
                 url, headers=headers, json=json_payload, timeout=timeout
             )
             if response.status_code in (429, 500, 502, 503, 504):
-                wait = min(2 ** attempt * 5, 60)
+                wait = min(2 ** attempt * 3, 30)  # 减少等待时间
                 print(f"[model_caller] HTTP {response.status_code}, retrying in {wait}s ({attempt+1}/{max_retries})")
                 time.sleep(wait)
                 last_exc = RuntimeError(f"HTTP {response.status_code}: {response.text[:500]}")
                 continue
             return response
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
-            wait = min(2 ** attempt * 5, 60)
+            wait = min(2 ** attempt * 3, 30)  # 减少等待时间
             print(f"[model_caller] Connection error: {type(e).__name__}, retrying in {wait}s ({attempt+1}/{max_retries})")
             time.sleep(wait)
             last_exc = e
@@ -130,30 +130,55 @@ def _caller_from_provider(
     provider_manager,
     tools: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
-    """Use provider_manager for multi-provider support."""
-    provider = provider_manager.get_provider()
-    if not provider:
-        raise ValueError("No LLM provider configured")
+    """Use provider_manager for multi-provider support with failover."""
+    # 尝试所有可用的提供商
+    provider_priority = ["longcat", "aliyun_bailian", "anthropic"]
+    
+    for provider_name in provider_priority:
+        try:
+            # 手动设置提供商
+            if provider_manager.set_provider(provider_name):
+                provider = provider_manager.get_provider()
+                if not provider:
+                    continue
 
-    unified_config = provider_manager.create_unified_config()
-    if not unified_config:
-        raise ValueError("Cannot create provider config")
+                unified_config = provider_manager.create_unified_config()
+                if not unified_config:
+                    continue
 
-    env = unified_config["env"]
-    headers = unified_config["headers"]
+                env = unified_config["env"]
+                headers = unified_config["headers"]
 
-    api_key = env.get("ANTHROPIC_AUTH_TOKEN", "")
-    check_key(api_key, unified_config["provider_name"])
+                api_key = env.get("ANTHROPIC_AUTH_TOKEN", "")
+                try:
+                    check_key(api_key, unified_config["provider_name"])
+                except ValueError:
+                    continue
 
-    base_url = env.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
-    model = model_name or env.get("ANTHROPIC_MODEL", provider.get_model("default"))
+                base_url = env.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+                model = model_name or env.get("ANTHROPIC_MODEL", provider.get_model("default"))
 
-    if provider.provider == "anthropic":
-        return _call_anthropic(base_url, headers, model, messages, max_tokens, tools)
-    elif provider.provider in ("aliyun_bailian", "longcat"):
-        return _call_openai_compatible(base_url, headers, model, messages, max_tokens, tools)
-    else:
-        return _call_api(base_url, api_key, model, messages, max_tokens, tools)
+                print(f"[model_caller] 使用提供商: {provider_name}")
+                
+                if provider.provider == "anthropic":
+                    result = _call_anthropic(base_url, headers, model, messages, max_tokens, tools)
+                elif provider.provider in ("aliyun_bailian", "longcat"):
+                    result = _call_openai_compatible(base_url, headers, model, messages, max_tokens, tools)
+                else:
+                    result = _call_api(base_url, api_key, model, messages, max_tokens, tools)
+                
+                # 检查结果是否有效
+                if result.strip():
+                    return result
+                else:
+                    print(f"[model_caller] 提供商 {provider_name} 返回空内容，尝试下一个...")
+                    
+        except Exception as e:
+            print(f"[model_caller] 提供商 {provider_name} 失败: {str(e)}")
+            continue
+    
+    # 所有提供商都失败
+    raise ValueError("All LLM providers failed")
 
 
 def _call_api(

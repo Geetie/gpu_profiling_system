@@ -83,19 +83,65 @@ class ProviderManager:
                 print(f"NO 加载配置失败 {config_file}: {e}")
 
     def detect_provider(self) -> Optional[ProviderConfig]:
-        """自动检测可用的供应商"""
-        # 按优先级检测环境变量 - longcat优先于aliyun_bailian
+        """自动检测可用的供应商，优先选择健康状态良好的"""
         provider_priority = ["longcat", "aliyun_bailian", "anthropic"]
-
+        
+        for provider_name in provider_priority:
+            provider = self.providers.get(provider_name)
+            if provider and provider.get_api_key() and self._health_check(provider):
+                print(f"AUTO 自动检测到健康的供应商: {provider.name}")
+                self.current_provider = provider
+                return provider
+        
+        # 回退到第一个有API密钥的
         for provider_name in provider_priority:
             provider = self.providers.get(provider_name)
             if provider and provider.get_api_key():
-                print(f"AUTO 自动检测到供应商: {provider.name}")
+                print(f"AUTO 回退到供应商: {provider.name} (健康检查失败)")
                 self.current_provider = provider
                 return provider
-
+        
         print("NO 未检测到任何配置的供应商")
         return None
+    
+    def _health_check(self, provider: ProviderConfig) -> bool:
+        """检查供应商 API 的健康状态"""
+        import requests
+        import json
+        try:
+            api_key = provider.get_api_key()
+            if not api_key:
+                return False
+            
+            headers = provider.get_headers(api_key)
+            test_payload = {
+                "model": provider.get_model("default"),
+                "messages": [{"role": "user", "content": "Hello!"}],
+                "max_tokens": 20,
+                "temperature": 0.7
+            }
+            
+            response = requests.post(
+                provider.endpoints["chat"],
+                headers=headers,
+                json=test_payload,
+                timeout=15
+            )
+            
+            if response.status_code == 200:
+                try:
+                    result = response.json()
+                    choices = result.get("choices", [])
+                    if choices:
+                        message = choices[0].get("message", {})
+                        content = message.get("content", "")
+                        return len(content.strip()) > 0
+                except:
+                    pass
+            return False
+        except Exception as e:
+            print(f"健康检查失败 for {provider.name}: {e}")
+            return False
 
     def set_provider(self, provider_name: str) -> bool:
         """手动设置供应商"""
