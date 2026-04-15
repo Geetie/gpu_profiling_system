@@ -82,7 +82,7 @@ def log_step(step_name: str, status: str, details: dict | None = None):
         pass
 
 
-def run_cmd(cmd, timeout=300, description="", wd=None, extra_env=None):
+def run_cmd(cmd, timeout=300, description="", wd=None, extra_env=None, realtime_output=True):
     """Run a shell command with timeout and output capture."""
     if description:
         print(f"  {description}")
@@ -96,52 +96,96 @@ def run_cmd(cmd, timeout=300, description="", wd=None, extra_env=None):
     import hashlib
     cmd_hash = hashlib.md5(' '.join(cmd).encode()).hexdigest()[:8]
     cmd_log_file = os.path.join(WORKING_DIR, f".cmd_{cmd_hash}.log")
+    full_output = []
+    full_stderr = []
     
     try:
-        r = subprocess.run(
-            cmd, capture_output=True, text=True,
-            timeout=timeout, cwd=cwd, env=env,
-        )
+        if realtime_output:
+            # Run with real-time output
+            process = subprocess.Popen(
+                cmd, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE, 
+                text=True,
+                timeout=timeout, 
+                cwd=cwd, 
+                env=env,
+            )
+            
+            # Read output in real-time
+            stdout_lines = []
+            stderr_lines = []
+            
+            print("\n=== Command Output ===")
+            while True:
+                stdout_line = process.stdout.readline()
+                stderr_line = process.stderr.readline()
+                
+                if not stdout_line and not stderr_line and process.poll() is not None:
+                    break
+                
+                if stdout_line:
+                    print(stdout_line, end="")
+                    stdout_lines.append(stdout_line)
+                if stderr_line:
+                    print(f"STDERR: {stderr_line}", end="")
+                    stderr_lines.append(stderr_line)
+            
+            returncode = process.wait()
+            stdout = ''.join(stdout_lines)
+            stderr = ''.join(stderr_lines)
+        else:
+            # Run with captured output
+            r = subprocess.run(
+                cmd, capture_output=True, text=True,
+                timeout=timeout, cwd=cwd, env=env,
+            )
+            returncode = r.returncode
+            stdout = r.stdout
+            stderr = r.stderr
         
         # Save full output to log file
         try:
             with open(cmd_log_file, "w") as log_f:
                 log_f.write(f"Command: {' '.join(cmd)}\n")
                 log_f.write(f"CWD: {cwd}\n")
-                log_f.write(f"Exit code: {r.returncode}\n\n")
+                log_f.write(f"Exit code: {returncode}\n\n")
+                
                 log_f.write("STDOUT:\n")
-                log_f.write(r.stdout)
+                log_f.write(stdout)
                 log_f.write("\n\nSTDERR:\n")
-                log_f.write(r.stderr)
+                log_f.write(stderr)
         except (OSError, IOError) as e:
             print(f"Failed to write command log: {e}")
         
-        if r.stdout:
-            out = r.stdout
-            if len(out) > 5000:
-                # Save full output to a file so nothing is lost
-                full_out_path = os.path.join(WORKING_DIR, f".cmd_output_{cmd_hash}.log")
-                try:
-                    with open(full_out_path, "w") as _f:
-                        _f.write(out)
-                except (OSError, IOError):
-                    pass
-                print(f"... ({len(out)} chars total, showing first 3000 + last 2000)")
-                print(out[:3000])
-                print("\n... [truncated] ...\n")
-                print(out[-2000:])
-                print(f"Full output saved to: .cmd_output_{cmd_hash}.log")
-            else:
-                print(out)
-        if r.stderr:
-            print(f"STDERR: {r.stderr[-1000:]}")
-            if len(r.stderr) > 1000:
-                print(f"Full stderr saved to: .cmd_{cmd_hash}.log")
-        print(f"Exit code: {r.returncode}")
+        if not realtime_output:
+            if stdout:
+                out = stdout
+                if len(out) > 5000:
+                    # Save full output to a file so nothing is lost
+                    full_out_path = os.path.join(WORKING_DIR, f".cmd_output_{cmd_hash}.log")
+                    try:
+                        with open(full_out_path, "w") as _f:
+                            _f.write(out)
+                    except (OSError, IOError):
+                        pass
+                    print(f"... ({len(out)} chars total, showing first 3000 + last 2000)")
+                    print(out[:3000])
+                    print("\n... [truncated] ...\n")
+                    print(out[-2000:])
+                    print(f"Full output saved to: .cmd_output_{cmd_hash}.log")
+                else:
+                    print(out)
+            if stderr:
+                print(f"STDERR: {stderr[-1000:]}")
+                if len(stderr) > 1000:
+                    print(f"Full stderr saved to: .cmd_{cmd_hash}.log")
+        
+        print(f"\nExit code: {returncode}")
         print(f"Command log: .cmd_{cmd_hash}.log")
-        return r.returncode == 0, r.stdout, r.stderr
+        return returncode == 0, stdout, stderr
     except subprocess.TimeoutExpired:
-        print(f"Timeout after {timeout}s")
+        print(f"\nTimeout after {timeout}s")
         # Save timeout information to log file
         try:
             with open(cmd_log_file, "w") as log_f:
@@ -152,7 +196,7 @@ def run_cmd(cmd, timeout=300, description="", wd=None, extra_env=None):
             pass
         return False, "", "Timeout"
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"\nError: {e}")
         # Save exception information to log file
         try:
             with open(cmd_log_file, "w") as log_f:
@@ -435,10 +479,17 @@ def run_pipeline(project_root: str, target_spec_path: str) -> bool:
 
     pipeline_timeout = int(os.environ.get("PIPELINE_TIMEOUT", "3600"))
 
-    # Run with detailed output capture
+    # Run with real-time output capture
     print("\n=== Pipeline Execution Start ===")
     print("""Note: Agent dialogue will be captured in real-time. 
 Look for agent_logs/*.jsonl files for complete conversation history.""")
+    print()
+    print("=== Real-time Pipeline Output ===")
+    print("You will see the pipeline execution status and errors below:")
+    print("- Stage transitions: Planner → CodeGen → MetricAnalysis → Verification")
+    print("- Tool calls: compile_cuda, run_ncu, execute_binary, etc.")
+    print("- Error messages: API failures, compilation errors, etc.")
+    print("- Progress updates: Each agent's current activity")
     print()
 
     ok, out, err = run_cmd(
@@ -464,6 +515,7 @@ Look for agent_logs/*.jsonl files for complete conversation history.""")
         ],
         timeout=pipeline_timeout,
         wd=project_root,
+        realtime_output=True  # Enable real-time output
     )
     
     print("\n=== Pipeline Execution End ===")
