@@ -518,7 +518,34 @@ Look for agent_logs/*.jsonl files for complete conversation history.""")
     print("- Error messages: API failures, compilation errors, etc.")
     print("- Progress updates: Each agent's current activity")
     print()
+    print("=== Starting Pipeline at", time.strftime("%Y-%m-%d %H:%M:%S"))
+    print("=== Command:", " ".join([
+        sys.executable,
+        "-m",
+        "src.main",
+        "Profile GPU hardware parameters for the given targets",
+        "--pipeline",
+        "--target-spec",
+        target_spec_path,
+        "--output-dir",
+        WORKING_DIR,
+        "--state-dir",
+        os.path.join(WORKING_DIR, ".state"),
+        "--no-docker",
+        "--mode",
+        "high_autonomy",
+        "--max-turns",
+        "50",
+        "--max-tokens",
+        "16000",
+    ]))
+    print("=== Timeout:", pipeline_timeout, "seconds")
+    print("=== Working directory:", project_root)
+    print()
 
+    start_time = time.time()
+    print(f"=== Pipeline started at {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    
     ok, out, err = run_cmd(
         [
             sys.executable,
@@ -544,6 +571,13 @@ Look for agent_logs/*.jsonl files for complete conversation history.""")
         wd=project_root,
         realtime_output=True  # Enable real-time output
     )
+    
+    end_time = time.time()
+    print(f"=== Pipeline finished at {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"=== Execution time: {end_time - start_time:.2f} seconds")
+    print(f"=== Pipeline result: {'SUCCESS' if ok else 'FAILED'}")
+    if err:
+        print(f"=== Error message: {err[:500]}")
     
     print("\n=== Pipeline Execution End ===")
     print(f"Pipeline completed: success={ok}")
