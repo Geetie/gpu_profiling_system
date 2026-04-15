@@ -136,15 +136,21 @@ class LocalSandbox(SandboxRunner):
         return self._sandbox_root
 
     def _resolve_path(self, path: str) -> str:
-        """Resolve path and ensure it is inside the sandbox root."""
-        # Strip quotes if present (handles model-generated paths with quotes)
+        """Resolve path and ensure it is inside the sandbox root.
+        
+        Automatically strips leading/trailing quotes to handle
+        model-generated paths (e.g., "'/path/to/dir'").
+        
+        Raises:
+            PermissionError: if the resolved path escapes the sandbox.
+        """
         original_path = path
         path = path.strip('\'"')
         resolved = os.path.abspath(os.path.normpath(path))
         sandbox = self._sandbox_root.rstrip(os.sep) + os.sep
         if not (resolved.startswith(sandbox) or resolved == self._sandbox_root.rstrip(os.sep)):
             raise PermissionError(
-                f"Path escape blocked: {path!r} resolves outside sandbox {self._sandbox_root}"
+                f"Path escape blocked: {original_path!r} (resolved: {path!r}) resolves outside sandbox {self._sandbox_root}"
             )
         return resolved
 

@@ -136,6 +136,50 @@ class TestLocalSandbox:
         assert "timed out" in result.stderr.lower()
 
 
+class TestLocalSandboxQuotedPaths:
+    """Test handling of quoted paths in LocalSandbox (model-generated path fix)."""
+    
+    def test_quoted_absolute_path(self, tmp_path):
+        """Test that quoted absolute paths are handled correctly."""
+        sandbox = LocalSandbox(sandbox_root=str(tmp_path))
+        
+        # Simulate model-generated path with quotes
+        absolute_path = str(tmp_path / "workdir")
+        quoted_path = f"'{absolute_path}'"
+        
+        # Should resolve correctly
+        resolved = sandbox._resolve_path(quoted_path)
+        assert resolved == absolute_path
+    
+    def test_double_quoted_absolute_path(self, tmp_path):
+        """Test that double-quoted absolute paths are handled correctly."""
+        sandbox = LocalSandbox(sandbox_root=str(tmp_path))
+        
+        absolute_path = str(tmp_path / "workdir")
+        quoted_path = f'"{absolute_path}"'
+        
+        resolved = sandbox._resolve_path(quoted_path)
+        assert resolved == absolute_path
+    
+    def test_quoted_path_escape_blocked(self, tmp_path):
+        """Test that path escape attempts with quotes are still blocked."""
+        sandbox = LocalSandbox(sandbox_root=str(tmp_path / "sandbox"))
+        
+        # Create a sibling directory to test escape
+        (tmp_path / "outside").mkdir(exist_ok=True)
+        outside_path = str(tmp_path / "outside" / "file.txt")
+        
+        # Test with single quotes
+        quoted_path = f"'{outside_path}'"
+        with pytest.raises(PermissionError, match="Path escape blocked"):
+            sandbox._resolve_path(quoted_path)
+        
+        # Test with double quotes
+        quoted_path2 = f'"{outside_path}"'
+        with pytest.raises(PermissionError, match="Path escape blocked"):
+            sandbox._resolve_path(quoted_path2)
+
+
 # ── DockerSandbox Tests ─────────────────────────────────────────────
 
 

@@ -109,3 +109,49 @@ class TestFileOperationsCreate:
         existing.write_text("old")
         file_ops.create(str(existing), "new")
         assert existing.read_text() == "new"
+
+
+class TestFileOperationsQuotedPaths:
+    """Test handling of quoted paths (model-generated path fix)."""
+    
+    def test_quoted_absolute_path(self, file_ops, tmp_path):
+        """Test that quoted absolute paths are handled correctly."""
+        # Simulate the Kaggle scenario: model generates path with quotes
+        absolute_path = str(tmp_path / "benchmark.cu")
+        quoted_path = f"'{absolute_path}'"
+        
+        # Should work with quotes
+        file_ops.create(quoted_path, "// CUDA code")
+        content = file_ops.read(quoted_path)
+        assert content == "// CUDA code"
+    
+    def test_double_quoted_absolute_path(self, file_ops, tmp_path):
+        """Test that double-quoted absolute paths are handled correctly."""
+        absolute_path = str(tmp_path / "test.txt")
+        quoted_path = f'"{absolute_path}"'
+        
+        file_ops.create(quoted_path, "test content")
+        content = file_ops.read(quoted_path)
+        assert content == "test content"
+    
+    def test_quoted_path_with_spaces(self, file_ops, tmp_path):
+        """Test quoted paths containing spaces."""
+        absolute_path = str(tmp_path / "file with spaces.txt")
+        quoted_path = f"'{absolute_path}'"
+        
+        file_ops.create(quoted_path, "content with spaces")
+        content = file_ops.read(quoted_path)
+        assert content == "content with spaces"
+    
+    def test_quoted_path_escape_still_blocked(self, file_ops, tmp_path):
+        """Test that path escape attempts with quotes are still blocked."""
+        outside_file = str(tmp_path.parent / "outside.txt")
+        quoted_path = f"'{outside_file}'"
+        
+        with pytest.raises(PermissionError):
+            file_ops.create(quoted_path, "malicious")
+        
+        # Also test with double quotes
+        quoted_path2 = f'"{outside_file}"'
+        with pytest.raises(PermissionError):
+            file_ops.create(quoted_path2, "malicious")

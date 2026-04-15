@@ -28,15 +28,21 @@ class FileOperations:
     # ── Path Safety ────────────────────────────────────────────────
 
     def _resolve(self, path: str) -> str:
-        """Resolve and validate that *path* is inside the sandbox."""
-        # Strip quotes if present (handles model-generated paths with quotes)
+        """Resolve and validate that *path* is inside the sandbox.
+        
+        Automatically strips leading/trailing quotes to handle
+        model-generated paths (e.g., "'/path/to/file'").
+        
+        Raises:
+            PermissionError: if the resolved path escapes the sandbox.
+        """
         original_path = path
         path = path.strip('\'"')
         resolved = os.path.abspath(os.path.normpath(path))
         sandbox = self._sandbox.rstrip(os.sep) + os.sep
         if not (resolved.startswith(sandbox) or resolved == self._sandbox.rstrip(os.sep)):
             raise PermissionError(
-                f"Path escape blocked: {path!r} resolves outside sandbox {self._sandbox}"
+                f"Path escape blocked: {original_path!r} (resolved: {path!r}) resolves outside sandbox {self._sandbox}"
             )
         return resolved
 
