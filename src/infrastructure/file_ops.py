@@ -29,6 +29,9 @@ class FileOperations:
 
     def _resolve(self, path: str) -> str:
         """Resolve and validate that *path* is inside the sandbox."""
+        # Strip quotes if present (handles model-generated paths with quotes)
+        original_path = path
+        path = path.strip('\'"')
         resolved = os.path.abspath(os.path.normpath(path))
         sandbox = self._sandbox.rstrip(os.sep) + os.sep
         if not (resolved.startswith(sandbox) or resolved == self._sandbox.rstrip(os.sep)):

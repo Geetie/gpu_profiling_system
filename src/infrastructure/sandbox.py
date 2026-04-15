@@ -137,6 +137,9 @@ class LocalSandbox(SandboxRunner):
 
     def _resolve_path(self, path: str) -> str:
         """Resolve path and ensure it is inside the sandbox root."""
+        # Strip quotes if present (handles model-generated paths with quotes)
+        original_path = path
+        path = path.strip('\'"')
         resolved = os.path.abspath(os.path.normpath(path))
         sandbox = self._sandbox_root.rstrip(os.sep) + os.sep
         if not (resolved.startswith(sandbox) or resolved == self._sandbox_root.rstrip(os.sep)):
