@@ -107,29 +107,56 @@ def run_cmd(cmd, timeout=300, description="", wd=None, extra_env=None, realtime_
                 stdout=subprocess.PIPE, 
                 stderr=subprocess.PIPE, 
                 text=True,
-                timeout=timeout, 
                 cwd=cwd, 
                 env=env,
             )
             
-            # Read output in real-time
+            # Read output in real-time with timeout
+            import time
             stdout_lines = []
             stderr_lines = []
             
             print("\n=== Command Output ===")
+            start_time = time.time()
             while True:
-                stdout_line = process.stdout.readline()
-                stderr_line = process.stderr.readline()
+                # Check for timeout
+                if time.time() - start_time > timeout:
+                    process.kill()
+                    raise subprocess.TimeoutExpired(cmd, timeout)
                 
-                if not stdout_line and not stderr_line and process.poll() is not None:
+                # Read output with non-blocking
+                import select
+                ready, _, _ = select.select([process.stdout, process.stderr], [], [], 1.0)
+                
+                if process.stdout in ready:
+                    stdout_line = process.stdout.readline()
+                    if stdout_line:
+                        print(stdout_line, end="")
+                        stdout_lines.append(stdout_line)
+                
+                if process.stderr in ready:
+                    stderr_line = process.stderr.readline()
+                    if stderr_line:
+                        print(f"STDERR: {stderr_line}", end="")
+                        stderr_lines.append(stderr_line)
+                
+                # Check if process has exited
+                if process.poll() is not None:
+                    # Read any remaining output
+                    while True:
+                        stdout_line = process.stdout.readline()
+                        if not stdout_line:
+                            break
+                        print(stdout_line, end="")
+                        stdout_lines.append(stdout_line)
+                    
+                    while True:
+                        stderr_line = process.stderr.readline()
+                        if not stderr_line:
+                            break
+                        print(f"STDERR: {stderr_line}", end="")
+                        stderr_lines.append(stderr_line)
                     break
-                
-                if stdout_line:
-                    print(stdout_line, end="")
-                    stdout_lines.append(stdout_line)
-                if stderr_line:
-                    print(f"STDERR: {stderr_line}", end="")
-                    stderr_lines.append(stderr_line)
             
             returncode = process.wait()
             stdout = ''.join(stdout_lines)
