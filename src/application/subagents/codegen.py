@@ -154,21 +154,21 @@ class CodeGenAgent(BaseSubAgent):
 
         INT-5 fix: Log execution attempt for audit trail (P6).
         """
-        binary = artifacts.get("source", "./benchmark")
-        binary_dir = binary.rsplit("/", 1)[0] if "/" in binary else "."
-        # Derive binary name from artifact path
-        binary_name = binary.rsplit("/", 1)[-1] if "/" in binary else "benchmark"
-        # Replace .cu extension with no extension for the binary
-        if binary_name.endswith(".cu"):
-            binary_name = binary_name[:-3]
+        # The binary is always named "benchmark" and is in the same directory as source.cu
+        source_path = artifacts.get("source", "./source.cu")
+        binary_dir = source_path.rsplit("/", 1)[0] if "/" in source_path else "."
+        binary_name = "benchmark"
 
         self._persister.log_entry(
             action="execute_attempt",
             details={"binary": binary_name, "work_dir": binary_dir},
         )
+        
+        # Execute the binary in the same directory where it was compiled
         result = self._sandbox.run(
             command=f"./{binary_name}",
             args=[],
+            work_dir=binary_dir,
         )
         self._persister.log_entry(
             action="execute_result",
