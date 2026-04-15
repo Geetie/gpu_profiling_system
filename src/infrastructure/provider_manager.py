@@ -84,8 +84,8 @@ class ProviderManager:
 
     def detect_provider(self) -> Optional[ProviderConfig]:
         """自动检测可用的供应商"""
-        # 按优先级检测环境变量
-        provider_priority = ["aliyun_bailian", "longcat", "anthropic"]
+        # 按优先级检测环境变量 - longcat优先于aliyun_bailian
+        provider_priority = ["longcat", "aliyun_bailian", "anthropic"]
 
         for provider_name in provider_priority:
             provider = self.providers.get(provider_name)
