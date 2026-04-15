@@ -187,7 +187,7 @@ class Pipeline:
             prev_result = result
             prev_stage = step.stage
 
-        # Bubble up CodeGen measurements to final result
+        # Bubble up CodeGen measurements and tool results to final result
         if code_gen_data and prev_result and prev_result.is_success():
             if "measurements" in code_gen_data:
                 prev_result.data["measurements"] = code_gen_data["measurements"]
@@ -195,6 +195,10 @@ class Pipeline:
                 prev_result.data["analysis_method"] = code_gen_data["analysis_method"]
             if "code_gen_output" in code_gen_data:
                 prev_result.data["code_gen_output"] = code_gen_data["code_gen_output"]
+            if "tool_results" in code_gen_data:
+                prev_result.data["tool_results"] = code_gen_data["tool_results"]
+            if "binary_path" in code_gen_data:
+                prev_result.data["binary_path"] = code_gen_data["binary_path"]
 
         # Persist final result
         if prev_result:

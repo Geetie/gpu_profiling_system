@@ -92,6 +92,20 @@ class CodeGenAgent(BaseSubAgent):
                 error=f"Execution failed: {exec_result.stderr}",
             )
 
+        # Extract binary path from artifacts or sandbox directory
+        binary_path = ""
+        source_path = compile_result.artifacts.get("source", "./source.cu")
+        if source_path:
+            import os
+            binary_dir = source_path.rsplit("/", 1)[0] if "/" in source_path else "."
+            # Try to find the binary file
+            possible_binaries = ["benchmark", "unknown_benchmark", "gpu_benchmark", "cuda_benchmark"]
+            for bin_name in possible_binaries:
+                bin_path = os.path.join(binary_dir, bin_name)
+                if os.path.exists(bin_path) and os.access(bin_path, os.X_OK):
+                    binary_path = bin_path
+                    break
+
         result = SubAgentResult(
             agent_role=self.role,
             status=SubAgentStatus.SUCCESS,
@@ -100,6 +114,22 @@ class CodeGenAgent(BaseSubAgent):
                 "category": category,
                 "raw_output": exec_result.stdout,
                 "compile_output": compile_result.stdout,
+                "binary_path": binary_path,
+                "tool_results": [
+                    {
+                        "tool": "compile_cuda",
+                        "status": "success",
+                        "success": True,
+                        "binary_path": binary_path,
+                        "output": compile_result.stdout,
+                    },
+                    {
+                        "tool": "execute_binary",
+                        "status": "success",
+                        "stdout": exec_result.stdout,
+                        "return_code": exec_result.return_code,
+                    }
+                ],
             },
             artifacts=list(compile_result.artifacts.values()),
         )
