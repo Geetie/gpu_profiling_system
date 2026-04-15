@@ -348,6 +348,8 @@ class AgentLoop:
         completion_patterns = [
             "verdict: accept",
             "verdict: reject",
+            "reject:",
+            "rejected:",
             "all targets measured",
             "all targets have been measured",
             "measurement complete",

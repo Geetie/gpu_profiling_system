@@ -697,16 +697,54 @@ def _write_results_json(result, target_spec, output_dir):
                     if isinstance(v, (int, float)):
                         metrics[k] = v
 
-            # Priority 2: top-level numeric keys in result.data (backward compat)
+            # Priority 2: extract measurements from execute_binary stdout in tool_results
+            tool_results = result.data.get("tool_results", [])
+            if isinstance(tool_results, list):
+                for tr in tool_results:
+                    if not isinstance(tr, dict):
+                        continue
+                    stdout = tr.get("stdout", "")
+                    if stdout:
+                        for line in stdout.splitlines():
+                            line = line.strip()
+                            if ":" in line and not line.startswith("//"):
+                                parts = line.split(":", 1)
+                                if len(parts) == 2:
+                                    key = parts[0].strip()
+                                    val_str = parts[1].strip()
+                                    try:
+                                        val = float(val_str)
+                                        if key not in metrics:
+                                            metrics[key] = val
+                                    except ValueError:
+                                        pass
+
+            # Priority 3: top-level numeric keys in result.data (backward compat)
             for key, value in result.data.items():
                 if key in ("measurements", "tool_results", "final_output",
                            "code_gen_output", "analysis_method", "review_text",
                            "plan_text", "analysis_output"):
-                    continue  # skip structured fields
+                    continue
                 if isinstance(value, (int, float)):
                     metrics[key] = value
                 elif isinstance(value, list):
                     artifacts.extend(str(v) for v in value)
+
+            # Priority 4: extract from final_output text (LLM's summary)
+            final_output = result.data.get("final_output", "")
+            if final_output and not metrics:
+                import re
+                for line in final_output.splitlines():
+                    line = line.strip()
+                    match = re.match(r'^([\w_]+)\s*[:=]\s*([\d.]+)', line)
+                    if match:
+                        key = match.group(1)
+                        try:
+                            val = float(match.group(2))
+                            if key not in metrics:
+                                metrics[key] = val
+                        except ValueError:
+                            pass
 
         # Merge pipeline metrics (don't overwrite orchestrator measurements)
         for k, v in metrics.items():
@@ -797,12 +835,23 @@ def _run_pipeline_mode(args, sandbox):
         if result.status == SubAgentStatus.SUCCESS:
             ui.show_message("Pipeline completed successfully")
             ui.show_message(f"Result: {result.data}")
+        elif result.status == SubAgentStatus.REJECTED:
+            ui.show_message("Pipeline completed with REJECTED verification")
+            ui.show_message(f"Result: {result.data}")
+        else:
+            error_info = result.error or ""
+            if not error_info:
+                error_info = (
+                    f"Pipeline {result.status.value} — "
+                    f"stage: {result.agent_role.value}, "
+                    f"data keys: {', '.join(result.data.keys())}"
+                )
+            ui.show_tool_error("pipeline", error_info)
+            audit.record_error(error_info)
 
-            # Risk 1 fix: Single-write results.json.
-            # Pipeline collects hardware probe data (no file written), then
-            # assembles the final results.json itself. Eliminates the fragile
-            # three-step coupling (write → overwrite → merge back).
-            output_dir = args.output_dir or os.getcwd()
+        # Always write results.json if we have any data
+        output_dir = args.output_dir or os.getcwd()
+        if result.data:
             pipeline_data = dict(result.data or {})
             if result.metadata:
                 pipeline_data["_pipeline_metadata"] = result.metadata
@@ -832,16 +881,11 @@ def _run_pipeline_mode(args, sandbox):
                     target_spec=target_spec,
                     output_dir=output_dir,
                 )
-        else:
-            error_info = result.error or ""
-            if not error_info:
-                error_info = (
-                    f"Pipeline {result.status.value} — "
-                    f"stage: {result.agent_role.value}, "
-                    f"data keys: {', '.join(result.data.keys())}"
+                ui.show_message(
+                    f"Pipeline results written to: {os.path.join(output_dir, 'results.json')}"
                 )
-            ui.show_tool_error("pipeline", error_info)
-            audit.record_error(error_info)
+
+        if result.status not in (SubAgentStatus.SUCCESS, SubAgentStatus.REJECTED):
             return 1
     except KeyboardInterrupt:
         ui.show_message("Interrupted by user")

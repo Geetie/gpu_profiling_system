@@ -674,7 +674,7 @@ def analyze_results() -> bool:
 
 # ── Step 7: Copy Artifacts ───────────────────────────────────────────
 
-def copy_artifacts(project_root: str) -> None:
+def copy_artifacts(project_root: str, all_errors: list) -> None:
     """Copy audit reports and state files to working dir for download."""
     banner("6. Artifact Collection")
 
@@ -683,10 +683,14 @@ def copy_artifacts(project_root: str) -> None:
     src_audit = os.path.join(project_root, "audit")
     if not os.path.isdir(audit_dir) and os.path.isdir(src_audit):
         print(f"Copying audit reports from {src_audit}")
-        run_cmd(
+        ok, out, err = run_cmd(
             ["cp", "-r", src_audit, audit_dir],
             description="Copy audit reports",
         )
+        if not ok:
+            err_msg = f"Failed to copy audit reports: {err}"
+            print(f"  {err_msg}")
+            all_errors.append(err_msg)
 
     # Copy state directory (contains agent conversation logs)
     state_dir = os.path.join(WORKING_DIR, ".state")
@@ -801,7 +805,7 @@ try:
             all_errors.append("Results analysis failed")
 
         # ── Step 7: Collect artifacts ────────────────────────────────
-        copy_artifacts(PROJECT_ROOT)
+        copy_artifacts(PROJECT_ROOT, all_errors)
         log_step("artifacts", "collected")
 
 except Exception as e:

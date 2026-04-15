@@ -154,18 +154,24 @@ class Pipeline:
                 )
                 print(f"[Pipeline] Stage {step.stage.value} failed: {result.error}")
                 # Don't return immediately for non-critical stages
-                # Allow pipeline to continue with partial results
+                # Allow pipeline to continue with partial results ONLY if
+                # the stage produced some useful data (e.g., compiled at least
+                # one binary). If the stage produced nothing, abort.
                 if step.stage in (PipelineStage.CODE_GEN, PipelineStage.METRIC_ANALYSIS):
-                    self._persister.log_entry(
-                        "pipeline_stage_partial",
-                        details={
-                            "stage": step.stage.value,
-                            "message": "Continuing with partial results",
-                        },
+                    has_useful_data = bool(result.data and result.data.get("measurements"))
+                    has_compiled_binary = any(
+                        isinstance(tr, dict) and tr.get("binary_path")
+                        for tr in result.data.get("tool_results", [])
                     )
-                    print(f"[Pipeline] Continuing with partial results for {step.stage.value}")
-                    # Create a partial success result with available data
-                    if result.data:
+                    if has_useful_data or has_compiled_binary:
+                        self._persister.log_entry(
+                            "pipeline_stage_partial",
+                            details={
+                                "stage": step.stage.value,
+                                "message": "Continuing with partial results",
+                            },
+                        )
+                        print(f"[Pipeline] Continuing with partial results for {step.stage.value}")
                         partial_result = SubAgentResult(
                             agent_role=step.agent.role,
                             status=SubAgentStatus.SUCCESS,
@@ -194,6 +200,18 @@ class Pipeline:
             if step.stage == PipelineStage.CODE_GEN and result.is_success():
                 code_gen_data = dict(result.data)
                 print(f"[Pipeline] Preserved CodeGen measurements: {list(code_gen_data.get('measurements', {}).keys())}")
+
+            # Bubble up CodeGen data into MetricAnalysis result so Verification
+            # can see the full chain (CodeGen measurements + MetricAnalysis output)
+            if step.stage == PipelineStage.METRIC_ANALYSIS and code_gen_data and result.is_success():
+                if "measurements" not in result.data and "measurements" in code_gen_data:
+                    result.data["measurements"] = code_gen_data["measurements"]
+                if "code_gen_output" not in result.data and "code_gen_output" in code_gen_data:
+                    result.data["code_gen_output"] = code_gen_data["code_gen_output"]
+                if "tool_results" not in result.data and "tool_results" in code_gen_data:
+                    result.data["tool_results"] = code_gen_data["tool_results"]
+                if "code_gen_final_output" not in result.data and "final_output" in code_gen_data:
+                    result.data["code_gen_final_output"] = code_gen_data["final_output"]
 
             prev_result = result
             prev_stage = step.stage
@@ -342,30 +360,45 @@ class Pipeline:
                 f"DO NOT: verify results (that's Verification's job)\n\n"
                 f"IMPORTANT: You MUST call tools as JSON objects, one at a time:\n"
                 f'{{"tool": "write_file", "args": {{"file_path": ".sandbox/benchmark.cu", "content": "...code..."}}}}\n'
-                f'{{"tool": "compile_cuda", "args": {{"source": "...full .cu source code...", "flags": ["-O3"]}}}}\n\n'
+                f'{{"tool": "compile_cuda", "args": {{"source": "...full .cu source code...", "flags": ["-O3"]}}}}\n'
+                f'{{"tool": "execute_binary", "args": {{"binary_path": "<path from compile_cuda>"}}}}\n\n'
                 f"After each tool call, you will see the result. Then call the next tool.\n"
                 f"DO NOT just describe what you would do — actually call the tools.\n\n"
                 f"CRITICAL: You MUST use the .sandbox directory for all file operations.\n"
                 f"Example: .sandbox/benchmark.cu (correct)\n"
                 f"Incorrect: /kaggle/working/gpu_profiling_system/benchmark.cu (will be blocked)\n"
                 f"Incorrect: benchmark.cu (will be blocked)\n\n"
-                f"WORKFLOW: For each target in the task list:\n"
-                f"1. write_file(file_path=\".sandbox/target_name.cu\", content=\"...full .cu source code...\")\n"
-                f"2. compile_cuda(source=\"...full .cu source code...\", flags=[\"-O3\", \"-arch=sm_XX\"])\n"
-                f"3. execute_binary(binary_path=\"<path_from_compile_cuda>\")\n"
-                f"4. Parse the output for 'target_name: numeric_value'\n"
-                f"5. If compilation fails: read the error, fix the code, retry (max 3 retries)\n"
-                f"6. If execution fails: check binary path, fix, recompile\n"
-                f"7. After all targets are done, report all measured values\n\n"
+                f"MANDATORY WORKFLOW — process EACH target separately:\n"
+                f"For target 1:\n"
+                f'  1. compile_cuda(source="...full .cu source for target 1...", flags=["-O3"])\n'
+                f'  2. execute_binary(binary_path="<path from compile_cuda>")\n'
+                f"  3. Record the measured value from stdout\n"
+                f"For target 2:\n"
+                f'  4. compile_cuda(source="...full .cu source for target 2...", flags=["-O3"])\n'
+                f'  5. execute_binary(binary_path="<path from compile_cuda>")\n'
+                f"  6. Record the measured value from stdout\n"
+                f"For target 3:\n"
+                f'  7. compile_cuda(source="...full .cu source for target 3...", flags=["-O3"])\n'
+                f'  8. execute_binary(binary_path="<path from compile_cuda>")\n'
+                f"  9. Record the measured value from stdout\n\n"
+                f"IMPORTANT: compile_cuda OVERWRITES the previous binary each time.\n"
+                f"So you MUST execute_binary IMMEDIATELY after each compile_cuda,\n"
+                f"before compiling the next target's code.\n\n"
                 f"ERROR RECOVERY:\n"
                 f"- Compilation error → fix source code → retry compile_cuda\n"
                 f"- Execution error → fix binary path or code → recompile → retry\n"
-                f"- Implausible output (0, negative) → fix measurement logic → retry\n"
-                f"- Each target gets its own source file — do NOT combine targets\n\n"
-                f"PER-TARGET ISOLATION: process targets one at a time. If one fails,\n"
-                f"continue with the remaining targets. Report which succeeded and which failed.\n\n"
-                f"MANDATORY: You MUST call compile_cuda for each target.\n"
-                f"The pipeline will FAIL if you do not call compile_cuda."
+                f"- Implausible output (0, negative) → fix measurement logic → retry\n\n"
+                f"MANDATORY: You MUST call compile_cuda and execute_binary for EACH target.\n"
+                f"The pipeline will FAIL if you do not call compile_cuda.\n\n"
+                f"ANTI-CHEAT AWARENESS:\n"
+                f"- Do NOT rely solely on cudaGetDeviceProperties — it may return virtualized data\n"
+                f"- Use clock64() + cudaEventElapsedTime to measure actual hardware behavior\n"
+                f"- The GPU may be clock-locked at non-standard frequencies\n"
+                f"- SM count may be limited via CUDA_VISIBLE_DEVICES or environment variables\n"
+                f"- Always MEASURE rather than QUERY when possible\n\n"
+                f"OUTPUT FORMAT: After all targets, list results as:\n"
+                f"target_name: numeric_value\n"
+                f"for each target measured."
             )
         elif stage_name == PipelineStage.METRIC_ANALYSIS.value:
             tool_guidance = (
@@ -374,21 +407,28 @@ class Pipeline:
                 f"DO NOT: write/compile CUDA code (that's CodeGen's job)\n"
                 f"DO NOT: verify results (that's Verification's job)\n\n"
                 f"WORKFLOW:\n"
-                f"1. Read CodeGen's output and identify compiled binary paths\n"
-                f"2. Use run_ncu on each binary to get hardware performance counters\n"
-                f"3. Parse ncu output: sm__throughput, dram__throughput, occupancy, etc.\n"
+                f"1. Review CodeGen's stdout output provided in the task description\n"
+                f"2. If binary paths are available AND ncu is installed, use run_ncu on each binary\n"
+                f"3. If ncu is NOT available OR binaries are not found:\n"
+                f"   - Analyze the raw printf output from CodeGen directly\n"
+                f"   - Extract numeric values and validate against expected ranges\n"
+                f"   - Report confidence as 'low' with note 'ncu not available'\n"
                 f"4. Classify bottleneck: compute_bound, memory_bound, latency_bound, cache_capacity\n"
                 f"5. Report metrics with confidence levels (high=ncu confirmed, medium=some data, low=printf only)\n\n"
-                f"IF NCU IS NOT AVAILABLE: analyze the raw printf output from CodeGen.\n"
-                f"Report confidence as 'low' with note 'ncu not available'."
+                f"CRITICAL: Even if ncu is not available, you MUST still produce analysis.\n"
+                f"Use the CodeGen stdout data provided in the task description.\n"
+                f"Do NOT attempt to read files that may not exist.\n\n"
+                f"OUTPUT FORMAT: For each target:\n"
+                f"  target_name: measured_value (confidence: high/medium/low) [bottleneck_type]"
             )
         elif stage_name == PipelineStage.VERIFICATION.value:
             tool_guidance = (
                 f"\n\nYOUR TOOL: read_file ONLY\n"
                 f"YOUR JOB: Independently review all previous stage results\n"
                 f"You CANNOT: compile, execute, profile, write files, or generate measurements\n\n"
-                f"WORKFLOW: Review all previous stage data independently.\n"
-                f"Use read_file to check evidence files. State ACCEPT or REJECT.\n\n"
+                f"IMPORTANT: All previous stage data is provided in the task description below.\n"
+                f"You do NOT need to use read_file to find data — it is already given to you.\n"
+                f"Only use read_file if you need to check a specific evidence file.\n\n"
                 f"VERIFICATION CHECKS (perform in order):\n"
                 f"1. Data completeness — are ALL targets measured?\n"
                 f"2. Numeric sanity — are values in plausible GPU hardware ranges?\n"
@@ -459,6 +499,14 @@ class Pipeline:
                     f"- Include: cuda_runtime.h, main(), cudaMalloc, cudaMemcpy, kernel launch\n"
                     f"- Detect GPU arch: compile with -arch=sm_XX (from nvidia-smi, e.g. sm_60)\n"
                     f"- Run 3 trials, report median\n\n"
+                    f"ANTI-CHEAT RULES (CRITICAL):\n"
+                    f"- Do NOT rely solely on cudaGetDeviceProperties or cudaDeviceGetAttribute\n"
+                    f"  These APIs may return virtualized/misleading data in evaluation\n"
+                    f"- ALWAYS measure actual hardware behavior with micro-benchmarks\n"
+                    f"- For clock frequency: measure with clock64()/cudaEventElapsedTime ratio\n"
+                    f"- For SM count: verify API results with occupancy-based probing\n"
+                    f"- For cache sizes: use working-set sweep (not API queries)\n"
+                    f"- The GPU may be clock-locked at non-standard frequencies\n\n"
                     f"ERROR RECOVERY:\n"
                     f"- If a target fails after 3 retries: report the failure and continue\n"
                     f"- Do NOT let one failed target block the rest\n\n"
@@ -501,16 +549,18 @@ class Pipeline:
             raw_outputs = {}
             binary_paths = []
             measurements = {}
+            stdout_lines = []
             for tr in code_gen_data.get("tool_results", []):
                 if not isinstance(tr, dict):
                     continue
                 if tr.get("binary_path"):
                     binary_paths.append(tr["binary_path"])
                 if tr.get("stdout"):
-                    raw_outputs[f"stdout_{len(raw_outputs)}"] = tr["stdout"][:1000]
+                    stdout_text = tr["stdout"]
+                    raw_outputs[f"stdout_{len(raw_outputs)}"] = stdout_text[:2000]
+                    stdout_lines.append(stdout_text)
                 if tr.get("output"):
                     raw_outputs[f"compile_{len(raw_outputs)}"] = tr["output"][:500]
-            # Also capture direct measurements if present
             for key, val in code_gen_data.items():
                 if isinstance(val, dict) and key == "measurements":
                     measurements = val
@@ -518,6 +568,8 @@ class Pipeline:
             binary_info = f"Compiled binaries found: {len(binary_paths)}"
             if binary_paths:
                 binary_info += "\nPaths:\n" + "\n".join(f"  - {p}" for p in binary_paths)
+            else:
+                binary_info += "\nNo compiled binaries found — will analyze CodeGen stdout only."
 
             measurements_info = ""
             if measurements:
@@ -526,34 +578,41 @@ class Pipeline:
                     + "\n".join(f"  - {k}: {v}" for k, v in sorted(measurements.items()))
                 )
 
+            stdout_summary = ""
+            if stdout_lines:
+                stdout_summary = (
+                    f"\n\nCodeGen execute_binary stdout (RAW DATA — use this for analysis):\n"
+                    + "\n---\n".join(stdout_lines)
+                )
+
+            final_output = code_gen_data.get("final_output", "")
+            final_output_section = ""
+            if final_output:
+                final_output_section = f"\n\nCodeGen final text output:\n{final_output[:1500]}"
+
             return (
                 f"You are the Metric Analysis Agent.\n\n"
-                f"YOUR JOB: Profile compiled binaries with Nsight Compute (ncu) and analyze results.\n\n"
-                f"{binary_info}{measurements_info}\n\n"
-                f"CodeGen raw output:\n"
-                f"{_json.dumps(raw_outputs, indent=2, ensure_ascii=False)[:2000]}\n\n"
+                f"YOUR JOB: Profile compiled binaries with Nsight Compute (ncu) and analyze results.\n"
+                f"If ncu or binaries are unavailable, analyze CodeGen's stdout data directly.\n\n"
+                f"{binary_info}{measurements_info}{stdout_summary}{final_output_section}\n\n"
                 f"YOUR TASK:\n"
-                f"1. For each compiled binary, use run_ncu tool to profile it\n"
-                f"2. Key metrics to collect (organized by profiling section):\n"
+                f"1. If binary paths exist AND ncu is available, use run_ncu tool to profile each binary\n"
+                f"2. If ncu is NOT available OR binaries not found:\n"
+                f"   - Analyze the CodeGen stdout data provided above directly\n"
+                f"   - Extract numeric values and validate against expected ranges\n"
+                f"   - Report confidence = 'low' with note 'ncu not available'\n"
+                f"3. Key metrics to collect (if ncu available):\n"
                 f"   a) SM Throughput: sm__throughput.avg.pct_of_peak_sustained_elapsed\n"
                 f"   b) Memory Throughput: dram__throughput.avg.pct_of_peak_sustained_elapsed\n"
-                f"   c) L2 Throughput: l2__throughput.avg.pct_of_peak_sustained_elapsed\n"
-                f"   d) Warp Occupancy: sm__warps_active.avg.pct_of_peak_sustained_active\n"
-                f"   e) Bank Conflicts: l1tex__data_bank_conflicts.avg.per_request\n"
-                f"   f) L2 Hit Rate: l2__hit_rate.pct\n"
-                f"   g) Achieved Occupancy: sm__achived_occupancy.avg.pct_of_peak_sustained_occupancy\n\n"
-                f"3. BOTTLENECK CLASSIFICATION (roofline analysis):\n"
-                f"   - If dram__throughput% > sm__throughput% → memory_bound\n"
-                f"   - If sm__throughput% > dram__throughput% → compute_bound\n"
-                f"   - If both low (<30%) AND sm__warps_active% <20% → latency_bound\n"
-                f"   - If L2 hit rate <20% AND working set large → cache_capacity\n\n"
-                f"4. CROSS-VALIDATE against CodeGen measurements:\n"
+                f"   c) L2 Hit Rate: l2__hit_rate.pct\n"
+                f"   d) Achieved Occupancy: sm__warps_active.avg.pct_of_peak_sustained_active\n\n"
+                f"4. BOTTLENECK CLASSIFICATION (roofline analysis):\n"
+                f"   - dram__throughput% > sm__throughput% → memory_bound\n"
+                f"   - sm__throughput% > dram__throughput% → compute_bound\n"
+                f"   - both low (<30%) AND sm__warps_active% <20% → latency_bound\n\n"
+                f"5. CROSS-VALIDATE against CodeGen measurements:\n"
                 f"   - Compare CodeGen's printf values with ncu hardware counter data\n"
-                f"   - If they disagree: report both values and explain the discrepancy\n"
-                f"   - If ncu confirms CodeGen: confidence = 'high'\n\n"
-                f"5. If ncu is NOT available: analyze CodeGen printf data only\n"
-                f"   - Check internal consistency (latency hierarchy: L1 < L2 < DRAM)\n"
-                f"   - Report confidence = 'low' with note 'ncu not available'\n\n"
+                f"   - If they disagree: report both values and explain the discrepancy\n\n"
                 f"OUTPUT FORMAT:\n"
                 f"For each measurement:\n"
                 f"  target_name: measured_value (confidence: high/medium/low) [bottleneck_type]\n\n"
@@ -566,8 +625,7 @@ class Pipeline:
                 f"- L2 cache: 2-100 MB (power of 2 typically)\n"
                 f"- DRAM bandwidth: 100-900 GB/s\n"
                 f"- SM clock: 1000-2500 MHz\n"
-                f"- SM count: 8-256\n"
-                f"- Shared memory per block: 48-164 KB\n\n"
+                f"- SM count: 8-256\n\n"
                 f"TRUST MODEL: Do NOT blindly trust CodeGen's conclusions.\n"
                 f"Verify against raw ncu output. If ncu is not available, analyze printf output\n"
                 f"and report confidence as 'low'. Report which ncu metrics support each classification."
@@ -575,12 +633,41 @@ class Pipeline:
 
         elif stage_name == PipelineStage.VERIFICATION.value:
             # Verification receives the FULL chain: Planner targets + CodeGen output + MetricAnalysis
+            code_gen_data = prev_result.get("data", {})
+            code_gen_measurements = code_gen_data.get("measurements", {})
+            code_gen_final = code_gen_data.get("code_gen_final_output", "") or code_gen_data.get("final_output", "")
+            code_gen_tool_results = code_gen_data.get("tool_results", [])
+
+            stdout_data = []
+            for tr in code_gen_tool_results:
+                if isinstance(tr, dict) and tr.get("stdout"):
+                    stdout_data.append(tr["stdout"][:1500])
+
+            code_gen_section = ""
+            if code_gen_measurements:
+                code_gen_section = (
+                    f"\n\n=== CODEGEN MEASUREMENTS ===\n"
+                    + "\n".join(f"  {k}: {v}" for k, v in sorted(code_gen_measurements.items()))
+                )
+            if stdout_data:
+                code_gen_section += (
+                    f"\n\n=== CODEGEN RAW STDOUT ===\n"
+                    + "\n---\n".join(stdout_data)
+                )
+            if code_gen_final:
+                code_gen_section += f"\n\n=== CODEGEN FINAL OUTPUT ===\n{code_gen_final[:1500]}"
+
+            metric_analysis_section = ""
+            analysis_output = code_gen_data.get("analysis_output", "")
+            if analysis_output:
+                metric_analysis_section = f"\n\n=== METRIC ANALYSIS OUTPUT ===\n{analysis_output[:1500]}"
+
             return (
                 f"You are the independent Verification Agent for GPU hardware profiling.\n\n"
                 f"You do NOT trust any previous stage's conclusions.\n"
                 f"Review from first principles using GPU hardware knowledge.\n\n"
-                f"Previous stage data:\n"
-                f"{_json.dumps(prev_result.get('data', {}), indent=2, ensure_ascii=False)[:2000]}\n\n"
+                f"All data from previous stages is provided below — you do NOT need read_file.\n"
+                f"{code_gen_section}{metric_analysis_section}\n\n"
                 f"VERIFICATION CHECKS (perform in order):\n\n"
                 f"1. DATA COMPLETENESS: Are ALL requested targets measured? Any missing?\n"
                 f"2. NUMERIC SANITY: Are values within plausible GPU hardware ranges?\n"
@@ -829,10 +916,17 @@ class Pipeline:
         }
 
         # Stage-specific extraction and status determination
+        # AgentLoop's placeholder for empty model output — treat as empty
+        _empty_placeholders = {
+            "[Empty model output - will retry next turn]",
+            "[Empty model output]",
+        }
+        effective_final_text = final_text if final_text not in _empty_placeholders else ""
+
         if stage == PipelineStage.PLAN:
-            data["plan_text"] = final_text[:2000]
-            status = SubAgentStatus.SUCCESS if final_text else SubAgentStatus.FAILED
-            if not final_text and not tool_results:
+            data["plan_text"] = effective_final_text[:2000]
+            status = SubAgentStatus.SUCCESS if effective_final_text else SubAgentStatus.FAILED
+            if not effective_final_text and not tool_results:
                 data["error_detail"] = "Planner produced no output"
 
         elif stage == PipelineStage.CODE_GEN:
@@ -1098,11 +1192,46 @@ def _get_design_principle(target: str) -> str:
             "- Note: this measures per-SM bandwidth (shared memory is per-SM resource)"
         ),
         "sm_count": (
-            "Design: cudaDeviceGetAttribute for MultiProcessorCount.\n"
-            "- Use cudaDeviceGetAttribute(&count, cudaDevAttrMultiProcessorCount, device)\n"
-            "- This directly queries hardware — NOT cudaGetDeviceProperties (can be virtualized)\n"
-            "- Also query: maxThreadsPerBlock, warpSize, maxThreadsPerMultiProcessor\n"
+            "Design: Multi-strategy SM count detection.\n"
+            "- Strategy 1: cudaDeviceGetAttribute for MultiProcessorCount (may be virtualized)\n"
+            "- Strategy 2: Launch 1-block kernel that writes blockIdx.x to unique array position,\n"
+            "  then count unique block IDs to determine actual SM count\n"
+            "- Strategy 3: Use cudaOccupancyMaxActiveBlocksPerMultiprocessor with a tiny kernel\n"
+            "  to verify SM count independently\n"
+            "- Cross-validate all strategies — if they disagree, report all values\n"
             "- Print all values for cross-validation"
+        ),
+        "shmem_bank_conflict_penalty_ns": (
+            "Design: Measure the latency penalty of shared memory bank conflicts.\n"
+            "- Strategy 1: Two-kernel comparison (strided vs sequential access)\n"
+            "  (a) Strided kernel: thread t accesses shared_mem[t * 32] — all hit bank 0\n"
+            "  (b) Sequential kernel: thread t accesses shared_mem[(t + offset) % 256] — one per bank\n"
+            "  penalty_ns = (strided_latency - sequential_latency)\n"
+            "- Strategy 2: Vary the number of conflicting threads (2, 4, 8, 16, 32)\n"
+            "  to measure how penalty scales with conflict degree\n"
+            "- Use cudaEventElapsedTime for timing (bank conflicts are too fast for clock64)\n"
+            "- 1 block, 256 threads, __shared__ uint32_t[256]\n"
+            "- Run 3 trials, report median penalty in nanoseconds\n"
+            "- Cross-validate: penalty should be positive and < 100ns typically"
+        ),
+        "max_shmem_per_block_kb": (
+            "Design: Multi-strategy shared memory capacity detection.\n"
+            "- Strategy 1: cudaDeviceGetAttribute for cudaDevAttrMaxSharedMemoryPerBlock (may be virtualized)\n"
+            "- Strategy 2: Binary search — try allocating increasing __shared__ memory sizes\n"
+            "  until kernel launch fails, then report the largest successful allocation\n"
+            "- Strategy 3: Query cudaFuncAttributes with cudaFuncGetAttribute\n"
+            "- Cross-validate all strategies\n"
+            "- Report in KB"
+        ),
+        "l1_cache_size_kb": (
+            "Design: Working-set sweep to detect L1 cache capacity.\n"
+            "- Use pointer-chase kernel with varying working-set sizes (1KB to 256KB)\n"
+            "- Plot latency vs size — look for the 'cliff' where latency jumps\n"
+            "- The cliff indicates L1 cache capacity\n"
+            "- Use clock64() for cycle-level timing\n"
+            "- Ensure each access is dependent (pointer chase) to defeat prefetcher\n"
+            "- Run 3 trials per size, report median\n"
+            "- Cross-validate with cudaDeviceGetAttribute if available"
         ),
     }
     return principles.get(target, (
@@ -1110,5 +1239,9 @@ def _get_design_principle(target: str) -> str:
         "- Write a complete CUDA .cu file with proper includes and main()\n"
         "- Use clock64() for cycle timing, cudaEventElapsedTime for wall-clock timing\n"
         "- Output must be parseable: printf(\"key: value\\n\")\n"
-        "- Run multiple trials, report median"
+        "- Run multiple trials, report median\n"
+        "- ANTI-CHEAT: Do NOT rely solely on cudaGetDeviceProperties or cudaDeviceGetAttribute\n"
+        "  These may return virtualized data. Always MEASURE actual hardware behavior.\n"
+        "- Use at least 2 measurement strategies and cross-validate results\n"
+        "- Report confidence level and methodology used"
     ))
