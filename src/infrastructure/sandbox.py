@@ -178,12 +178,20 @@ class LocalSandbox(SandboxRunner):
                 cmd,
                 cwd=target_dir,
                 capture_output=True,
-                text=True,
+                text=False,  # Capture as bytes to handle non-UTF-8 output
                 timeout=self.config.timeout_seconds,
             )
+            # Decode with error handling for non-UTF-8 output
+            try:
+                stdout = result.stdout.decode('utf-8', errors='replace')
+                stderr = result.stderr.decode('utf-8', errors='replace')
+            except Exception:
+                # Fallback to Latin-1 if UTF-8 fails
+                stdout = result.stdout.decode('latin-1')
+                stderr = result.stderr.decode('latin-1')
             return SandboxResult(
-                stdout=result.stdout,
-                stderr=result.stderr,
+                stdout=stdout,
+                stderr=stderr,
                 return_code=result.returncode,
                 success=result.returncode == 0,
                 artifacts={"source": source_path} if source_path else {},
@@ -314,12 +322,20 @@ class DockerSandbox(SandboxRunner):
             result = subprocess.run(
                 docker_args,
                 capture_output=True,
-                text=True,
+                text=False,  # Capture as bytes to handle non-UTF-8 output
                 timeout=self.config.timeout_seconds,
             )
+            # Decode with error handling for non-UTF-8 output
+            try:
+                stdout = result.stdout.decode('utf-8', errors='replace')
+                stderr = result.stderr.decode('utf-8', errors='replace')
+            except Exception:
+                # Fallback to Latin-1 if UTF-8 fails
+                stdout = result.stdout.decode('latin-1')
+                stderr = result.stderr.decode('latin-1')
             return SandboxResult(
-                stdout=result.stdout,
-                stderr=result.stderr,
+                stdout=stdout,
+                stderr=stderr,
                 return_code=result.returncode,
                 success=result.returncode == 0,
             )
