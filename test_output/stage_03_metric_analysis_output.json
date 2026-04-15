@@ -1,0 +1,13 @@
+{
+  "status": "success",
+  "data": {
+    "bottleneck_type": "latency_bound",
+    "parsed_metrics": {
+      "dram_latency_cycles": 442.0,
+      "max_shmem_per_block_kb": 48.0,
+      "sm_count": 56.0
+    },
+    "confidence": 0.6
+  },
+  "fingerprint": "5e408ebb29acaf45"
+}

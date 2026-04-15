@@ -155,68 +155,72 @@ def _wire_subagent_model_caller(subagent) -> bool:
 
 
 def _wire_all_subagents(planner, code_gen, metric_analysis, verification) -> bool:
-    """Wire LLM model callers to all 4 subagents.
-
-    Uses different models for different roles:
-    - Planner: main model (reasoning about targets)
-    - CodeGen: code model (generating CUDA kernels)
-    - MetricAnalysis: main model (analyzing ncu output)
-    - Verification: reasoning model (independent review)
-    """
     from src.infrastructure.model_caller import make_model_caller, load_config
 
+    config = None
+    env = {}
     try:
         config = load_config()
-    except (FileNotFoundError, ValueError):
-        print("[llm] No API config found — subagents using rule-based fallbacks")
-        return False
+        env = config["env"]
+    except (FileNotFoundError, ValueError) as e:
+        print(f"[llm] No api_config.json: {e} — using provider_manager")
 
-    env = config["env"]
-    # Don't gate on check_key here — ProviderManager may have valid keys
-    # even if the config token fails placeholder checks. make_model_caller()
-    # does its own validation at actual call time.
-
-    # 尝试获取 provider_manager 以显示实际使用的提供商
     provider_name = "unknown"
-    actual_model = "unknown"
     try:
         from src.infrastructure.provider_manager import get_provider_manager
         provider_manager = get_provider_manager()
-        # 直接从配置中获取提供商信息，避免触发健康检查
+        print(f"[llm] Provider manager loaded: {list(provider_manager.providers.keys())}")
+
         if provider_manager.providers:
-            # 优先选择 longcat
-            if "longcat" in provider_manager.providers:
-                provider_name = "longcat"
-                actual_model = provider_manager.providers["longcat"].get_model("default")
-            elif "aliyun_bailian" in provider_manager.providers:
-                provider_name = "aliyun_bailian"
-                actual_model = provider_manager.providers["aliyun_bailian"].get_model("default")
-            else:
-                # 选择第一个可用的提供商
-                first_provider = next(iter(provider_manager.providers.values()))
-                provider_name = first_provider.provider
-                actual_model = first_provider.get_model("default")
+            provider_priority = ["longcat", "aliyun_bailian", "anthropic"]
+            for pn in provider_priority:
+                provider = provider_manager.providers.get(pn)
+                if not provider:
+                    print(f"[llm] Provider '{pn}' not in config, skipping")
+                    continue
+                api_key = provider.get_api_key()
+                if not api_key:
+                    print(f"[llm] Provider '{pn}' has no API key, skipping")
+                    continue
+                print(f"[llm] Selected provider: {pn} (model: {provider.get_model('default')})")
+                provider_manager.current_provider = provider
+                provider_name = pn
+                break
+
+            if provider_name == "unknown" and provider_manager.providers:
+                first_pn = next(iter(provider_manager.providers))
+                first_provider = provider_manager.providers[first_pn]
+                if first_provider.get_api_key():
+                    print(f"[llm] Fallback to first available provider: {first_pn}")
+                    provider_manager.current_provider = first_provider
+                    provider_name = first_pn
     except Exception as e:
-        print(f"[llm] Failed to get provider info: {e}")
-        pass
+        print(f"[llm] Provider manager error: {e}")
 
-    main_model = env.get("ANTHROPIC_MODEL", "qwen3.6-plus")
-    code_model = env.get("ANTHROPIC_DEFAULT_SONNET_MODEL", main_model)
-    reasoning_model = env.get("ANTHROPIC_REASONING_MODEL", main_model)
+    if provider_name == "longcat":
+        main_model = "longcat-flash-chat"
+        code_model = "longcat-flash-chat"
+        reasoning_model = "longcat-flash-chat"
+    elif provider_name == "aliyun_bailian":
+        main_model = "qwen-plus"
+        code_model = "qwen-plus"
+        reasoning_model = "qwen-max"
+    else:
+        main_model = env.get("ANTHROPIC_MODEL", "qwen3.6-plus")
+        code_model = env.get("ANTHROPIC_DEFAULT_SONNET_MODEL", main_model)
+        reasoning_model = env.get("ANTHROPIC_REASONING_MODEL", main_model)
 
-    # Planner: main model
+    print(f"[llm] Models: main={main_model}, code={code_model}, reasoning={reasoning_model}")
+
     planner.set_model_caller(make_model_caller(model_name=main_model))
     print(f"[llm] PlannerAgent -> {main_model} (Provider: {provider_name})")
 
-    # CodeGen: code model
     code_gen.set_model_caller(make_model_caller(model_name=code_model))
     print(f"[llm] CodeGenAgent -> {code_model} (Provider: {provider_name})")
 
-    # MetricAnalysis: main model
     metric_analysis.set_model_caller(make_model_caller(model_name=main_model))
     print(f"[llm] MetricAnalysisAgent -> {main_model} (Provider: {provider_name})")
 
-    # Verification: reasoning model (independent review needs deeper thinking)
     verification.set_model_caller(make_model_caller(
         model_name=reasoning_model,
         max_tokens=8192,

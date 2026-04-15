@@ -1,0 +1,7 @@
+{
+  "targets": [
+    "dram_latency_cycles",
+    "sm_count",
+    "max_shmem_per_block_kb"
+  ]
+}

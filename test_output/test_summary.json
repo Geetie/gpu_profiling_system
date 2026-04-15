@@ -1,0 +1,11 @@
+{
+  "test_type": "e2e_harness_test",
+  "generated_at": "2026-04-14T12:22:37.278873+00:00",
+  "start_time": "2026-04-14T12:22:37.168194+00:00",
+  "end_time": "2026-04-14T12:22:37.278873+00:00",
+  "stages_captured": 4,
+  "handoff_count": 3,
+  "tool_calls": 0,
+  "handoff_errors": 0,
+  "handoff_warnings": 0
+}

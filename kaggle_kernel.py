@@ -61,9 +61,9 @@ print(f"Log file: {LOG_FILE}")
 
 def banner(title):
     print()
-    print("=" * 60)
+    print("=" * 20)
     print(f"  {title}")
-    print("=" * 60)
+    print("=" * 20) 
 
 
 def log_step(step_name: str, status: str, details: dict | None = None):

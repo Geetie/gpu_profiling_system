@@ -212,6 +212,7 @@ class AgentLoop:
 
         self.loop_state.turn_count += 1
         self.session.increment_step()
+        print(f"[AgentLoop] Turn {self.loop_state.turn_count}/{self.max_turns} (session: {self.session.session_id})")
 
         if self._failure_pattern and self._failure_tracker.should_terminate(self._failure_pattern):
             self._emit(EventKind.STOP, {
@@ -233,10 +234,12 @@ class AgentLoop:
         try:
             if self._model_caller:
                 messages = self.context_manager.to_messages()
+                print(f"[AgentLoop] Calling model with {len(messages)} messages")
                 try:
                     self._model_output = self._model_caller(messages, self._available_tools)
                 except TypeError:
                     self._model_output = self._model_caller(messages)
+                print(f"[AgentLoop] Model response: {len(self._model_output)} chars")
             # _model_output is pre-set for testing
         except Exception as e:
             self.loop_state.last_error = str(e)
@@ -273,12 +276,14 @@ class AgentLoop:
 
         if tool_call is not None:
             self._failure_pattern = None
+            print(f"[AgentLoop] Tool call: {tool_call.name}({list(tool_call.arguments.keys())})")
             self._emit(EventKind.TOOL_CALL, {
                 "tool": tool_call.name,
                 "args": tool_call.arguments,
             })
             try:
                 result = self._execute_tool_call(tool_call)
+                print(f"[AgentLoop] Tool result: {tool_call.name} -> {str(result)[:200]}")
                 self._emit(EventKind.TOOL_RESULT, {
                     "tool": tool_call.name,
                     "status": "success",

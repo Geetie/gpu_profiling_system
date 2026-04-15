@@ -84,22 +84,31 @@ def make_model_caller(model_name: str | None = None, max_tokens: int = 4096):
     Strategy:
     1. Try provider_manager (multi-provider support)
     2. Fall back to direct api_config.json reading (Kaggle compatibility)
+
+    IMPORTANT: Never call provider_manager.get_provider() here because it
+    triggers detect_provider() which does a health-check HTTP request that
+    can block for minutes.  Instead, check current_provider directly.
     """
-    # Try provider_manager first
     provider_manager = None
     try:
         from src.infrastructure.provider_manager import get_provider_manager
         provider_manager = get_provider_manager()
-        if provider_manager.get_provider() is None:
+        # 直接检查 current_provider，不触发 detect_provider() / 健康检查
+        if provider_manager.current_provider is None and not provider_manager.providers:
             provider_manager = None
     except Exception:
         provider_manager = None
 
-    # Fall back to api_config.json
     use_fallback = provider_manager is None
 
+    if provider_manager and provider_manager.current_provider:
+        print(f"[model_caller] Using provider: {provider_manager.current_provider.provider}")
+    elif provider_manager and provider_manager.providers:
+        print(f"[model_caller] Provider manager loaded but no current_provider set yet")
+    else:
+        print(f"[model_caller] No provider_manager, using api_config.json fallback")
+
     def _caller(messages: List[Dict[str, Any]], tools: Optional[List[Dict[str, Any]]] = None) -> str:
-        """Actual model call function."""
         if use_fallback:
             return _caller_from_config(messages, model_name, max_tokens, tools)
         else:
@@ -134,88 +143,86 @@ def _caller_from_provider(
     provider_manager,
     tools: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
-    """Use provider_manager for multi-provider support with failover."""
-    # 首先尝试使用当前提供商（如果已设置），不触发健康检查
+    """Use provider_manager for multi-provider support with failover.
+
+    IMPORTANT: Never call provider_manager.get_provider() or
+    create_unified_config() because they trigger detect_provider()
+    which does a health-check HTTP request that can block for minutes.
+    Instead, access provider config directly.
+    """
+    provider_priority = ["longcat", "aliyun_bailian", "anthropic"]
+
+    tried_providers = set()
+
+    # 首先尝试 current_provider（如果已设置）
     if provider_manager.current_provider:
         provider = provider_manager.current_provider
-        print(f"[model_caller] 使用当前提供商: {provider.provider}")
+        tried_providers.add(provider.provider)
+        print(f"[model_caller] Trying current provider: {provider.provider}")
         try:
-            unified_config = provider_manager.create_unified_config()
-            if unified_config:
-                env = unified_config["env"]
-                headers = unified_config["headers"]
+            api_key = provider.get_api_key()
+            if api_key:
+                base_url = provider.endpoints["chat"]
+                model = model_name or provider.get_model("default")
+                headers = provider.get_headers(api_key)
 
-                api_key = env.get("ANTHROPIC_AUTH_TOKEN", "")
-                try:
-                    check_key(api_key, unified_config["provider_name"])
-                except ValueError:
-                    pass
+                print(f"[model_caller] Calling {provider.provider}: model={model}, url={base_url}")
+
+                if provider.provider == "anthropic":
+                    result = _call_anthropic(base_url, headers, model, messages, max_tokens, tools)
+                elif provider.provider in ("aliyun_bailian", "longcat"):
+                    result = _call_openai_compatible(base_url, headers, model, messages, max_tokens, tools)
                 else:
-                    base_url = env.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
-                    model = model_name or env.get("ANTHROPIC_MODEL", provider.get_model("default"))
+                    result = _call_api(base_url, api_key, model, messages, max_tokens, tools)
 
-                    print(f"[model_caller] 使用提供商: {provider.provider}")
-                    
-                    if provider.provider == "anthropic":
-                        result = _call_anthropic(base_url, headers, model, messages, max_tokens, tools)
-                    elif provider.provider in ("aliyun_bailian", "longcat"):
-                        result = _call_openai_compatible(base_url, headers, model, messages, max_tokens, tools)
-                    else:
-                        result = _call_api(base_url, api_key, model, messages, max_tokens, tools)
-                    
-                    # 检查结果是否有效
-                    if result.strip():
-                        return result
-                    else:
-                        print(f"[model_caller] 提供商 {provider.provider} 返回空内容")
+                if result and result.strip():
+                    return result
+                else:
+                    print(f"[model_caller] Provider {provider.provider} returned empty content")
+            else:
+                print(f"[model_caller] Provider {provider.provider} has no API key")
         except Exception as e:
-            print(f"[model_caller] 当前提供商失败: {str(e)}")
-    
-    # 如果当前提供商未设置或失败，尝试直接使用优先提供商，不触发健康检查
-    provider_priority = ["longcat", "aliyun_bailian", "anthropic"]
-    
+            print(f"[model_caller] Current provider {provider.provider} failed: {str(e)[:200]}")
+
+    # 遍历优先级列表尝试其他提供商
     for provider_name in provider_priority:
-        # 跳过当前已经尝试过的提供商
-        if provider_manager.current_provider and provider_manager.current_provider.provider == provider_name:
+        if provider_name in tried_providers:
             continue
-            
+
         try:
-            # 直接获取提供商配置，不触发健康检查
             provider = provider_manager.providers.get(provider_name)
             if not provider:
                 continue
-            
+
             api_key = provider.get_api_key()
             if not api_key:
+                print(f"[model_caller] Provider {provider_name} has no API key, skipping")
                 continue
-            
-            # 手动设置提供商
-            provider_manager.set_provider(provider_name)
-            
-            # 创建统一配置
+
+            print(f"[model_caller] Trying provider: {provider_name}")
+            provider_manager.current_provider = provider
+
             base_url = provider.endpoints["chat"]
             model = model_name or provider.get_model("default")
             headers = provider.get_headers(api_key)
 
-            print(f"[model_caller] 尝试提供商: {provider_name}")
-            
+            print(f"[model_caller] Calling {provider_name}: model={model}, url={base_url}")
+
             if provider.provider == "anthropic":
                 result = _call_anthropic(base_url, headers, model, messages, max_tokens, tools)
             elif provider.provider in ("aliyun_bailian", "longcat"):
                 result = _call_openai_compatible(base_url, headers, model, messages, max_tokens, tools)
             else:
                 result = _call_api(base_url, api_key, model, messages, max_tokens, tools)
-            
-            # 检查结果是否有效
-            if result.strip():
+
+            if result and result.strip():
                 return result
             else:
-                print(f"[model_caller] 提供商 {provider_name} 返回空内容，尝试下一个...")
+                print(f"[model_caller] Provider {provider_name} returned empty content, trying next...")
         except Exception as e:
-            print(f"[model_caller] 提供商 {provider_name} 失败: {str(e)}")
+            print(f"[model_caller] Provider {provider_name} failed: {str(e)[:200]}")
             continue
-    
-    # 所有提供商都失败
+
     raise ValueError("All LLM providers failed")
 
 
@@ -313,8 +320,6 @@ def _call_openai_compatible(
     tools: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Call OpenAI-compatible API endpoint."""
-    # LongCat/DashScope apply_chat_template crashes on None content.
-    # Sanitize all messages defensively before sending.
     cleaned_messages = []
     for msg in messages:
         role = msg.get("role", "")
@@ -323,7 +328,6 @@ def _call_openai_compatible(
             cleaned_messages.append({"role": role, "content": str(content)})
         elif role:
             cleaned_messages.append({"role": role, "content": ""})
-        # Skip messages with no role — malformed, safer to omit
 
     payload = {
         "model": model,
@@ -335,9 +339,12 @@ def _call_openai_compatible(
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
 
+    print(f"[model_caller] POST {base_url} model={model} msgs={len(cleaned_messages)} tools={len(tools) if tools else 0}")
+
     response = _retry_request(base_url, headers=headers, json_payload=payload, timeout=120)
 
     if response.status_code != 200:
+        print(f"[model_caller] API error: {response.status_code} - {response.text[:300]}")
         raise RuntimeError(f"API call failed: {response.status_code} - {response.text[:500]}")
 
     result = response.json()
@@ -346,7 +353,6 @@ def _call_openai_compatible(
     # Check for tool_calls (OpenAI function calling)
     tool_calls = choice.get("message", {}).get("tool_calls")
     if tool_calls:
-        # Return the first tool call in AgentLoop's expected format
         tc = tool_calls[0]
         if tc.get("type") == "function":
             func = tc["function"]
@@ -354,10 +360,13 @@ def _call_openai_compatible(
                 args = json.loads(func["arguments"])
             except (json.JSONDecodeError, TypeError):
                 args = {}
+            print(f"[model_caller] Got tool_call: {func['name']}")
             return json.dumps({"tool": func["name"], "args": args})
 
     # Fallback to text content
-    return choice.get("message", {}).get("content", "")
+    content = choice.get("message", {}).get("content", "")
+    print(f"[model_caller] Got text response: {len(content)} chars")
+    return content
 
 
 def make_subagent_model_caller(model_name: str | None = None, max_tokens: int = 4096):

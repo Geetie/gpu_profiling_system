@@ -1,0 +1,17 @@
+{
+  "status": "success",
+  "data": {
+    "review": [
+      "All 3 requested targets measured",
+      "Data contains 3 fields",
+      "'confidence' = 0.6 (within plausible range)",
+      "Bottleneck type 'latency_bound' is valid"
+    ],
+    "accepted": true,
+    "concerns": [
+      "No artifacts referenced"
+    ],
+    "generation_fingerprint": "none"
+  },
+  "fingerprint": "a73c60647bb92034"
+}

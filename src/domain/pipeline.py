@@ -733,6 +733,9 @@ class Pipeline:
         # Wire model caller
         if agent._model_caller is not None:
             loop.set_model_caller(agent._model_caller)
+            print(f"[Pipeline] Wired model caller to {stage_name} stage")
+        else:
+            print(f"[Pipeline] WARNING: No model caller for {stage_name} stage!")
 
         # Wire tool executor if sandbox available
         if self._sandbox and self._tool_handlers:
@@ -740,8 +743,10 @@ class Pipeline:
             loop.set_tool_executor(
                 lambda tool_name, args: handlers[tool_name](args)
             )
-            # Pass tool definitions to the model caller for OpenAI function calling
             loop.set_available_tools(self._tool_handler_tools(handlers, agent.tool_registry))
+            print(f"[Pipeline] Wired {len(handlers)} tool handlers to {stage_name} stage")
+        else:
+            print(f"[Pipeline] WARNING: No tool handlers for {stage_name} stage!")
 
         # Auto-approve tool calls in HIGH_AUTONOMY mode (no human in loop)
         if agent.permission_mode == PermissionMode.HIGH_AUTONOMY:
@@ -757,8 +762,11 @@ class Pipeline:
 
         # Run the loop — iterates until model stops calling tools or max turns
         try:
+            print(f"[Pipeline] Starting AgentLoop for {stage_name} (max_turns={self._max_turns_per_stage})")
             loop.start()
+            print(f"[Pipeline] AgentLoop finished for {stage_name} (turns={loop.loop_state.turn_count})")
         except Exception as e:
+            print(f"[Pipeline] AgentLoop CRASHED in {stage_name}: {e}")
             return SubAgentResult(
                 agent_role=agent.role,
                 status=SubAgentStatus.FAILED,

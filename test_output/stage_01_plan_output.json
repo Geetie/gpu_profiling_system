@@ -1,0 +1,69 @@
+{
+  "status": "success",
+  "data": {
+    "targets": [
+      "dram_latency_cycles",
+      "sm_count",
+      "max_shmem_per_block_kb"
+    ],
+    "tasks": [
+      {
+        "target": "dram_latency_cycles",
+        "category": "latency_measurement",
+        "method": "pointer-chasing with random permutation chains (LCG-seeded Knuth shuffle), clock64() for cycle timing, latency = total_cycles / iterations, working set sized for target memory level"
+      },
+      {
+        "target": "sm_count",
+        "category": "unknown",
+        "method": "custom micro-benchmark with clock64() timing and parseable printf output"
+      },
+      {
+        "target": "max_shmem_per_block_kb",
+        "category": "capacity_measurement",
+        "method": "working-set sweep with pointer-chasing at multiple sizes (1, 2, 4, 8, 16, 32, 64, 128 MB), detect latency cliff where cycles/access jumps >3x (L2 miss → DRAM)"
+      }
+    ],
+    "plan": [
+      {
+        "sender": "planner",
+        "receiver": "code_gen",
+        "message_type": "task_dispatch",
+        "payload": {
+          "task": {
+            "target": "dram_latency_cycles",
+            "category": "latency_measurement",
+            "method": "pointer-chasing with random permutation chains (LCG-seeded Knuth shuffle), clock64() for cycle timing, latency = total_cycles / iterations, working set sized for target memory level"
+          }
+        },
+        "timestamp": "2026-04-14T12:22:37.274517+00:00"
+      },
+      {
+        "sender": "planner",
+        "receiver": "code_gen",
+        "message_type": "task_dispatch",
+        "payload": {
+          "task": {
+            "target": "sm_count",
+            "category": "unknown",
+            "method": "custom micro-benchmark with clock64() timing and parseable printf output"
+          }
+        },
+        "timestamp": "2026-04-14T12:22:37.274517+00:00"
+      },
+      {
+        "sender": "planner",
+        "receiver": "code_gen",
+        "message_type": "task_dispatch",
+        "payload": {
+          "task": {
+            "target": "max_shmem_per_block_kb",
+            "category": "capacity_measurement",
+            "method": "working-set sweep with pointer-chasing at multiple sizes (1, 2, 4, 8, 16, 32, 64, 128 MB), detect latency cliff where cycles/access jumps >3x (L2 miss → DRAM)"
+          }
+        },
+        "timestamp": "2026-04-14T12:22:37.274517+00:00"
+      }
+    ]
+  },
+  "fingerprint": "31063de51e465a80"
+}
