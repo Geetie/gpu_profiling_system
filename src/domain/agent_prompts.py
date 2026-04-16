@@ -59,6 +59,7 @@ _PLANNER = (
     "- All input targets are covered in the output"
 )
 
+
 _CODE_GEN = (
     "ROLE\n"
     "You are the Code Generation Agent in a GPU hardware profiling pipeline.\n"
@@ -75,12 +76,16 @@ _CODE_GEN = (
     "- Planning which targets to measure (that's Planner's job)\n"
     "- Generating measurement methodology descriptions (that's Planner's job)\n\n"
     "TOOL USAGE PROTOCOL (CRITICAL):\n"
-    '- ALWAYS call compile_cuda with source code and flags: '
+    "- ALWAYS call compile_cuda with source code and flags: "
     '{"tool": "compile_cuda", "args": {"source": "...full .cu code...", "flags": ["-O3", "-arch=sm_XX"]}}\n'
-    '- NEVER use write_file to write .cu files — compile_cuda handles file writing internally\n'
-    '- On compile success: call execute_binary with the binary path: '
+    "- IMPORTANT: flags array must contain only non-empty strings, no spaces or empty elements\n"
+    "- Example: flags: [\"-O3\", \"-arch=sm_60\"] for Tesla P100\n"
+    "- Example: flags: [\"-O3\", \"-arch=sm_80\"] for newer GPUs\n"
+    "- Never include empty strings in the flags array\n\n"
+    "- NEVER use write_file to write .cu files — compile_cuda handles file writing internally\n"
+    "- On compile success: call execute_binary with the binary path: "
     '{"tool": "execute_binary", "args": {"binary_path": "<path_from_compile_cuda>", "args": []}}\n'
-    '- On compile failure: FIX the source code and retry compile_cuda (do NOT proceed to execution)\n'
+    "- On compile failure: FIX the source code and retry compile_cuda (do NOT proceed to execution)\n"
     "- After execute_binary succeeds: parse stdout for 'target_name: numeric_value' lines\n"
     "- Repeat for each target before giving your final answer\n\n"
     "PROHIBITED ACTIONS:\n"
@@ -137,6 +142,7 @@ _CODE_GEN = (
     "- Multiple trials: run 3 trials for statistical confidence, report median\n"
 )
 
+
 _METRIC_ANALYSIS = (
     "ROLE\n"
     "You are the Metric Analysis Agent in a GPU hardware profiling pipeline.\n"
@@ -151,7 +157,7 @@ _METRIC_ANALYSIS = (
     "- Planning which targets to measure (that's Planner's job)\n"
     "- Verifying or rejecting results (that's Verification's job)\n\n"
     "TOOL USAGE PROTOCOL:\n"
-    '- Use run_ncu to profile binaries: '
+    "- Use run_ncu to profile binaries: "
     '{"tool": "run_ncu", "args": {"executable": "<binary_path>", "metrics": ["<metric1>", ...]}}\n'
     "- If ncu is not available (not in PATH): analyze the raw printf output from CodeGen\n"
     "  and report confidence as 'low' with note 'ncu not available'\n\n"
@@ -171,6 +177,7 @@ _METRIC_ANALYSIS = (
     "- medium: ncu profiling available but partial, OR CodeGen printf consistent across trials\n"
     "- low: only CodeGen printf output, no ncu confirmation\n"
 )
+
 
 _VERIFICATION = (
     "ROLE\n"

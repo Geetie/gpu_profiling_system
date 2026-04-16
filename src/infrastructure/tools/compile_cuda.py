@@ -57,9 +57,12 @@ def compile_cuda_handler(
     runner = sandbox or LocalSandbox(SandboxConfig())
 
     # Sanitize flags: only allow safe characters
-    _SAFE_FLAG_CHARS = set("-_./+=:,")
+    _SAFE_FLAG_CHARS = set("-_./+=:,\n")
     safe_flags = []
     for f in flags:
+        # Skip empty flags
+        if not f or not f.strip():
+            continue
         if not all(c.isalnum() or c in _SAFE_FLAG_CHARS for c in f):
             return {
                     "status": "error",
