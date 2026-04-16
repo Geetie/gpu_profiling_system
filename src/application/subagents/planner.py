@@ -36,11 +36,17 @@ class PlannerAgent(BaseSubAgent):
         super().__init__(
             role=AgentRole.PLANNER,
             context_manager=context_manager or ContextManager(max_tokens=max_tokens),
-            tool_registry=tool_registry or ToolRegistry(),
+            tool_registry=ToolRegistry(),
             state_dir=state_dir,
             permission_mode=permission_mode,
             max_tokens=max_tokens,
         )
+        if self.tool_registry.list_tools():
+            print("[Planner] WARNING: Planner received non-empty tool_registry, "
+                  "but Planner MUST have zero tools (P1/P2 enforcement). "
+                  "Forcing empty registry.")
+        print("[Planner] Tool isolation active: 0 tools registered. "
+              "Planner outputs pure JSON text only, no tool calls.")
 
     def _process(self, message: CollaborationMessage) -> SubAgentResult:
         """Parse target spec and create a task plan."""

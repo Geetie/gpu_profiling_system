@@ -120,7 +120,15 @@ class LocalSandbox(SandboxRunner):
 
     def __init__(self, config: SandboxConfig | None = None, sandbox_root: str | None = None) -> None:
         super().__init__(config or SandboxConfig())
-        self._sandbox_root = sandbox_root or os.path.join(os.getcwd(), ".sandbox")
+        if sandbox_root is not None:
+            self._sandbox_root = sandbox_root
+        elif os.environ.get("KAGGLE_KERNEL_RUN_TYPE"):
+            project_root = os.getcwd()
+            self._sandbox_root = project_root
+            print(f"[Sandbox] Kaggle environment detected (KAGGLE_KERNEL_RUN_TYPE={os.environ['KAGGLE_KERNEL_RUN_TYPE']})")
+            print(f"[Sandbox] Using project root as sandbox: {project_root}")
+        else:
+            self._sandbox_root = os.path.join(os.getcwd(), ".sandbox")
         os.makedirs(self._sandbox_root, exist_ok=True)
         # INT-6 fix: track source writes for M1 audit compliance
         from src.domain.permission import InvariantTracker
