@@ -93,6 +93,9 @@ def probe_actual_clock_frequency(
     print(f"[clock] _measure_with_host_timing returned: freq_mhz={freq_mhz}")
 
     if freq_mhz and freq_mhz > 100:
+        if freq_mhz < 500 or freq_mhz > 5000:
+            print(f"[clock] WARNING: Unusual frequency {freq_mhz:.2f} MHz "
+                  f"(expected range: 500-3000 MHz), but accepting as measured")
         result_dict = {
             "actual_boost_clock_mhz": round(freq_mhz, 2),
             "total_sm_cycles": int(total_cycles),
@@ -103,6 +106,8 @@ def probe_actual_clock_frequency(
         if ncu_raw:
             result_dict["_ncu_raw_output"] = ncu_raw
         return result_dict
+
+    print(f"[clock] Host timing returned invalid freq={freq_mhz} MHz (< 100 MHz threshold)")
 
     print("[clock] Host timing failed, trying cudaEvents fallback...")
     freq_mhz = _measure_with_cuda_events(source, sandbox)

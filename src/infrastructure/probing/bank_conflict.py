@@ -88,8 +88,13 @@ def probe_bank_conflict_latency(
         results["stride"] = int(parsed["stride"])
 
     if not results.get("bank_conflict_ratio") and strided and sequential:
-        results["bank_conflict_ratio"] = round(float(strided) / float(sequential), 2)
-        print(f"[bank_conflict] computed ratio from cycles: {results['bank_conflict_ratio']}")
+        if float(sequential) > 0:
+            results["bank_conflict_ratio"] = round(float(strided) / float(sequential), 2)
+            print(f"[bank_conflict] computed ratio from cycles: {results['bank_conflict_ratio']}")
+        else:
+            print(f"[bank_conflict] WARNING: sequential_cycles=0, cannot compute ratio (division by zero)")
+            results["bank_conflict_ratio"] = None
+            results["_error"] = "sequential_cycles was zero — measurement invalid"
 
     bc_ratio = results.get("bank_conflict_ratio")
     if bc_ratio and bc_ratio > 1.0:

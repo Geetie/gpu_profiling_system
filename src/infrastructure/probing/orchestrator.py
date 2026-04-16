@@ -342,13 +342,16 @@ def _run_with_mode(probe_fn, key: str, trials: int = 3) -> dict[str, Any] | None
 
     Used for discrete measurements like L2 cache capacity where the median
     might produce a value that was never actually measured in any single trial.
+
+    Per spec.md P6: Defensive programming — filter out None values before
+    aggregation to prevent TypeError on None comparison.
     """
     from collections import Counter
 
     values: list[dict[str, Any]] = []
     for _ in range(trials):
         result = probe_fn()
-        if result and key in result:
+        if result and key in result and result[key] is not None:
             values.append(result)
     if not values:
         return None
@@ -366,12 +369,12 @@ def _run_with_mode(probe_fn, key: str, trials: int = 3) -> dict[str, Any] | None
 
     if len(values) > 1:
         mode_result["num_trials"] = trials
-        mode_result["min"] = min(key_values)
-        mode_result["max"] = max(key_values)
+        min_val = min(key_values)
+        max_val = max(key_values)
+        mode_result["min"] = min_val
+        mode_result["max"] = max_val
 
         # R4: High trial variance indicates system noise — degrade confidence
-        max_val = max(key_values)
-        min_val = min(key_values)
         if max_val > 0 and "_confidence" in mode_result:
             variance = (max_val - min_val) / max_val
             if variance > 0.15:
@@ -386,17 +389,31 @@ def _run_with_median(probe_fn, key: str, trials: int = 3) -> dict[str, Any] | No
     """Run a probe multiple times and return the median of the key value.
 
     L1 fix: Repeated trials reduce system noise impact.
+    Per spec.md P6: Filter out None/NaN values to prevent TypeError on sorting.
     """
     values: list[dict[str, Any]] = []
     for _ in range(trials):
         result = probe_fn()
-        if result and key in result:
-            values.append(result)
+        if result and key in result and result[key] is not None:
+            val = result[key]
+            if isinstance(val, (int, float)):
+                import math
+                if math.isfinite(val):
+                    values.append(result)
+                else:
+                    print(f"[probe] Trial returned non-finite {key}={val}, skipping")
+            else:
+                print(f"[probe] Trial returned non-numeric {key}={val} ({type(val).__name__}), skipping")
     if not values:
         return None
 
     # Take the median by the key value
-    values.sort(key=lambda v: v[key])
+    try:
+        values.sort(key=lambda v: v[key])
+    except TypeError as e:
+        print(f"[probe] WARNING: Cannot sort by {key}, using first valid trial instead: {e}")
+        return dict(values[0])
+
     median_result = dict(values[len(values) // 2])
     if len(values) > 1:
         median_result["num_trials"] = trials

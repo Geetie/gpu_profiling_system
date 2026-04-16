@@ -141,6 +141,7 @@ class StageTransitionGuard:
             )
 
         if not handoff.is_valid:
+            error_messages = []
             for v in handoff.errors:
                 if self._persister:
                     self._persister.log_entry(
@@ -149,12 +150,35 @@ class StageTransitionGuard:
                             "stage": v.stage,
                             "field": v.field,
                             "message": v.message,
+                            "severity": v.severity,
                         },
                     )
+                error_messages.append(f"  - [{v.severity}] {v.field}: {v.message}")
             print(
-                f"[Pipeline] Handoff validation failed with "
-                f"{len(handoff.errors)} errors"
+                f"[Pipeline] Handoff validation BLOCKED transition "
+                f"{handoff.from_stage}→{handoff.to_stage}: "
+                f"{len(handoff.errors)} error(s), {len(handoff.warnings)} warning(s)"
             )
+            for msg in error_messages:
+                print(msg)
+            return GuardDecision(
+                allowed=False,
+                reason=(
+                    f"Handoff validation failed ({len(handoff.errors)} errors): "
+                    f"; ".join(v.message for v in handoff.errors[:3])
+                ),
+            )
+
+        if handoff.warnings and self._persister:
+            for v in handoff.warnings:
+                self._persister.log_entry(
+                    "handoff_warning",
+                    details={
+                        "stage": v.stage,
+                        "field": v.field,
+                        "message": v.message,
+                    },
+                )
 
         return GuardDecision(allowed=True)
 
