@@ -43,3 +43,12 @@ audit/
 
 # Agent logs
 agent_logs/
+
+# Debug files
+debug/
+
+# Temporary tests
+temp_tests/
+
+# Kaggle results
+kaggle_results/

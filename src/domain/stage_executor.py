@@ -80,7 +80,11 @@ class StageExecutor:
                 self._log("pipeline_retry", {"stage": step.stage.value, "attempt": attempt})
                 print(f"[StageExecutor] Retry {attempt} for stage {step.stage.value}")
 
-            message = self._build_collaboration_message(step, ctx)
+            feedback = ctx.get_feedback_for_codegen()
+            if feedback and step.stage == PipelineStage.CODE_GEN:
+                message = self._build_retry_message(step, ctx, feedback)
+            else:
+                message = self._build_collaboration_message(step, ctx)
             last_result = self._run_with_agent_loop(step, message, ctx)
 
             print(f"[StageExecutor] Attempt status: {last_result.status.value}")
@@ -108,7 +112,11 @@ class StageExecutor:
     def _build_collaboration_message(
         self, step: Any, ctx: PipelineContext,
     ) -> CollaborationMessage:
-        """Build the collaboration message from pipeline context."""
+        """Build the collaboration message from pipeline context.
+
+        Includes MetricAnalysis feedback when available to enable
+        the MetricAnalysis → CodeGen optimization loop.
+        """
         payload: dict[str, Any] = {}
         if ctx.target_spec:
             payload["target_spec"] = ctx.target_spec
@@ -116,10 +124,113 @@ class StageExecutor:
             payload["prev_result"] = ctx.prev_result.to_dict()
             payload["prev_fingerprint"] = ctx.prev_result.context_fingerprint
 
+        metric_feedback = self._extract_metric_feedback(ctx)
+        if metric_feedback and step.stage == PipelineStage.CODE_GEN:
+            payload["metric_feedback"] = metric_feedback
+
         return CollaborationMessage(
             sender=ctx.prev_result.agent_role if ctx.prev_result else AgentRole.PLANNER,
             receiver=step.agent.role,
             message_type="task_dispatch",
+            payload=payload,
+        )
+
+    @staticmethod
+    def _extract_metric_feedback(ctx: PipelineContext) -> str:
+        """Extract and format MetricAnalysis feedback for CodeGen injection."""
+        if not ctx.metric_feedback:
+            return ""
+
+        last = ctx.metric_feedback[-1]
+        bottleneck_type = last.get("bottleneck_type", "")
+        bottleneck_sub_type = last.get("bottleneck_sub_type", "")
+        recommendations = last.get("recommendations", [])
+        suggested_fixes = last.get("suggested_fixes", [])
+
+        if not bottleneck_type and not recommendations and not suggested_fixes:
+            return ""
+
+        parts = [
+            "📊 MetricAnalysis identified bottleneck:",
+            f"   Type: {bottleneck_type}",
+        ]
+        if bottleneck_sub_type:
+            parts.append(f"   Sub-type: {bottleneck_sub_type}")
+
+        if recommendations:
+            parts.append("")
+            parts.append("💡 Optimization suggestions from MetricAnalysis:")
+            for rec in recommendations:
+                parts.append(f"  - {rec}")
+
+        if suggested_fixes:
+            parts.append("")
+            parts.append("🔧 Suggested fixes:")
+            for fix in suggested_fixes:
+                parts.append(f"  → {fix}")
+
+        return "\n".join(parts)
+
+    def _build_retry_message(
+        self, step: Any, ctx: PipelineContext, feedback: dict[str, Any],
+    ) -> CollaborationMessage:
+        """Build a retry collaboration message with rejection and MetricAnalysis feedback."""
+        concerns = feedback.get("concerns", [])
+        suggested_fixes = feedback.get("suggested_fixes", [])
+        iteration = feedback.get("iteration", 0)
+
+        feedback_parts = [
+            "⚠️  VERIFICATION REJECTED YOUR PREVIOUS OUTPUT",
+            f"Iteration: {iteration}/{ctx.max_iterations}",
+            "Please fix the following concerns and regenerate:",
+            "",
+            *[f"- {concern}" for concern in concerns],
+        ]
+        if suggested_fixes:
+            feedback_parts.append("")
+            feedback_parts.append("Suggested fixes:")
+            for fix in suggested_fixes:
+                feedback_parts.append(f"  → {fix}")
+
+        metric_recommendations = feedback.get("metric_recommendations", [])
+        metric_suggested_fixes = feedback.get("metric_suggested_fixes", [])
+        bottleneck_type = feedback.get("bottleneck_type", "")
+        bottleneck_sub_type = feedback.get("bottleneck_sub_type", "")
+
+        if bottleneck_type or metric_recommendations or metric_suggested_fixes:
+            feedback_parts.append("")
+            feedback_parts.append("📊 MetricAnalysis feedback:")
+            if bottleneck_type:
+                sub_info = f"/{bottleneck_sub_type}" if bottleneck_sub_type else ""
+                feedback_parts.append(f"   Bottleneck identified: {bottleneck_type}{sub_info}")
+            if metric_recommendations:
+                feedback_parts.append("   Optimization recommendations:")
+                for rec in metric_recommendations:
+                    feedback_parts.append(f"  - {rec}")
+            if metric_suggested_fixes:
+                feedback_parts.append("   Suggested fixes:")
+                for fix in metric_suggested_fixes:
+                    feedback_parts.append(f"  → {fix}")
+
+        payload: dict[str, Any] = {}
+        if ctx.target_spec:
+            payload["target_spec"] = ctx.target_spec
+        if ctx.code_gen_data:
+            payload["prev_result"] = {
+                "agent_role": AgentRole.CODE_GEN.value,
+                "status": "rejected_retry",
+                "data": ctx.code_gen_data,
+            }
+        payload["rejection_feedback"] = "\n".join(feedback_parts)
+        payload["metric_recommendations"] = metric_recommendations
+        payload["metric_suggested_fixes"] = metric_suggested_fixes
+        payload["bottleneck_type"] = bottleneck_type
+        payload["bottleneck_sub_type"] = bottleneck_sub_type
+
+        return CollaborationMessage(
+            sender=AgentRole.VERIFICATION,
+            receiver=step.agent.role,
+            message_type="feedback",
             payload=payload,
         )
 
@@ -134,6 +245,7 @@ class StageExecutor:
         task = payload.get("task", {})
         prev_result = payload.get("prev_result", {})
         target_spec = payload.get("target_spec", {})
+        rejection_feedback = payload.get("rejection_feedback", "")
 
         if not task and stage_name == PipelineStage.CODE_GEN.value:
             tasks_list = prev_result.get("data", {}).get("tasks", [])
@@ -142,6 +254,14 @@ class StageExecutor:
 
         system_prompt = self._build_system_prompt(agent, step.stage)
         user_task = self._build_user_task(step.stage, task, prev_result, target_spec)
+
+        if rejection_feedback:
+            user_task = f"{rejection_feedback}\n\n---\n\n{user_task}"
+
+        if ctx.conversation_history:
+            history_summary = self._format_conversation_history(ctx)
+            if history_summary:
+                user_task = f"{user_task}\n\n--- Conversation History from Previous Iteration ---\n{history_summary}"
 
         session_id = f"pipeline_{stage_name}_{uuid.uuid4().hex[:6]}"
         session = SessionState(session_id=session_id, goal=f"Pipeline stage: {stage_name}")
@@ -185,7 +305,30 @@ class StageExecutor:
                 error=f"AgentLoop failed in {stage_name}: {e}",
             )
 
+        self._save_conversation_history(agent, ctx)
+
         return self._extract_result(agent, step.stage, loop)
+
+    @staticmethod
+    def _save_conversation_history(agent: BaseSubAgent, ctx: PipelineContext) -> None:
+        """Save agent's conversation entries to PipelineContext for cross-Stage inheritance."""
+        entries = agent.context_manager.get_entries()
+        for entry in entries:
+            ctx.append_history(entry.role.value, entry.content[:500])
+
+    @staticmethod
+    def _format_conversation_history(ctx: PipelineContext) -> str:
+        """Format conversation history for injection into a retry prompt."""
+        history = ctx.get_history(limit=10)
+        if not history:
+            return ""
+        parts = []
+        for entry in history:
+            role = entry.get("role", "unknown")
+            content = entry.get("content", "")
+            if content and len(content) > 20:
+                parts.append(f"[{role}]: {content[:300]}")
+        return "\n".join(parts)
 
     def _build_system_prompt(self, agent: BaseSubAgent, stage: PipelineStage) -> str:
         """Build system prompt for a pipeline stage's AgentLoop."""
@@ -400,7 +543,7 @@ class StageExecutor:
         final_text = assistant_outputs[-1] if assistant_outputs else ""
         data: dict[str, Any] = {
             "tool_results": tool_results,
-            "final_output": final_text[:3000],
+            "final_output": final_text,
             "num_tool_calls": len(tool_results),
         }
 

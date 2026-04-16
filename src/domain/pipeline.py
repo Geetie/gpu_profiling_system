@@ -99,7 +99,9 @@ class Pipeline:
 
         ctx = PipelineContext(target_spec=target_spec)
 
-        for step in self._stages:
+        stage_idx = 0
+        while stage_idx < len(self._stages):
+            step = self._stages[stage_idx]
             stage_start = time.monotonic()
             print(f"[Pipeline] Executing stage: {step.stage.value}")
 
@@ -121,9 +123,63 @@ class Pipeline:
 
             self._guard.check_after_stage(step.stage, result)
 
+            if result.status == SubAgentStatus.REJECTED and step.stage == PipelineStage.VERIFICATION:
+                concerns = result.data.get("concerns", [])
+                suggested_fixes = result.data.get("suggested_fixes", [])
+                ctx.add_rejection(step.stage.value, concerns, suggested_fixes)
+
+                if ctx.can_retry():
+                    ctx.increment_iteration()
+                    print(
+                        f"[Pipeline] Verification REJECTED (iteration {ctx.iteration_count}/{ctx.max_iterations}). "
+                        f"Retrying from CodeGen with feedback."
+                    )
+                    self._persister.log_entry("pipeline_retry_iteration", details={
+                        "iteration": ctx.iteration_count,
+                        "concerns": concerns,
+                    })
+                    code_gen_idx = self._find_stage_index(PipelineStage.CODE_GEN)
+                    if code_gen_idx is not None:
+                        stage_idx = code_gen_idx
+                        ctx.prev_result = None
+                        ctx.prev_stage = None
+                        continue
+                else:
+                    print(
+                        f"[Pipeline] Verification REJECTED and max iterations ({ctx.max_iterations}) reached. "
+                        f"Pipeline terminating."
+                    )
+                    self._persister.log_entry("pipeline_max_iterations", details={
+                        "iteration": ctx.iteration_count,
+                        "concerns": concerns,
+                    })
+                    return result
+
             ctx.update(step.stage, result)
             if step.stage == PipelineStage.METRIC_ANALYSIS:
                 ctx.bubble_codegen_data(result)
+
+                if result.is_success() and result.data:
+                    suggested_fixes = result.data.get("suggested_fixes", [])
+                    bottleneck_type = result.data.get("bottleneck_type", "")
+                    bottleneck_sub_type = result.data.get("bottleneck_sub_type", "")
+                    recommendations = result.data.get("recommendations", [])
+
+                    if suggested_fixes or recommendations:
+                        ctx.add_metric_feedback(
+                            suggested_fixes=suggested_fixes,
+                            bottleneck_type=bottleneck_type,
+                            bottleneck_sub_type=bottleneck_sub_type,
+                            recommendations=recommendations,
+                        )
+                        self._persister.log_entry("metric_feedback_collected", details={
+                            "bottleneck_type": bottleneck_type,
+                            "bottleneck_sub_type": bottleneck_sub_type,
+                            "fixes_count": len(suggested_fixes),
+                            "recommendations_count": len(recommendations),
+                        })
+
+            stage_idx += 1
 
         final_result = ctx.prev_result
         if final_result is not None and final_result.is_success():
@@ -172,6 +228,13 @@ class Pipeline:
             for tr in result.data.get("tool_results", [])
         )
         return has_useful_data or has_compiled_binary
+
+    def _find_stage_index(self, stage: PipelineStage) -> int | None:
+        """Find the index of a stage in the pipeline steps list."""
+        for i, step in enumerate(self._stages):
+            if step.stage == stage:
+                return i
+        return None
 
     @classmethod
     def build_default(

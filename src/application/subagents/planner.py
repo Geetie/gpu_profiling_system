@@ -31,7 +31,7 @@ class PlannerAgent(BaseSubAgent):
         tool_registry: ToolRegistry | None = None,
         state_dir: str = ".state",
         permission_mode: PermissionMode = PermissionMode.DEFAULT,
-        max_tokens: int = 8000,
+        max_tokens: int = 16000,
     ) -> None:
         super().__init__(
             role=AgentRole.PLANNER,

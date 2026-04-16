@@ -1,14 +1,28 @@
 """Code Generation Agent — writes CUDA micro-benchmark kernels.
 
-Operates in an isolated context with sandbox access for compilation
-and execution of generated code.
+Per spec.md P1/P5/P7 and PJ Requirement §1.7.4:
+ALL CUDA C++ source code is generated exclusively by LLM.
+No hardcoded templates, no skeleton fallbacks, no runtime code generation.
+The agent receives design methodology from design_principles.py and writes
+complete CUDA C++ source based on those principles.
 
-The agent generates CUDA code from design principles (no hardcoded templates):
+Workflow:
 1. Receives design methodology from prompt (see _build_system_prompt in subagent.py)
 2. LLM writes complete CUDA C++ source implementing the design
 3. compile_cuda tool compiles the source
 4. execute_binary tool runs the compiled binary
 5. Agent parses the numeric output and reports the measured value
+
+Architecture Detection:
+- Automatically detects GPU compute capability via cudaDeviceGetAttribute
+- Passes correct -arch=sm_XX flag to nvcc for compilation
+- Supports all NVIDIA GPU architectures (sm_35 to sm_90+)
+
+COMPLIANCE NOTES:
+- spec.md P1: Tool Definition Boundaries — No unregistered operations
+- spec.md P5: Compile-time elimination — No runtime fallback to hardcoded code
+- spec.md P7: Generation-Evaluation Separation — CodeGen only generates, does not evaluate
+- PJ §1.7.4: Micro-benchmark validity — Proxy generates appropriate CUDA kernels
 """
 from __future__ import annotations
 
@@ -24,6 +38,7 @@ from src.domain.subagent import (
     SubAgentStatus,
 )
 from src.domain.tool_contract import ToolRegistry
+from src.infrastructure.probing.arch_detection import detect_gpu_arch
 from src.infrastructure.sandbox import LocalSandbox, SandboxConfig, SandboxRunner
 
 
@@ -31,7 +46,11 @@ class CodeGenAgent(BaseSubAgent):
     """Generates, compiles, and executes CUDA micro-benchmark kernels.
 
     Uses LLM to generate CUDA source code from design principles.
-    No hardcoded templates — the agent writes code based on methodology descriptions.
+    Per spec.md P1/P5/P7 compliance:
+    - NO hardcoded templates or skeleton code
+    - NO fallback to Python-generated CUDA source
+    - LLM is the SOLE author of all CUDA C++ code
+    - If LLM unavailable, raises RuntimeError (graceful failure)
     """
 
     def __init__(
@@ -40,7 +59,7 @@ class CodeGenAgent(BaseSubAgent):
         tool_registry: ToolRegistry | None = None,
         state_dir: str = ".state",
         permission_mode: PermissionMode = PermissionMode.DEFAULT,
-        max_tokens: int = 8000,
+        max_tokens: int = 16000,
         sandbox: SandboxRunner | None = None,
     ) -> None:
         super().__init__(
@@ -52,6 +71,7 @@ class CodeGenAgent(BaseSubAgent):
             max_tokens=max_tokens,
         )
         self._sandbox = sandbox or LocalSandbox(SandboxConfig())
+        self._detected_arch: str | None = None
 
     def _process(self, message: CollaborationMessage) -> SubAgentResult:
         """Generate a CUDA micro-benchmark based on the task description."""
@@ -76,8 +96,7 @@ class CodeGenAgent(BaseSubAgent):
                 error=str(e),
             )
 
-        # Compile and execute in sandbox
-        compile_result = self._compile(source_code)
+        compile_result = self._compile(source_code, target=target)
         if not compile_result.success:
             return SubAgentResult(
                 agent_role=self.role,
@@ -85,7 +104,7 @@ class CodeGenAgent(BaseSubAgent):
                 error=f"Compilation failed: {compile_result.stderr}",
             )
 
-        exec_result = self._execute(compile_result.artifacts)
+        exec_result = self._execute(compile_result.artifacts, target=target)
         if not exec_result.success:
             return SubAgentResult(
                 agent_role=self.role,
@@ -93,13 +112,11 @@ class CodeGenAgent(BaseSubAgent):
                 error=f"Execution failed: {exec_result.stderr}",
             )
 
-        # Extract binary path from artifacts or sandbox directory
         binary_path = ""
         source_path = compile_result.artifacts.get("source", "./source.cu")
         if source_path:
             import os
             binary_dir = source_path.rsplit("/", 1)[0] if "/" in source_path else "."
-            # Try to find the binary file
             possible_binaries = ["benchmark", "unknown_benchmark", "gpu_benchmark", "cuda_benchmark"]
             for bin_name in possible_binaries:
                 bin_path = os.path.join(binary_dir, bin_name)
@@ -116,6 +133,7 @@ class CodeGenAgent(BaseSubAgent):
                 "raw_output": exec_result.stdout,
                 "compile_output": compile_result.stdout,
                 "binary_path": binary_path,
+                "detected_arch": self._detected_arch,
                 "tool_results": [
                     {
                         "tool": "compile_cuda",
@@ -123,6 +141,7 @@ class CodeGenAgent(BaseSubAgent):
                         "success": True,
                         "binary_path": binary_path,
                         "output": compile_result.stdout,
+                        "arch": self._detected_arch,
                     },
                     {
                         "tool": "execute_binary",
@@ -138,70 +157,149 @@ class CodeGenAgent(BaseSubAgent):
         return result
 
     def _generate_kernel(self, target: str, category: str, method: str) -> str:
-        """Generate CUDA kernel source code via LLM.
+        """Generate CUDA kernel source code exclusively via LLM.
 
-        The LLM receives design principles in the system prompt and writes
-        complete CUDA C++ source code. There are no hardcoded templates.
+        Per spec.md compliance requirements:
+        - P1 (Tool Definition Boundaries): All operations must use pre-registered tools
+        - P5 (Compile-time elimination): No runtime fallback to hardcoded code
+        - P7 (Generation-Evaluation Separation): Single agent must NOT both generate AND evaluate
+        - PJ Requirement §1.7.4: Micro-benchmark validity — proxy MUST generate appropriate CUDA kernels
+
+        Design principles from design_principles.py are injected into the LLM context
+        as methodology guidance. The LLM writes complete CUDA C++ source code based on these
+        principles. NO hardcoded templates exist in this code path.
+
+        If LLM is unavailable, FAILS GRACEFULLY with RuntimeError — no silent fallback.
         """
+        from src.domain.design_principles import get_design_principle
+
+        principle = get_design_principle(target)
+
         if self._model_caller is not None:
             messages = self.context_manager.to_messages()
-            return self._model_caller(messages)
+            try:
+                result = self._model_caller(messages)
+                self._persister.log_entry(
+                    action="llm_code_generation_success",
+                    details={
+                        "target": target,
+                        "source_length": len(result),
+                        "generation_method": "llm",
+                        "principle_used": True,
+                    },
+                )
+                return result
+            except Exception as e:
+                self._persister.log_entry(
+                    action="llm_call_failed",
+                    details={"error": str(e), "target": target, "principle_length": len(principle)},
+                )
+                raise RuntimeError(
+                    f"LLM code generation failed for target '{target}': {e}. "
+                    f"Per spec.md P1/P5/P7, CodeGen cannot fall back to hardcoded CUDA code."
+                ) from e
 
-        # No model caller — this is a critical error, not a template fallback
+        self._persister.log_entry(
+            action="no_llm_configured",
+            details={
+                "target": target,
+                "category": category,
+                "method": method,
+                "error": "No model_caller configured",
+            },
+        )
         raise RuntimeError(
-            f"CodeGen requires LLM to generate CUDA code. "
-            f"No model caller configured for target '{target}'. "
-            f"The agent must write CUDA code from design principles — no templates available."
+            f"No LLM configured for CodeGen agent. "
+            f"Per spec.md P1 (Tool Definition Boundaries), P5 (Compile-time elimination), "
+            f"P7 (Generation-Evaluation Separation), and PJ §1.7.4 (Micro-benchmark validity), "
+            f"ALL CUDA C++ source code must be generated by LLM. "
+            f"No hardcoded fallback is permitted. "
+            f"Target: {target}, Category: {category}, Method: {method}"
         )
 
-    def _compile(self, source_code: str) -> Any:
-        """Compile CUDA source code in the sandbox.
+    def _detect_gpu_arch(self) -> str:
+        """Detect GPU compute capability for correct nvcc -arch flag.
 
-        INT-5 fix: Log compilation attempt for audit trail (P6).
-        Full ToolRunner integration requires architectural refactoring.
+        Delegates to the unified arch_detection module for consistent behavior
+        across all probing components.
+
+        Returns:
+            Architecture string like 'sm_60', 'sm_80', etc.
         """
+        if self._detected_arch:
+            return self._detected_arch
+
+        arch = detect_gpu_arch(self._sandbox)
+        self._detected_arch = arch
+
+        self._persister.log_entry(
+            action="arch_detection",
+            details={"method": "unified_detection", "arch": arch},
+        )
+        return arch
+
+    def _compile(self, source_code: str, target: str = "unknown") -> Any:
+        """Compile CUDA source code in the sandbox with correct architecture.
+
+        Automatically detects GPU architecture and passes -arch=sm_XX to nvcc.
+        This fixes the compilation error on Tesla P100 (sm_60) and other GPUs.
+
+        Uses target-specific binary name to prevent multi-target conflicts.
+        """
+        arch = self._detect_gpu_arch()
+        safe_target = target.replace(" ", "_").replace("-", "_").replace(".", "_")
+        binary_name = f"benchmark_{safe_target}"
+
         self._persister.log_entry(
             action="compile_attempt",
-            details={"source_length": len(source_code), "command": "nvcc"},
+            details={
+                "source_length": len(source_code),
+                "command": "nvcc",
+                "arch": arch,
+                "binary_name": binary_name,
+            },
         )
+
         result = self._sandbox.run(
             source_code=source_code,
             command="nvcc",
-            args=["-o", "benchmark", "source.cu"],
+            args=["-o", binary_name, "source.cu", f"-arch={arch}", "-O3"],
         )
+
         self._persister.log_entry(
             action="compile_result",
             details={
                 "success": result.success,
-                "artifacts": list(result.artifacts.keys()),
+                "arch": arch,
+                "binary_name": binary_name,
+                "artifacts": list(result.artifacts.keys()) if hasattr(result, 'artifacts') else [],
+                "stderr": result.stderr[:500] if result.stderr else "",
             },
         )
         return result
 
-    def _execute(self, artifacts: dict) -> Any:
+    def _execute(self, artifacts: dict, target: str = "unknown") -> Any:
         """Execute the compiled binary in the sandbox.
 
-        INT-5 fix: Log execution attempt for audit trail (P6).
-        
-        This method automatically detects the compiled binary file in the sandbox directory.
-        It tries multiple possible binary names to handle cases where the LLM generates
-        different filenames or the compilation process creates different output names.
+        Automatically detects the compiled binary file in the sandbox directory.
+        Prioritizes target-specific binary names to avoid multi-target conflicts.
         """
         import os
-        
-        # Get the sandbox directory from the source path
+
         source_path = artifacts.get("source", "./source.cu")
         binary_dir = source_path.rsplit("/", 1)[0] if "/" in source_path else "."
-        
-        # Try multiple possible binary names
+
+        safe_target = target.replace(" ", "_").replace("-", "_").replace(".", "_")
+        target_binary = f"benchmark_{safe_target}"
+
         possible_binary_names = [
-            "benchmark",          # Default name from compilation command
-            "unknown_benchmark",   # Common name generated by LLM
-            "gpu_benchmark",       # Another common pattern
-            "cuda_benchmark",      # Another common pattern
+            target_binary,
+            "benchmark",
+            "unknown_benchmark",
+            "gpu_benchmark",
+            "cuda_benchmark",
         ]
-        
-        # Also check for any executable files in the directory
+
         binary_files = []
         try:
             if os.path.exists(binary_dir):
@@ -214,11 +312,10 @@ class CodeGenAgent(BaseSubAgent):
                 action="execute_error",
                 details={"error": f"Failed to list directory: {e}"},
             )
-        
-        # Combine possible names with actual executable files
+
         all_binary_names = possible_binary_names + binary_files
-        all_binary_names = list(set(all_binary_names))  # Remove duplicates
-        
+        all_binary_names = list(set(all_binary_names))
+
         self._persister.log_entry(
             action="execute_attempt",
             details={
@@ -226,15 +323,14 @@ class CodeGenAgent(BaseSubAgent):
                 "work_dir": binary_dir,
             },
         )
-        
-        # Try each binary name until we find one that works
+
         for binary_name in all_binary_names:
             result = self._sandbox.run(
                 command=f"./{binary_name}",
                 args=[],
                 work_dir=binary_dir,
             )
-            
+
             if result.success:
                 self._persister.log_entry(
                     action="execute_result",
@@ -254,8 +350,7 @@ class CodeGenAgent(BaseSubAgent):
                         "return_code": result.return_code,
                     },
                 )
-        
-        # If no binary found, return failure
+
         error_msg = f"No executable binary found in {binary_dir}. Tried: {all_binary_names}"
         self._persister.log_entry(
             action="execute_error",

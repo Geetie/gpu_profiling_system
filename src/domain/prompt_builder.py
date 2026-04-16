@@ -135,11 +135,35 @@ class StagePromptBuilder:
             plan_output = ""
             if hasattr(prev_result, "data") and prev_result.data:
                 plan_output = prev_result.data.get("final_output", "")
+
+                tasks = prev_result.data.get("tasks", [])
+                method = ""
+                for task in tasks:
+                    if isinstance(task, dict) and task.get("target") == target:
+                        method = task.get("method", "")
+                        break
+
+                if method:
+                    parts.append(
+                        f"\n\n--- Measurement methodology from Planner ---\n{method}"
+                    )
+
+                category = ""
+                for task in tasks:
+                    if isinstance(task, dict) and task.get("target") == target:
+                        category = task.get("category", "")
+                        break
+
+                if category:
+                    parts.append(
+                        f"\n\nTask category: {category}"
+                    )
+
             if not plan_output and hasattr(prev_result, "error") and prev_result.error:
                 plan_output = prev_result.error
             if plan_output:
                 parts.append(
-                    f"\n\n--- Plan from previous stage ---\n{plan_output[:3000]}"
+                    f"\n\n--- Plan from previous stage ---\n{plan_output}"
                 )
 
         parts.append(
@@ -150,19 +174,42 @@ class StagePromptBuilder:
 
     @staticmethod
     def _metric_task(target_spec: dict[str, Any], prev_result: Any | None) -> str:
+        from src.domain.design_principles import get_design_principle
+
         target = target_spec.get("target", "unknown")
+        principle = get_design_principle(target)
+
         parts = [
             f"Analyze the benchmark results for: {target}",
             f"\nTarget specification: {target_spec}",
+            f"\n\n--- Design Principle for this target ---\n{principle[:2000]}",
         ]
 
         if prev_result is not None and hasattr(prev_result, "data"):
             data = prev_result.data
             if "final_output" in data:
-                parts.append(f"\nBenchmark output:\n{data['final_output'][:4000]}")
+                parts.append(f"\n\nBenchmark output:\n{data['final_output']}")
             if "tool_results" in data:
-                parts.append(f"\nTool results:\n{str(data['tool_results'])[:3000]}")
+                parts.append(f"\nTool results:\n{str(data['tool_results'])}")
+            if "raw_output" in data:
+                parts.append(f"\nRaw benchmark output:\n{data['raw_output']}")
+            if "binary_path" in data:
+                parts.append(f"\nCompiled binary path: {data['binary_path']}")
+            if "measurements" in data:
+                parts.append(f"\nCodeGen measurements:\n{data['measurements']}")
+            if "detected_arch" in data:
+                parts.append(f"\nDetected GPU architecture: {data['detected_arch']}")
+            if "analysis_method" in data:
+                parts.append(f"\nCodeGen methodology: {data['analysis_method'][:1000]}")
 
+        parts.append(
+            "\n\nIMPORTANT: Perform Roofline analysis on the data above.\n"
+            "1. If ncu metrics are available, compare compute vs memory utilization\n"
+            "2. Identify bottleneck type AND sub-type (e.g., memory_bound/dram)\n"
+            "3. Provide evidence supporting your conclusion\n"
+            "4. Generate targeted optimization recommendations\n"
+            "5. Assess confidence level with reasoning"
+        )
         return "\n".join(parts)
 
     @staticmethod
@@ -176,7 +223,7 @@ class StagePromptBuilder:
         if prev_result is not None and hasattr(prev_result, "data"):
             data = prev_result.data
             if "final_output" in data:
-                parts.append(f"\nResults to verify:\n{data['final_output'][:4000]}")
+                parts.append(f"\nResults to verify:\n{data['final_output']}")
             if "measurements" in data:
                 parts.append(f"\nMeasurements:\n{data['measurements']}")
 

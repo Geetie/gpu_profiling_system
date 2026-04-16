@@ -786,7 +786,7 @@ try:
         log_step("probes", "skipped")
 
         # ── Step 5: Pipeline (only if API configured) ──
-        if api_configured:
+        if api_configured:  
             pipeline_ok = run_pipeline(PROJECT_ROOT, target_spec_path)
             log_step("pipeline", "pass" if pipeline_ok else "fail")
             if not pipeline_ok:

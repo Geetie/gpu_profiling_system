@@ -34,7 +34,7 @@ class VerificationAgent(BaseSubAgent):
         tool_registry: ToolRegistry | None = None,
         state_dir: str = ".state",
         permission_mode: PermissionMode = PermissionMode.DEFAULT,
-        max_tokens: int = 8000,
+        max_tokens: int = 16000,
     ) -> None:
         # P7: ALWAYS create a fresh ContextManager — never accept one externally
         super().__init__(
@@ -72,6 +72,8 @@ class VerificationAgent(BaseSubAgent):
                 "review": review["findings"],
                 "accepted": review["accepted"],
                 "concerns": review["concerns"],
+                "suggested_fixes": review.get("suggested_fixes", []),
+                "can_be_fixed": review.get("can_be_fixed", True),
                 "generation_fingerprint": prev_fingerprint,
             },
             metadata={
@@ -96,10 +98,14 @@ class VerificationAgent(BaseSubAgent):
         rule-based checks (completeness, numeric sanity, methodology).
         """
         if self._model_caller is not None:
-            return self._llm_review(data, artifacts, prev_status, prev_role, target_spec)
+            result = self._llm_review(data, artifacts, prev_status, prev_role, target_spec)
+        else:
+            result = self._rule_review(data, artifacts, prev_status, prev_role, target_spec)
 
-        # Rule-based fallback (original logic)
-        return self._rule_review(data, artifacts, prev_status, prev_role, target_spec)
+        result["can_be_fixed"] = self._assess_fixability(result.get("concerns", []))
+        result["suggested_fixes"] = self._suggest_fixes(result.get("concerns", []))
+
+        return result
 
     def _llm_review(
         self,
@@ -248,3 +254,49 @@ class VerificationAgent(BaseSubAgent):
             "concerns": concerns,
             "accepted": accepted,
         }
+
+    @staticmethod
+    def _assess_fixability(concerns: list[str]) -> bool:
+        """Assess whether the rejected result can be fixed by CodeGen retry.
+
+        Returns False only for fundamentally unfixable issues.
+        Most concerns are fixable by regenerating with better methodology.
+        """
+        unfixable_patterns = [
+            "no data provided",
+            "no artifacts",
+        ]
+        for concern in concerns:
+            lower = concern.lower()
+            if any(p in lower for p in unfixable_patterns):
+                return False
+        return len(concerns) > 0
+
+    @staticmethod
+    def _suggest_fixes(concerns: list[str]) -> list[str]:
+        """Generate actionable fix suggestions based on concerns.
+
+        Maps common concern patterns to specific CodeGen guidance.
+        """
+        fixes: list[str] = []
+        for concern in concerns:
+            lower = concern.lower()
+            if "missing target" in lower:
+                fixes.append("Ensure ALL requested targets are measured and reported with parseable output format (key: value)")
+            elif "negative value" in lower:
+                fixes.append("Check timing methodology — negative values suggest clock64() wraparound or incorrect subtraction order")
+            elif "suspiciously large" in lower:
+                fixes.append("Verify measurement units and iteration count — divide total cycles by number of iterations")
+            elif "no artifacts" in lower:
+                fixes.append("Call compile_cuda and execute_binary tools — text-only output without tool calls is a failure")
+            elif "bottleneck" in lower:
+                fixes.append("Use a valid bottleneck classification: compute_bound, memory_bound, latency_bound, cache_capacity, or unknown")
+            elif "latency" in lower and ("low" in lower or "high" in lower or "range" in lower):
+                fixes.append("Verify working set size matches target memory level (L1: <32KB, L2: 512KB-2MB, DRAM: >64MB) and use random pointer-chasing to defeat prefetchers")
+            elif "bandwidth" in lower:
+                fixes.append("Use STREAM copy with large arrays (>64MB), launch enough threads (65535 blocks x 256 threads), and use cudaEventElapsedTime")
+            elif "clock" in lower or "frequency" in lower:
+                fixes.append("Use dual timing: clock64() for GPU cycles + cudaEventElapsedTime for wall-clock, freq = cycles / elapsed_us")
+            else:
+                fixes.append(f"Review and address: {concern}")
+        return fixes
