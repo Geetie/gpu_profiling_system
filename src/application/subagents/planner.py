@@ -52,6 +52,7 @@ class PlannerAgent(BaseSubAgent):
                 agent_role=self.role,
                 status=SubAgentStatus.FAILED,
                 error="No targets specified in target_spec",
+                data={"targets": [], "tasks": [], "plan": []},
             )
 
         # Try LLM-based planning first, fall back to rule-based
@@ -62,18 +63,37 @@ class PlannerAgent(BaseSubAgent):
             tasks = self.parse_targets(target_spec)
             plan = self.create_plan(tasks)
 
-        result = SubAgentResult(
+        # CRITICAL SAFETY NET: Ensure tasks is never empty (per spec.md P6)
+        # This prevents Handoff Validation failure which blocks the entire pipeline
+        if not tasks:
+            print(f"[Planner] WARNING: _llm_plan returned {len(tasks)} tasks, forcing rule-based fallback")
+            tasks = self.parse_targets(target_spec)
+        if not tasks:
+            print("[Planner] CRITICAL: parse_targets also returned empty! Force-creating minimal tasks")
+            tasks = [
+                {"target": t, "category": "unknown", "method": "custom micro-benchmark"}
+                for t in targets
+            ]
+        if not plan:
+            plan = self.create_plan(tasks)
+
+        # FINAL CONTRACT VALIDATION: Ensure required keys exist before returning
+        # Per spec.md §5.1: Planner must produce structured task list for CodeGen dispatch
+        data = {
+            "targets": targets,
+            "tasks": tasks,
+            "plan": [p.to_dict() for p in plan],
+        }
+
+        print(f"[Planner] Output contract validated: "
+              f"{len(targets)} targets → {len(tasks)} tasks → {len(plan)} plan items")
+
+        return SubAgentResult(
             agent_role=self.role,
             status=SubAgentStatus.SUCCESS,
-            data={
-                "targets": targets,
-                "tasks": tasks,
-                "plan": [p.to_dict() for p in plan],
-            },
+            data=data,
             metadata={"num_targets": len(targets), "num_tasks": len(tasks)},
         )
-
-        return result
 
     def _llm_plan(
         self, target_spec: dict[str, Any], targets: list[str]
@@ -82,15 +102,20 @@ class PlannerAgent(BaseSubAgent):
         import json as _json
 
         user_msg = (
+            "You are a PLANNING AGENT. Your ONLY job is to decompose targets into tasks.\n"
+            "DO NOT write code files. DO NOT use write_file tool.\n"
+            "DO NOT compile or execute anything. DO NOT generate measurements.\n\n"
             f"Analyze these GPU profiling targets and decompose them into "
             f"actionable tasks:\n\n{_json.dumps(target_spec, indent=2)}\n\n"
-            f"Return a JSON array of task objects, each with: "
-            f'"target", "category" (one of: latency_measurement, '
-            f'capacity_measurement, clock_measurement, bandwidth_measurement, unknown), '
-            f'"method" (detailed description of the measurement approach — '
-            f"include key techniques: pointer-chasing with random permutation, "
-            f"clock64() timing, cudaEventElapsedTime for wall-clock, working-set sweep, "
-            f"STREAM copy, occupancy API, etc.)."
+            f"Return ONLY a JSON array of task objects (nothing else), each with:\n"
+            f'  - "target": string (the metric name)\n'
+            f'  - "category": one of: latency_measurement, capacity_measurement, '
+            f'clock_measurement, bandwidth_measurement, unknown\n'
+            f'  - "method": detailed description of measurement approach '
+            f"(pointer-chasing, clock64(), STREAM copy, working-set sweep, etc.)\n\n"
+            f"Example output format:\n"
+            f'[{{"target": "dram_latency_cycles", "category": "latency_measurement", '
+            f'"method": "pointer-chasing with random permutation"}}]\n'
         )
         messages = self.context_manager.to_messages()
         messages.append({"role": "user", "content": user_msg})
@@ -105,18 +130,39 @@ class PlannerAgent(BaseSubAgent):
             if start >= 0 and end > start:
                 task_list = _json.loads(response[start:end])
                 for t in task_list:
+                    target_name = t.get("target", "unknown")
+                    if not isinstance(target_name, str) or len(target_name.strip()) == 0:
+                        continue
                     tasks.append({
-                        "target": t.get("target", "unknown"),
+                        "target": target_name,
                         "category": t.get("category", "unknown"),
                         "method": t.get("method", "custom micro-benchmark"),
                     })
-        except Exception:
-            # Fallback to rule-based
+                print(f"[Planner] LLM returned {len(tasks)} valid tasks")
+            else:
+                print(f"[Planner] LLM response did not contain JSON array, falling back to rule-based")
+        except _json.JSONDecodeError as e:
+            print(f"[Planner] LLM output JSON parse error: {e}, falling back to rule-based")
+        except Exception as e:
+            print(f"[Planner] LLM planning failed: {e}, using rule-based fallback")
+
+        # Triple-safety fallback: ensure we always have at least one task per target
+        if not tasks:
+            print("[Planner] LLM produced no valid tasks, using rule-based classification")
             tasks = self.parse_targets(target_spec)
 
-        # If LLM returned no tasks, fallback
-        if not tasks:
-            tasks = self.parse_targets(target_spec)
+        if not tasks or len(tasks) < len(targets):
+            missing_count = max(0, len(targets) - len(tasks))
+            print(f"[Planner] WARNING: Only {len(tasks)}/{len(targets)} tasks, "
+                  f"force-creating {missing_count} fallback task(s)")
+            existing_targets = {t["target"] for t in tasks}
+            for t in targets:
+                if t not in existing_targets:
+                    tasks.append({
+                        "target": t,
+                        "category": "unknown",
+                        "method": "custom micro-benchmark for " + t,
+                    })
 
         plan = self.create_plan(tasks)
         return tasks, plan

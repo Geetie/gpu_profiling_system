@@ -133,6 +133,12 @@ class HandoffValidator:
         """Validate Planner→CodeGen handoff."""
         data = result.data
 
+        # DEBUG: Log what we received for diagnostics
+        print(f"[HandoffValidator] Planner output data keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
+        print(f"[HandoffValidator] data['tasks'] = {data.get('tasks', 'MISSING')}")
+        if "targets" in data:
+            print(f"[HandoffValidator] data['targets'] = {data.get('targets', 'MISSING')}")
+
         # Required: tasks key
         if "tasks" not in data:
             report.violations.append(HandoffViolation(
