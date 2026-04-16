@@ -102,9 +102,18 @@ class PlannerAgent(BaseSubAgent):
         import json as _json
 
         user_msg = (
-            "You are a PLANNING AGENT. Your ONLY job is to decompose targets into tasks.\n"
-            "DO NOT write code files. DO NOT use write_file tool.\n"
-            "DO NOT compile or execute anything. DO NOT generate measurements.\n\n"
+            "You are a PLANNING AGENT. Your ONLY job is to decompose targets into tasks.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "CRITICAL CONSTRAINTS (VIOLATION WILL CAUSE PIPELINE FAILURE)\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "- 🚫 DO NOT write any files — NEVER call write_file or any file operation tool\n"
+            "- 🚫 DO NOT compile or execute anything — NEVER call compile_cuda or execute_binary\n"
+            "- 🚫 DO NOT run profiling tools — NEVER call run_ncu or ncu\n"
+            "- 🚫 DO NOT call ANY tools at all — your output is PURE JSON TEXT ONLY\n"
+            "- 🚫 DO NOT generate CUDA code or measurements\n"
+            "- ✅ Your SOLE output: a JSON array of task objects as plain text\n\n"
+            "If you attempt to call any tool, the pipeline will FAIL.\n"
+            "Your role is ANALYSIS and CLASSIFICATION only — not code generation.\n\n"
             f"Analyze these GPU profiling targets and decompose them into "
             f"actionable tasks:\n\n{_json.dumps(target_spec, indent=2)}\n\n"
             f"Return ONLY a JSON array of task objects (nothing else), each with:\n"
@@ -115,21 +124,44 @@ class PlannerAgent(BaseSubAgent):
             f"(pointer-chasing, clock64(), STREAM copy, working-set sweep, etc.)\n\n"
             f"Example output format:\n"
             f'[{{"target": "dram_latency_cycles", "category": "latency_measurement", '
-            f'"method": "pointer-chasing with random permutation"}}]\n'
+            f'"method": "pointer-chasing with random permutation"}}]\n\n'
+            f"IMPORTANT: Output ONLY the JSON array. No explanations, no tool calls, "
+            f"no file writes. Just the JSON."
         )
         messages = self.context_manager.to_messages()
         messages.append({"role": "user", "content": user_msg})
 
+        tasks: list[dict[str, Any]] = []
         try:
             response = self._model_caller(messages)
-            # Try to extract JSON from response
-            tasks = []
-            # Find JSON array in response
+
+            if response is None or not isinstance(response, str):
+                print(f"[Planner] LLM returned non-string response (type={type(response).__name__}), "
+                      "falling back to rule-based")
+                raise ValueError("Invalid response type")
+
+            response = response.strip()
+            if len(response) == 0:
+                print("[Planner] LLM returned empty response, falling back to rule-based")
+                raise ValueError("Empty response")
+
+            if len(response) < 20:
+                print(f"[Planner] LLM returned suspiciously short response "
+                      f"({len(response)} chars): {response[:100]}, falling back to rule-based")
+                raise ValueError("Response too short to contain valid JSON")
+
             start = response.find("[")
             end = response.rfind("]") + 1
             if start >= 0 and end > start:
-                task_list = _json.loads(response[start:end])
+                json_str = response[start:end]
+                task_list = _json.loads(json_str)
+                if not isinstance(task_list, list):
+                    print(f"[Planner] LLM JSON is not a list (type={type(task_list).__name__}), "
+                          "falling back to rule-based")
+                    raise ValueError("JSON root is not an array")
                 for t in task_list:
+                    if not isinstance(t, dict):
+                        continue
                     target_name = t.get("target", "unknown")
                     if not isinstance(target_name, str) or len(target_name.strip()) == 0:
                         continue
@@ -138,13 +170,22 @@ class PlannerAgent(BaseSubAgent):
                         "category": t.get("category", "unknown"),
                         "method": t.get("method", "custom micro-benchmark"),
                     })
-                print(f"[Planner] LLM returned {len(tasks)} valid tasks")
+                if tasks:
+                    print(f"[Planner] LLM returned {len(tasks)} valid tasks from JSON extraction")
+                else:
+                    print("[Planner] LLM JSON array contained no valid task objects, "
+                          "falling back to rule-based")
+                    raise ValueError("No valid tasks in JSON array")
             else:
-                print(f"[Planner] LLM response did not contain JSON array, falling back to rule-based")
-        except _json.JSONDecodeError as e:
-            print(f"[Planner] LLM output JSON parse error: {e}, falling back to rule-based")
+                print(f"[Planner] LLM response did not contain JSON array "
+                      f"(first 200 chars: {response[:200]}), falling back to rule-based")
+                raise ValueError("No JSON array found in response")
+
+        except (_json.JSONDecodeError, ValueError) as e:
+            print(f"[Planner] LLM output parsing failed: {e}, using rule-based fallback")
         except Exception as e:
-            print(f"[Planner] LLM planning failed: {e}, using rule-based fallback")
+            print(f"[Planner] LLM planning exception: {type(e).__name__}: {e}, "
+                  "using rule-based fallback")
 
         # Triple-safety fallback: ensure we always have at least one task per target
         if not tasks:
@@ -195,12 +236,22 @@ class PlannerAgent(BaseSubAgent):
         return messages
 
     def _classify_target(self, target: str) -> dict[str, Any]:
-        """Classify a target metric into a task description."""
-        # Known target categories
-        latency_targets = {"dram_latency_cycles", "l2_latency_cycles", "shmem_latency_cycles"}
-        capacity_targets = {"max_shmem_per_block_kb", "l2_cache_size_kb", "l1_cache_size_kb"}
+        """Classify a target metric into a task description.
+
+        Classification rules MUST stay in sync with _PLANNER prompt TASK CLASSIFICATION RULES
+        in agent_prompts.py. When updating either location, update both.
+        """
+        latency_targets = {"dram_latency_cycles", "l2_latency_cycles", "l1_latency_cycles",
+                           "shmem_latency_targets"}
+        capacity_targets = {"max_shmem_per_block_kb", "l2_cache_size_kb", "l1_cache_size_kb",
+                            "l2_cache_size_mb"}
         clock_targets = {"actual_boost_clock_mhz", "base_clock_mhz", "sm_clock_mhz"}
-        bandwidth_targets = {"dram_bandwidth_gbps", "l2_bandwidth_gbps"}
+        bandwidth_targets = {"dram_bandwidth_gbps", "l2_bandwidth_gbps", "shmem_bandwidth_gbps"}
+
+        # Targets intentionally classified as "unknown" (per agent_prompts.py TASK CLASSIFICATION RULES):
+        # - sm_count: requires cudaDeviceGetAttribute API, not a standard micro-benchmark pattern
+        # - bank_conflict_penalty_ratio: requires strided vs sequential access comparison
+        # These are handled by _suggest_method() with specialized method descriptions.
 
         category = "unknown"
         if target in latency_targets:
@@ -224,7 +275,37 @@ class PlannerAgent(BaseSubAgent):
         Returns a detailed design methodology description that flows through
         to the CodeGen agent's prompt (see pipeline.py _build_task_prompt).
         The CodeGen agent uses this to write CUDA code from design principles.
+
+        Special-case targets (classified as 'unknown' but with known measurement
+        approaches) are handled first, before the generic category-based lookup.
         """
+        special_methods = {
+            "sm_count": (
+                "cudaDeviceGetAttribute(cudaDevAttrMultiProcessorCount) API call "
+                "to query SM count directly, or occupancy-based estimation via "
+                "cudaOccupancyMaxActiveBlocksPerMultiprocessor with a test kernel"
+            ),
+            "bank_conflict_penalty_ratio": (
+                "strided access vs sequential access timing comparison in shared memory: "
+                "measure elapsed cycles for 32-thread warp reading from shmem with "
+                "stride=1 (no conflicts) vs stride=32 (maximum conflicts), "
+                "penalty_ratio = conflicted_cycles / unconflicted_cycles"
+            ),
+            "shmem_latency_cycles": (
+                "shared memory latency via pointer-chasing in shared memory space: "
+                "allocate uint32_t array in __shared__ memory, build random permutation "
+                "chain, single thread follows chain with clock64() timing, "
+                "latency = total_cycles / iterations"
+            ),
+            "l1_latency_cycles": (
+                "L1 cache latency via pointer-chasing with working set sized to "
+                "L1 cache (typically 16-48 KB per SM), use clock64() for cycle timing, "
+                "ensure working set fits in L1 but exceeds register file capacity"
+            ),
+        }
+        if target in special_methods:
+            return special_methods[target]
+
         methods = {
             "latency_measurement": (
                 "pointer-chasing with random permutation chains (LCG-seeded Knuth shuffle), "
