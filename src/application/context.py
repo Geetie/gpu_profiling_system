@@ -150,6 +150,6 @@ class ContextManager:
     def to_messages(self) -> list[dict[str, Any]]:
         """Convert entries to the standard message format for LLM APIs."""
         return [
-            {"role": e.role.value, "content": e.content}
+            {"role": e.role.value, "content": e.content if e.content is not None else ""}
             for e in self._entries
         ]

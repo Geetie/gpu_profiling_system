@@ -30,14 +30,14 @@ def _retry_request(url, headers, json_payload, max_retries=2, timeout=60):
             )
             print(f"[model_caller] Response status: {response.status_code}")
             if response.status_code in (429, 500, 502, 503, 504):
-                wait = min(5 + attempt * 2, 10)  # 缩短等待时间到5-10秒
+                wait = 5 + attempt  # 5s, 6s
                 print(f"[model_caller] HTTP {response.status_code}, retrying in {wait}s ({attempt+1}/{max_retries})")
                 time.sleep(wait)
                 last_exc = RuntimeError(f"HTTP {response.status_code}: {response.text[:500]}")
                 continue
             return response
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
-            wait = min(5 + attempt * 2, 10)  # 缩短等待时间到5-10秒
+            wait = 5 + attempt  # 5s, 6s
             print(f"[model_caller] Connection error: {type(e).__name__}, retrying in {wait}s ({attempt+1}/{max_retries})")
             time.sleep(wait)
             last_exc = e
@@ -150,7 +150,7 @@ def _caller_from_provider(
     which does a health-check HTTP request that can block for minutes.
     Instead, access provider config directly.
     """
-    provider_priority = ["longcat", "aliyun_bailian", "anthropic"]
+    provider_priority = ["longcat"]
 
     tried_providers = set()
 
@@ -167,6 +167,19 @@ def _caller_from_provider(
                 headers = provider.get_headers(api_key)
 
                 print(f"[model_caller] Calling {provider.provider}: model={model}, url={base_url}")
+                print(f"[model_caller] Messages: {len(messages)}, Tools: {len(tools) if tools else 0}")
+                # 打印每个 message 的 role 和 content 长度
+                for i, msg in enumerate(messages):
+                    content = msg.get('content')
+                    content_len = len(content) if content else 0
+                    content_type = type(content).__name__
+                    print(f"[model_caller]   Msg {i}: role={msg['role']}, content_type={content_type}, len={content_len}, is_none={content is None}")
+                # 保存实际消息到文件以便调试
+                import json
+                debug_file = f"debug_messages_{provider.provider}_{len(messages)}msg_{len(tools) if tools else 0}tool.json"
+                with open(debug_file, "w", encoding="utf-8") as f:
+                    json.dump({"messages": messages, "tools": tools}, f, ensure_ascii=False, indent=2)
+                print(f"[model_caller] Debug: Saved messages to {debug_file}")
 
                 if provider.provider == "anthropic":
                     result = _call_anthropic(base_url, headers, model, messages, max_tokens, tools)
@@ -320,14 +333,23 @@ def _call_openai_compatible(
     tools: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Call OpenAI-compatible API endpoint."""
+    # 严格清理消息：确保所有 content 都是字符串
     cleaned_messages = []
     for msg in messages:
         role = msg.get("role", "")
-        content = msg.get("content", "")
-        if role and content is not None:
-            cleaned_messages.append({"role": role, "content": str(content)})
-        elif role:
-            cleaned_messages.append({"role": role, "content": ""})
+        content = msg.get("content")
+        
+        # 处理 content 为 None 的情况
+        if content is None:
+            content = ""
+        else:
+            content = str(content)
+        
+        # 跳过没有 role 的消息
+        if not role:
+            continue
+            
+        cleaned_messages.append({"role": role, "content": content})
 
     payload = {
         "model": model,

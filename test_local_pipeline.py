@@ -31,6 +31,25 @@ from src.domain.permission import PermissionMode
 from src.domain.subagent import SubAgentStatus
 
 
+def _extract_model_config(config: dict) -> tuple[str, str, str, str]:
+    """从 API 配置中提取模型名称。"""
+    provider = config.get("provider", "longcat")
+    env = config.get("env", {})
+    
+    if provider == "longcat":
+        main_model = env.get("LONGCAT_MODEL", "LongCat-Flash-Chat")
+        code_model = env.get("LONGCAT_CODE_MODEL", "LongCat-Flash-Chat")
+        reasoning_model = env.get("LONGCAT_REASONING_MODEL", "LongCat-Flash-Chat")
+    elif provider == "aliyun":
+        main_model = env.get("ALIYUN_MODEL", "qwen-max")
+        code_model = env.get("ALIYUN_CODE_MODEL", "qwen-coder-plus")
+        reasoning_model = env.get("ALIYUN_REASONING_MODEL", "qwen-max")
+    else:
+        main_model = code_model = reasoning_model = "LongCat-Flash-Chat"
+    
+    return provider, main_model, code_model, reasoning_model
+
+
 def test_pipeline_generates_code():
     """验证 Pipeline 能让 CodeGen 生成 CUDA 代码文件。"""
     print("=" * 60)
@@ -74,15 +93,48 @@ def test_pipeline_generates_code():
         
         # 配置 LLM caller（如果已配置 API）
         try:
-            from src.application.system_builder import try_wire_model_caller
-            if try_wire_model_caller(agent_loop):
-                print("[OK] LLM API 已配置")
+            from src.application.system_builder import load_api_config
+            from src.infrastructure.model_caller import make_model_caller
+            
+            # 配置 AgentLoop 的 model caller
+            if make_model_caller():  # 直接创建 caller，如果配置存在就会成功
+                print("[OK] AgentLoop LLM API 已配置")
+                def caller_func(messages):
+                    return make_model_caller()(messages)
+                agent_loop.set_model_caller(caller_func)
             else:
                 print("[WARN] 未配置 LLM API，将使用 Mock 模式")
-                # 使用 Mock model caller 进行测试
                 def mock_caller(messages):
                     return "Task completed successfully."
                 agent_loop.set_model_caller(mock_caller)
+            
+            # 配置 Pipeline 中各个 agent 的 model caller
+            # 这是必要的，因为 Pipeline 中的 agents 是独立创建的
+            try:
+                config = load_api_config()
+                provider_name, main_model, code_model, reasoning_model = _extract_model_config(config)
+                print(f"[llm] Models: main={main_model}, code={code_model}, reasoning={reasoning_model}")
+                
+                # 从 Pipeline 中获取 agents
+                for step in pipeline._stages:
+                    agent = step.agent
+                    if agent.role.value == "planner":
+                        agent.set_model_caller(make_model_caller(model_name=main_model))
+                        print(f"[llm] Pipeline PlannerAgent -> {main_model}")
+                    elif agent.role.value == "code_gen":
+                        agent.set_model_caller(make_model_caller(model_name=code_model))
+                        print(f"[llm] Pipeline CodeGenAgent -> {code_model}")
+                    elif agent.role.value == "metric_analysis":
+                        agent.set_model_caller(make_model_caller(model_name=main_model))
+                        print(f"[llm] Pipeline MetricAnalysisAgent -> {main_model}")
+                    elif agent.role.value == "verification":
+                        agent.set_model_caller(make_model_caller(model_name=reasoning_model, max_tokens=8192))
+                        print(f"[llm] Pipeline VerificationAgent -> {reasoning_model}")
+                
+                print("[OK] Pipeline agents LLM API 已配置")
+            except Exception as e:
+                print(f"[WARN] Pipeline agent LLM 配置失败：{e}")
+                
         except Exception as e:
             print(f"[WARN] LLM 配置失败：{e}")
             def mock_caller(messages):
@@ -137,7 +189,7 @@ def test_pipeline_generates_code():
                 print("\n[OK] 测试通过：Pipeline 成功生成 CUDA 代码文件")
                 return True
             else:
-                print("\n⚠ 未找到 .cu 文件")
+                print("\n[WARN] 未找到 .cu 文件")
                 
                 # 检查 agent 日志
                 state_dir = os.path.join(tmpdir, ".state")
@@ -157,11 +209,11 @@ def test_pipeline_generates_code():
                             except Exception as e:
                                 print(f"    读取失败：{e}")
                 
-                print("\n⚠ 测试未完成：未生成 CUDA 代码文件")
+                print("\n[WARN] 测试未完成：未生成 CUDA 代码文件")
                 return False
                 
         except Exception as e:
-            print(f"\n✗ Pipeline 执行失败：{e}")
+            print("\n[FAIL] Pipeline 执行失败：{e}")
             import traceback
             traceback.print_exc()
             return False

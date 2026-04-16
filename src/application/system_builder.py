@@ -166,7 +166,7 @@ class SubAgentFactory:
 
     _ROLE_TOOLS = {
         "planner": {"read_file", "write_file"},
-        "code_gen": {"compile_cuda", "execute_binary", "write_file", "read_file"},
+        "code_gen": {"compile_cuda", "execute_binary", "read_file"},  # Removed write_file - CodeGen must use compile_cuda
         "metric_analysis": {"run_ncu", "read_file"},
         "verification": {"read_file"},
     }
@@ -309,7 +309,7 @@ def _wire_all_subagents(planner, code_gen, metric_analysis, verification) -> boo
         print(f"[llm] Provider manager loaded: {list(provider_manager.providers.keys())}")
 
         if provider_manager.providers:
-            provider_priority = ["longcat", "aliyun_bailian", "anthropic"]
+            provider_priority = ["longcat"]
             for pn in provider_priority:
                 provider = provider_manager.providers.get(pn)
                 if not provider:
@@ -335,9 +335,16 @@ def _wire_all_subagents(planner, code_gen, metric_analysis, verification) -> boo
         print(f"[llm] Provider manager error: {e}")
 
     if provider_name == "longcat":
-        main_model = "longcat-flash-chat"
-        code_model = "longcat-flash-chat"
-        reasoning_model = "longcat-flash-chat"
+        # 从 provider 配置获取模型名称
+        longcat_provider = provider_manager.providers.get("longcat")
+        if longcat_provider:
+            main_model = longcat_provider.get_model("default")
+            code_model = longcat_provider.get_model("default")
+            reasoning_model = longcat_provider.get_model("reasoning")
+        else:
+            main_model = "LongCat-Flash-Thinking-2601"
+            code_model = "LongCat-Flash-Thinking-2601"
+            reasoning_model = "LongCat-Flash-Thinking-2601"
     elif provider_name == "aliyun_bailian":
         main_model = "qwen-plus"
         code_model = "qwen-plus"

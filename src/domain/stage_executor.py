@@ -325,9 +325,17 @@ class StageExecutor:
 
     @staticmethod
     def _build_tool_schemas(handlers: dict, tool_registry: Any) -> list[dict]:
-        """Build OpenAI-format tool schemas from handler dict + registry contracts."""
+        """Build OpenAI-format tool schemas from handler dict + registry contracts.
+        
+        Only includes tools that are both in handlers AND registered in tool_registry.
+        This ensures agents only see tools they are allowed to use per their role.
+        """
         tools: list[dict] = []
         for name in handlers:
+            # Skip tools not in registry (agent doesn't have permission for this tool)
+            if not tool_registry.has_tool(name):
+                print(f"[StageExecutor] Tool '{name}' not in registry for this agent role, skipping")
+                continue
             try:
                 contract = tool_registry.get(name)
                 properties = {}
@@ -346,7 +354,20 @@ class StageExecutor:
                     },
                 })
             except KeyError:
-                tools.append({"type": "function", "function": {"name": name}})
+                # This should not happen since we checked has_tool() above, but handle gracefully
+                print(f"[StageExecutor] WARNING: Tool contract for '{name}' not found in registry")
+                tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": f"Tool: {name}",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {},
+                            "required": [],
+                        },
+                    },
+                })
         return tools
 
     def _extract_result(

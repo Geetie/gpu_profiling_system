@@ -1,16 +1,16 @@
 {
   "_provider": "longcat",
-  "_name": "LongCat API",
-  "_description": "LongCat API兼容模式配置",
+  "_name": "美团 LongCat API",
+  "_description": "美团 LongCat Flash 系列模型配置",
   "_models": {
-    "default": "longcat-flash-chat",
-    "reasoning": "longcat-flash-chat",
-    "haiku": "longcat-flash-chat",
-    "sonnet": "longcat-flash-chat",
-    "opus": "longcat-flash-chat"
+    "default": "LongCat-Flash-Chat",
+    "reasoning": "LongCat-Flash-Chat",
+    "haiku": "LongCat-Flash-Chat",
+    "sonnet": "LongCat-Flash-Chat",
+    "opus": "LongCat-Flash-Chat"
   },
   "_endpoints": {
-    "base": "https://api.longcat.chat/openai/v1/",
+    "base": "https://api.longcat.chat/openai",
     "chat": "https://api.longcat.chat/openai/v1/chat/completions"
   },
   "_auth": {
@@ -39,6 +39,7 @@
     "tokens_per_minute": 1000000
   },
   "_cost": {
-    "longcat-flash-chat": {"input": 0.001, "output": 0.001}
+    "LongCat-Flash-Omni-2603": {"input": 0.001, "output": 0.001},
+    "LongCat-Flash-Thinking-2601": {"input": 0.002, "output": 0.002}
   }
 }

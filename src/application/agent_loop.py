@@ -207,9 +207,11 @@ class AgentLoop:
                 context="model_caller",
                 message=str(e),
             )
+            # 不要将 API 错误保存到 ASSISTANT 消息中，避免污染上下文
+            # 使用 SYSTEM 角色记录错误信息
             self.context_manager.add_entry(
-                Role.ASSISTANT,
-                f"[API Error - will retry] {type(e).__name__}: {str(e)[:200]}",
+                Role.SYSTEM,
+                f"[Internal Error Log: {type(e).__name__}] {str(e)[:200]}",
                 token_count=20,
             )
             self._persist_state()
@@ -260,11 +262,9 @@ class AgentLoop:
                         context=f"tool:{tool_call.name}",
                         message=str(e),
                     )
-                self.context_manager.add_entry(
-                    Role.ASSISTANT,
-                    f"Tool execution failed: {e}",
-                    token_count=20,
-                )
+                # 不要将 tool 错误添加到 ASSISTANT 消息中，避免污染上下文
+                # 错误信息已经通过 failure_tracker 和 persister 记录
+                # 模型会在下一次 turn 中收到错误信号并尝试其他方案
         else:
             self.context_manager.add_entry(
                 Role.ASSISTANT,
