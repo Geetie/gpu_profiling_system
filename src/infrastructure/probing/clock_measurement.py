@@ -232,16 +232,19 @@ def _measure_with_host_timing(
 
     arch = _detect_arch(runner)
 
+    probe_binary_dir = os.path.join(work_dir, "probe_binaries")
+    os.makedirs(probe_binary_dir, exist_ok=True)
+
     compile_result = runner.run(
         source_code=source,
         command=nvcc,
-        args=["-o", "freq_probe", "source.cu", f"-arch={arch}"],
+        args=["-o", os.path.join(probe_binary_dir, "freq_probe"), "source.cu", f"-arch={arch}"],
         work_dir=work_dir,
     )
     if not compile_result.success:
         return None, None
 
-    binary = os.path.join(work_dir, "freq_probe")
+    binary = os.path.join(probe_binary_dir, "freq_probe")
     exec_result = runner.run(
         command=binary,
         args=[],
@@ -393,16 +396,19 @@ def _measure_with_cuda_events(
 
     arch = _detect_arch(runner)
 
+    probe_binary_dir = os.path.join(work_dir, "probe_binaries")
+    os.makedirs(probe_binary_dir, exist_ok=True)
+
     compile_result = runner.run(
         source_code=source,
         command=nvcc,
-        args=["-o", "freq_event_probe", "source.cu", f"-arch={arch}"],
+        args=["-o", os.path.join(probe_binary_dir, "freq_event_probe"), "source.cu", f"-arch={arch}"],
         work_dir=work_dir,
     )
     if not compile_result.success:
         return None
 
-    binary = os.path.join(work_dir, "freq_event_probe")
+    binary = os.path.join(probe_binary_dir, "freq_event_probe")
 
     r = runner.run(
         command=binary,
@@ -421,16 +427,19 @@ def _measure_with_cuda_events(
     if not event_source:
         return None
 
+    probe_binary_dir = os.path.join(work_dir, "probe_binaries")
+    os.makedirs(probe_binary_dir, exist_ok=True)
+
     compile_result2 = runner.run(
         source_code=event_source,
         command=nvcc,
-        args=["-o", "freq_event_timed", "source.cu", f"-arch={arch}"],
+        args=["-o", os.path.join(probe_binary_dir, "freq_event_timed"), "source.cu", f"-arch={arch}"],
         work_dir=work_dir,
     )
     if not compile_result2.success:
         return None
 
-    timed_binary = os.path.join(work_dir, "freq_event_timed")
+    timed_binary = os.path.join(probe_binary_dir, "freq_event_timed")
 
     min_elapsed_ms = None
     for _ in range(3):

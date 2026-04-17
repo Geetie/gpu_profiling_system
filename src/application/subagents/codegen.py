@@ -87,21 +87,39 @@ class CodeGenAgent(BaseSubAgent):
             token_count=20,
         )
 
-        try:
-            source_code = self._generate_kernel(target, category, method)
-        except RuntimeError as e:
-            return SubAgentResult(
-                agent_role=self.role,
-                status=SubAgentStatus.FAILED,
-                error=str(e),
-            )
+        max_compile_retries = 3
+        compile_retry = 0
+        source_code = None
+        compile_result = None
 
-        compile_result = self._compile(source_code, target=target)
-        if not compile_result.success:
+        while compile_retry < max_compile_retries:
+            try:
+                source_code = self._generate_kernel(target, category, method)
+            except RuntimeError as e:
+                return SubAgentResult(
+                    agent_role=self.role,
+                    status=SubAgentStatus.FAILED,
+                    error=str(e),
+                )
+
+            compile_result = self._compile(source_code, target=target)
+            if compile_result.success:
+                break
+
+            compile_retry += 1
+            if compile_retry < max_compile_retries:
+                self.context_manager.add_entry(
+                    Role.SYSTEM,
+                    f"⚠️ Compilation failed (attempt {compile_retry}/{max_compile_retries}). "
+                    f"Please fix the code.\nError:\n{compile_result.stderr[:1000]}",
+                    token_count=100,
+                )
+
+        if not compile_result or not compile_result.success:
             return SubAgentResult(
                 agent_role=self.role,
                 status=SubAgentStatus.FAILED,
-                error=f"Compilation failed: {compile_result.stderr}",
+                error=f"Compilation failed after {max_compile_retries} attempts: {compile_result.stderr if compile_result else 'No result'}",
             )
 
         exec_result = self._execute(compile_result.artifacts, target=target)
@@ -112,17 +130,8 @@ class CodeGenAgent(BaseSubAgent):
                 error=f"Execution failed: {exec_result.stderr}",
             )
 
-        binary_path = ""
+        binary_path = compile_result.artifacts.get("binary", "")
         source_path = compile_result.artifacts.get("source", "./source.cu")
-        if source_path:
-            import os
-            binary_dir = source_path.rsplit("/", 1)[0] if "/" in source_path else "."
-            possible_binaries = ["benchmark", "unknown_benchmark", "gpu_benchmark", "cuda_benchmark"]
-            for bin_name in possible_binaries:
-                bin_path = os.path.join(binary_dir, bin_name)
-                if os.path.exists(bin_path) and os.access(bin_path, os.X_OK):
-                    binary_path = bin_path
-                    break
 
         result = SubAgentResult(
             agent_role=self.role,
@@ -133,6 +142,7 @@ class CodeGenAgent(BaseSubAgent):
                 "raw_output": exec_result.stdout,
                 "compile_output": compile_result.stdout,
                 "binary_path": binary_path,
+                "source_path": source_path,
                 "detected_arch": self._detected_arch,
                 "tool_results": [
                     {
@@ -140,6 +150,7 @@ class CodeGenAgent(BaseSubAgent):
                         "status": "success",
                         "success": True,
                         "binary_path": binary_path,
+                        "source_path": source_path,
                         "output": compile_result.stdout,
                         "arch": self._detected_arch,
                     },
@@ -245,10 +256,17 @@ class CodeGenAgent(BaseSubAgent):
         This fixes the compilation error on Tesla P100 (sm_60) and other GPUs.
 
         Uses target-specific binary name to prevent multi-target conflicts.
+        Compiles to a subdirectory to avoid polluting sandbox root.
         """
         arch = self._detect_gpu_arch()
         safe_target = target.replace(" ", "_").replace("-", "_").replace(".", "_")
         binary_name = f"benchmark_{safe_target}"
+
+        import os
+        source_dir = os.path.join(self._sandbox.sandbox_root, "src")
+        binary_dir = os.path.join(self._sandbox.sandbox_root, "bin")
+        os.makedirs(source_dir, exist_ok=True)
+        os.makedirs(binary_dir, exist_ok=True)
 
         self._persister.log_entry(
             action="compile_attempt",
@@ -257,14 +275,25 @@ class CodeGenAgent(BaseSubAgent):
                 "command": "nvcc",
                 "arch": arch,
                 "binary_name": binary_name,
+                "source_dir": source_dir,
+                "binary_dir": binary_dir,
             },
         )
 
+        source_path = os.path.join(source_dir, "source.cu")
+        with open(source_path, "w", encoding="utf-8") as f:
+            f.write(source_code)
+
         result = self._sandbox.run(
-            source_code=source_code,
+            source_code=None,
             command="nvcc",
-            args=["-o", binary_name, "source.cu", f"-arch={arch}", "-O3"],
+            args=["-o", os.path.join(binary_dir, binary_name), "source.cu", f"-arch={arch}", "-O3"],
+            work_dir=source_dir,
         )
+
+        if result.success:
+            result.artifacts["source"] = source_path
+            result.artifacts["binary"] = os.path.join(binary_dir, binary_name)
 
         self._persister.log_entry(
             action="compile_result",

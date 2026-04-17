@@ -96,14 +96,14 @@ int main() {
     result = runner.run(
         source_code=source,
         command=nvcc,
-        args=["-o", "detect_arch", "source.cu"],
+        args=["-o", os.path.join(work_dir, "probe_binaries", "detect_arch"), "source.cu"],
         work_dir=work_dir,
     )
 
     if not result or not result.success:
         return None
 
-    binary = os.path.join(work_dir, "detect_arch")
+    binary = os.path.join(work_dir, "probe_binaries", "detect_arch")
     run_result = runner.run(command=binary, args=[], work_dir=work_dir)
 
     if not run_result or not run_result.success:
@@ -204,13 +204,13 @@ int main() {
         result = runner.run(
             source_code=test_source,
             command=nvcc,
-            args=["-o", "arch_test", "source.cu", f"-arch={arch}"],
+            args=["-o", os.path.join(work_dir, "probe_binaries", "arch_test"), "source.cu", f"-arch={arch}"],
             work_dir=work_dir,
         )
         if not result or not result.success:
             continue
 
-        binary = os.path.join(work_dir, "arch_test")
+        binary = os.path.join(work_dir, "probe_binaries", "arch_test")
         run_result = runner.run(command=binary, args=[], work_dir=work_dir)
         if run_result and run_result.success:
             print(f"[detect_gpu_arch] Detected via compilation: {arch}")

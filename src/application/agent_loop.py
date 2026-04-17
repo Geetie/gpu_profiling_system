@@ -262,9 +262,17 @@ class AgentLoop:
                         context=f"tool:{tool_call.name}",
                         message=str(e),
                     )
-                # 不要将 tool 错误添加到 ASSISTANT 消息中，避免污染上下文
-                # 错误信息已经通过 failure_tracker 和 persister 记录
-                # 模型会在下一次 turn 中收到错误信号并尝试其他方案
+                error_result = {
+                    "tool": tool_call.name,
+                    "status": "error",
+                    "error": str(e)[:500],
+                    "error_type": type(e).__name__,
+                }
+                self.context_manager.add_entry(
+                    Role.ASSISTANT,
+                    json.dumps(error_result, ensure_ascii=False),
+                    token_count=50,
+                )
         else:
             self.context_manager.add_entry(
                 Role.ASSISTANT,

@@ -45,8 +45,11 @@ def compile_and_run(
     # Sanitize flags
     safe_flags = _sanitize_flags(flags)
 
+    probe_binary_dir = os.path.join(work_dir, "probe_binaries") if work_dir else os.path.join(".", "probe_binaries")
+    os.makedirs(probe_binary_dir, exist_ok=True)
+
     # Compile
-    compile_args = ["-o", "probe_binary", "source.cu"] + safe_flags
+    compile_args = ["-o", os.path.join(probe_binary_dir, "probe_binary"), "source.cu"] + safe_flags
     compile_result = runner.run(
         source_code=source,
         command=nvcc,
@@ -60,7 +63,7 @@ def compile_and_run(
         return None
 
     # Execute
-    binary_path = os.path.join(work_dir or ".", "probe_binary")
+    binary_path = os.path.join(probe_binary_dir, "probe_binary")
     exec_result = _run_binary(binary_path, runner, work_dir, timeout)
     if not exec_result or not exec_result.success:
         print(f"[compile_and_run] binary execution failed: {binary_path}")

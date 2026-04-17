@@ -42,10 +42,41 @@ class SandboxResult:
     return_code: int
     success: bool
     artifacts: dict[str, str] = field(default_factory=dict)  # filename -> content or path
+    error_type: str = ""
+    error_category: str = ""
 
     @property
     def failed(self) -> bool:
         return not self.success
+
+    def get_structured_error(self) -> dict[str, str]:
+        """Return structured error information for model context."""
+        if self.success:
+            return {"status": "success"}
+        
+        error_info = {
+            "status": "failed",
+            "return_code": self.return_code,
+            "stderr": self.stderr[:1000],
+        }
+        
+        if self.error_category:
+            error_info["error_category"] = self.error_category
+        if self.error_type:
+            error_info["error_type"] = self.error_type
+            
+        if "nvcc" in self.stderr.lower():
+            error_info["error_category"] = "compilation_error"
+            if "fatal" in self.stderr.lower():
+                error_info["error_type"] = "fatal_compilation_error"
+            elif "error" in self.stderr.lower():
+                error_info["error_type"] = "compilation_error"
+        elif "not found" in self.stderr.lower():
+            error_info["error_category"] = "file_not_found"
+        elif "timeout" in self.stderr.lower():
+            error_info["error_category"] = "timeout"
+            
+        return error_info
 
 
 # ── Abstract Runner ──────────────────────────────────────────────────
@@ -124,9 +155,10 @@ class LocalSandbox(SandboxRunner):
             self._sandbox_root = sandbox_root
         elif os.environ.get("KAGGLE_KERNEL_RUN_TYPE"):
             project_root = os.getcwd()
-            self._sandbox_root = project_root
+            self._sandbox_root = os.path.join(project_root, ".kaggle_sandbox")
+            os.makedirs(self._sandbox_root, exist_ok=True)
             print(f"[Sandbox] Kaggle environment detected (KAGGLE_KERNEL_RUN_TYPE={os.environ['KAGGLE_KERNEL_RUN_TYPE']})")
-            print(f"[Sandbox] Using project root as sandbox: {project_root}")
+            print(f"[Sandbox] Using isolated sandbox: {self._sandbox_root}")
         else:
             self._sandbox_root = os.path.join(os.getcwd(), ".sandbox")
         os.makedirs(self._sandbox_root, exist_ok=True)
@@ -212,6 +244,7 @@ class LocalSandbox(SandboxRunner):
                 return_code=result.returncode,
                 success=result.returncode == 0,
                 artifacts={"source": source_path} if source_path else {},
+                error_category="compilation_error" if result.returncode != 0 and "nvcc" in command.lower() else "",
             )
         except subprocess.TimeoutExpired:
             return SandboxResult(
@@ -219,6 +252,7 @@ class LocalSandbox(SandboxRunner):
                 stderr=f"Command timed out after {self.config.timeout_seconds}s",
                 return_code=-1,
                 success=False,
+                error_category="timeout",
             )
         except FileNotFoundError:
             return SandboxResult(
@@ -226,6 +260,7 @@ class LocalSandbox(SandboxRunner):
                 stderr=f"Command not found: {command}",
                 return_code=-1,
                 success=False,
+                error_category="command_not_found",
             )
         except Exception as e:
             return SandboxResult(
@@ -233,6 +268,7 @@ class LocalSandbox(SandboxRunner):
                 stderr=str(e),
                 return_code=-1,
                 success=False,
+                error_category="runtime_error",
             )
 
     def cleanup(self) -> None:
@@ -355,6 +391,7 @@ class DockerSandbox(SandboxRunner):
                 stderr=stderr,
                 return_code=result.returncode,
                 success=result.returncode == 0,
+                error_category="compilation_error" if result.returncode != 0 and "nvcc" in command.lower() else "",
             )
         except subprocess.TimeoutExpired:
             return SandboxResult(
@@ -362,6 +399,7 @@ class DockerSandbox(SandboxRunner):
                 stderr=f"Docker command timed out after {self.config.timeout_seconds}s",
                 return_code=-1,
                 success=False,
+                error_category="timeout",
             )
         except Exception as e:
             return SandboxResult(
@@ -369,6 +407,7 @@ class DockerSandbox(SandboxRunner):
                 stderr=str(e),
                 return_code=-1,
                 success=False,
+                error_category="runtime_error",
             )
 
     def cleanup(self) -> None:
