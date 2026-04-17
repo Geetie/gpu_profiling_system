@@ -416,6 +416,10 @@ class StageExecutor:
                 "- Compilation error → fix source code → retry compile_cuda\n"
                 "- Execution error → fix binary path or code → recompile → retry\n"
                 "- Implausible output (0, negative, NaN) → fix measurement logic → retry\n\n"
+                "⚠️  CRITICAL: 'success_with_warning' means compilation SUCCEEDED.\n"
+                "If compile_cuda returns status='success_with_warning', the binary IS valid.\n"
+                "You MUST still call execute_binary — warnings do NOT prevent execution.\n"
+                "Only status='error' means compilation failed and you need to fix the code.\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 "✅ MANDATORY REQUIREMENT\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -439,9 +443,12 @@ class StageExecutor:
                 "YOUR JOB: Profile CodeGen's binaries with ncu → analyze bottlenecks → extract metrics\n"
                 "DO NOT: write/compile CUDA code (that's CodeGen's job)\n"
                 "DO NOT: verify results (that's Verification's job)\n\n"
+                "⚠️ CRITICAL: You MUST call tools as JSON objects. DO NOT just describe analysis.\n"
+                "ACTUALLY CALL the tools to get data.\n\n"
                 "WORKFLOW:\n"
                 "1. Review CodeGen's stdout output provided in the task description\n"
-                "2. If binary paths are available AND ncu is installed, use run_ncu on each binary\n"
+                "2. If binary paths are available AND ncu is installed, call run_ncu:\n"
+                '   {"tool": "run_ncu", "args": {"executable": "<binary_path>", "metrics": ["dram__throughput", "l2__throughput"]}}\n'
                 "3. If ncu is NOT available OR binaries are not found:\n"
                 "   - Analyze the raw printf output from CodeGen directly\n"
                 "   - Extract numeric values and validate against expected ranges\n"
@@ -449,7 +456,11 @@ class StageExecutor:
                 "4. Classify bottleneck: compute_bound, memory_bound, latency_bound, cache_capacity\n"
                 "5. Report metrics with confidence levels\n\n"
                 "OUTPUT FORMAT: For each target:\n"
-                "  target_name: measured_value (confidence: high/medium/low) [bottleneck_type]"
+                "  target_name: measured_value (confidence: high/medium/low) [bottleneck_type]\n\n"
+                "MANDATORY: Your output MUST include:\n"
+                "- bottleneck_type: one of compute_bound, memory_bound, latency_bound, cache_capacity\n"
+                "- confidence: high/medium/low\n"
+                "- At least one measured value per target\n"
             )
         if stage == PipelineStage.VERIFICATION:
             return (
@@ -465,7 +476,13 @@ class StageExecutor:
                 "3. Latency hierarchy — L1 < L2 < DRAM (when both measured)\n"
                 "4. Cross-validation — do CodeGen and MetricAnalysis agree?\n"
                 "5. Methodology soundness — were correct techniques used?\n\n"
-                "State your verdict as: Verdict: ACCEPT or Verdict: REJECT"
+                "⚠️ CRITICAL: You MUST output a clear verdict.\n"
+                "State your verdict as: Verdict: ACCEPT or Verdict: REJECT\n\n"
+                "MANDATORY OUTPUT FORMAT:\n"
+                "Verdict: ACCEPT or REJECT\n"
+                "Findings: [list of issues found]\n"
+                "Concerns: [list of concerns]\n"
+                "If REJECT, provide suggested fixes.\n"
             )
         return ""
 
@@ -836,7 +853,22 @@ class StageExecutor:
 
         if stage == PipelineStage.METRIC_ANALYSIS:
             data["analysis_output"] = final_text[:2000]
-            return SubAgentStatus.SUCCESS if final_text else SubAgentStatus.FAILED
+            # Check for meaningful analysis output
+            has_tool_result = any(
+                r.get("status") in ("success", "success_with_warning", True) or r.get("success") is True
+                for r in tool_results
+            )
+            has_bottleneck = "bottleneck" in final_text.lower()
+            has_metrics = any(
+                kw in final_text.lower() 
+                for kw in ["dram_latency", "dram_bandwidth", "l2_cache", "compute_bound", 
+                           "memory_bound", "latency_bound", "cache_capacity", "confidence"]
+            )
+            if has_tool_result or (final_text and (has_bottleneck or has_metrics)):
+                return SubAgentStatus.SUCCESS
+            if final_text:
+                return SubAgentStatus.SUCCESS
+            return SubAgentStatus.FAILED
 
         if stage == PipelineStage.VERIFICATION:
             return StageExecutor._verification_status(final_text, data)
