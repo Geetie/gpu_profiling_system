@@ -289,6 +289,17 @@ class AgentLoop:
                 return
             no_tool_pattern = "no_tool_call"
             self._failure_tracker.record_failure(no_tool_pattern)
+            
+            # Add system feedback to guide LLM to use tools
+            self.context_manager.add_entry(
+                Role.SYSTEM,
+                f"⚠️ ERROR: You did not call any tool in this turn. "
+                f"You MUST output a JSON tool call like: "
+                f'{{\"tool\": \"compile_cuda\", \"args\": {{\"source\": \"...\", \"flags\": [...]}}}}\n'
+                f"Do NOT output natural language — ACTUALLY CALL the tools.",
+                token_count=50,
+            )
+            
             if self._failure_tracker.should_terminate(no_tool_pattern):
                 self._emit(EventKind.STOP, {
                     "reason": "M4_no_tool_repeat",
