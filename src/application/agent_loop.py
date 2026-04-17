@@ -252,6 +252,36 @@ class AgentLoop:
                     json.dumps(result, ensure_ascii=False),
                     token_count=20,
                 )
+                # When tool returns error status, add system guidance to help LLM learn
+                if isinstance(result, dict) and result.get("status") == "error":
+                    error_msg = result.get("errors", result.get("error", ""))
+                    hint = result.get("hint", "")
+                    guidance = f"⚠️ Tool '{tool_call.name}' returned an error: {error_msg[:300]}"
+                    if hint:
+                        guidance += f"\n💡 HINT: {hint}"
+                    if tool_call.name == "run_ncu":
+                        guidance += (
+                            "\n💡 Common fixes: Use real ncu metric names like 'sm__cycles', "
+                            "'dram__throughput', 'l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum'. "
+                            "Do NOT use '.' or empty strings as metric names."
+                        )
+                    elif tool_call.name == "compile_cuda":
+                        guidance += (
+                            "\n💡 Common fixes: Check source code for syntax errors. "
+                            "Ensure flags include '-arch=sm_75' or higher. "
+                            "Do NOT use '-arch=0' or '-arch=sm_0'."
+                        )
+                    self.context_manager.add_entry(
+                        Role.SYSTEM,
+                        guidance,
+                        token_count=60,
+                    )
+                    # Track failure for anti-loop
+                    self._failure_pattern = f"tool_error:{tool_call.name}"
+                    self._failure_tracker.record_failure(self._failure_pattern)
+                elif isinstance(result, dict) and result.get("success") is True:
+                    # Tool succeeded - clear failure pattern
+                    self._failure_pattern = None
             except Exception as e:
                 self.loop_state.last_error = str(e)
                 self._failure_pattern = f"tool_error:{tool_call.name}"
@@ -291,14 +321,50 @@ class AgentLoop:
             no_tool_pattern = "no_tool_call"
             self._failure_tracker.record_failure(no_tool_pattern)
             
-            # Add system feedback to guide LLM to use tools
+            # Dynamic system feedback based on context - guide LLM to the right next tool
+            # Check what tools have been called so far
+            context_entries = self.context_manager.get_entries()
+            has_compiled = False
+            has_executed = False
+            binary_path = ""
+            for entry in context_entries:
+                if entry.role.value == "assistant":
+                    try:
+                        d = json.loads(entry.content)
+                        if isinstance(d, dict):
+                            if d.get("tool") == "compile_cuda" and d.get("success"):
+                                has_compiled = True
+                                binary_path = d.get("binary_path", "")
+                            if d.get("tool") == "execute_binary":
+                                has_executed = True
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+            
+            if has_compiled and not has_executed and binary_path:
+                guidance = (
+                    f"⚠️ ERROR: You compiled the code but did NOT execute the binary!\n"
+                    f"You MUST now call execute_binary with the compiled binary:\n"
+                    f'{{"tool": "execute_binary", "args": {{"binary_path": "{binary_path}"}}}}\n'
+                    f"Do NOT output natural language — CALL the tool now."
+                )
+            elif has_compiled and has_executed:
+                guidance = (
+                    f"⚠️ ERROR: You did not call any tool in this turn.\n"
+                    f"If you have measurements, output them as: target_name: value\n"
+                    f"If not, call the appropriate tool to get more data."
+                )
+            else:
+                guidance = (
+                    f"⚠️ ERROR: You did not call any tool in this turn. "
+                    f"You MUST output a JSON tool call like: "
+                    f'{{\"tool\": \"compile_cuda\", \"args\": {{\"source\": \"...\", \"flags\": [\"-O3\", \"-arch=sm_75\"]}}}}\n'
+                    f"Do NOT output natural language — ACTUALLY CALL the tools."
+                )
+            
             self.context_manager.add_entry(
                 Role.SYSTEM,
-                f"⚠️ ERROR: You did not call any tool in this turn. "
-                f"You MUST output a JSON tool call like: "
-                f'{{\"tool\": \"compile_cuda\", \"args\": {{\"source\": \"...\", \"flags\": [...]}}}}\n'
-                f"Do NOT output natural language — ACTUALLY CALL the tools.",
-                token_count=50,
+                guidance,
+                token_count=60,
             )
             
             if self._failure_tracker.should_terminate(no_tool_pattern):

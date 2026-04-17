@@ -57,11 +57,30 @@ def run_ncu_handler(
     # Build ncu command — metrics are passed as a comma-separated list
     safe_metrics = []
     for m in metrics:
-        # Sanitize: only allow alphanumeric, underscore, double underscore, tilde
-        if not all(c.isalnum() or c in ("_", "~") for c in m):
+        # Skip empty or whitespace-only metrics
+        if not m or not m.strip():
+            continue
+        # Sanitize: only allow alphanumeric, underscore, double underscore, tilde, dot
+        if not all(c.isalnum() or c in ("_", "~", ".") for c in m):
             return {
                 "raw_output": "",
-                "parsed_metrics": {"error": f"Invalid metric name: {m!r}"},
+                "parsed_metrics": {
+                    "error": f"Invalid metric name: {m!r}",
+                    "hint": "Metric names must contain only alphanumeric chars, underscores, dots, or tildes. "
+                            "Examples: 'sm__cycles', 'dram__throughput', 'l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum', "
+                            "'gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed'",
+                },
+            }
+        # Reject single-dot metric (common LLM mistake)
+        if m.strip() == ".":
+            return {
+                "raw_output": "",
+                "parsed_metrics": {
+                    "error": f"Invalid metric name: {m!r} — '.' is not a valid metric",
+                    "hint": "You must provide real ncu metric names like: 'sm__cycles', 'dram__throughput', "
+                            "'l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum'. "
+                            "Do NOT use '.' as a metric name.",
+                },
             }
         safe_metrics.append(m)
 

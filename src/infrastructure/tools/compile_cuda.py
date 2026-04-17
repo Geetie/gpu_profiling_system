@@ -17,6 +17,7 @@ def _correct_arch_flag(flag: str) -> str:
 
     Supports multiple flag formats:
     - -arch=sm_XX
+    - -arch=XX (bare number, e.g. -arch=0 which is invalid)
     - -gencode=arch=compute_XX,code=sm_XX
     - --gpu-architecture=compute_XX
     - -code=sm_XX
@@ -28,12 +29,22 @@ def _correct_arch_flag(flag: str) -> str:
 
     flag_lower = flag.lower()
 
+    # Pattern 0: -arch=<bare_number> (e.g. -arch=0, -arch=60)
+    # This is the most common LLM mistake - passing just a number
+    if flag_lower.startswith("-arch="):
+        value = flag.split("=", 1)[1].strip()
+        if value.isdigit():
+            arch_num = int(value)
+            if arch_num < 75:
+                return "-arch=sm_75"
+            return f"-arch=sm_{arch_num}"
+
     # Pattern 1: -arch=sm_XX
     if flag_lower.startswith("-arch=sm_"):
         try:
             arch_num = int(flag.split("=")[1].replace("sm_", ""))
             if arch_num < 75:
-                return f"-arch=sm_75"
+                return "-arch=sm_75"
         except (ValueError, IndexError):
             pass
 
@@ -63,9 +74,9 @@ def _correct_arch_flag(flag: str) -> str:
             
             if arch_num < 75:
                 if "compute_" in arch_part.lower():
-                    return f"--gpu-architecture=compute_75"
+                    return "--gpu-architecture=compute_75"
                 else:
-                    return f"--gpu-architecture=sm_75"
+                    return "--gpu-architecture=sm_75"
         except (ValueError, IndexError, AttributeError):
             pass
 
@@ -208,4 +219,5 @@ def compile_cuda_handler(
         "binary_path": binary_path,
         "source_path": os.path.join(source_dir, "source.cu") if result.success else "",
         "has_warning": has_warning,
+        "next_action": "call execute_binary with binary_path" if result.success else "fix source code and retry compile_cuda",
     }
