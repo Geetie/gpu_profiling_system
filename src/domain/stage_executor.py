@@ -855,7 +855,7 @@ class StageExecutor:
             for r in tool_results
         )
         tool_succeeded = any(
-            r.get("status") in ("success", True) or r.get("success") is True
+            r.get("status") in ("success", "success_with_warning", True) or r.get("success") is True
             for r in tool_results
         )
         has_binary = any(r.get("binary_path") for r in tool_results)
