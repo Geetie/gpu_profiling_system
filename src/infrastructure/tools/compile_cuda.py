@@ -5,10 +5,80 @@ Compiles CUDA source code via nvcc through the sandbox for isolation.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from typing import Any
 
 from src.infrastructure.sandbox import LocalSandbox, SandboxConfig, SandboxRunner
+
+
+def _correct_arch_flag(flag: str) -> str:
+    """Auto-correct architecture flags below sm_75 to sm_75 for CUDA 12.x.
+
+    Supports multiple flag formats:
+    - -arch=sm_XX
+    - -gencode=arch=compute_XX,code=sm_XX
+    - --gpu-architecture=compute_XX
+    - -code=sm_XX
+
+    Returns corrected flag if arch < 75, otherwise original flag.
+    """
+    if not flag or not flag.strip():
+        return flag
+
+    flag_lower = flag.lower()
+
+    # Pattern 1: -arch=sm_XX
+    if flag_lower.startswith("-arch=sm_"):
+        try:
+            arch_num = int(flag.split("=")[1].replace("sm_", ""))
+            if arch_num < 75:
+                return f"-arch=sm_75"
+        except (ValueError, IndexError):
+            pass
+
+    # Pattern 2: -gencode=arch=compute_XX,code=sm_XX
+    elif "arch=compute_" in flag_lower and "code=sm_" in flag_lower:
+        try:
+            match = re.search(r"compute_(\d+)", flag_lower)
+            if match:
+                arch_num = int(match.group(1))
+                if arch_num < 75:
+                    flag = re.sub(r"compute_\d+", "compute_75", flag, count=1)
+                    flag = re.sub(r"code=sm_\d+", "code=sm_75", flag, count=1)
+                    return flag
+        except ValueError:
+            pass
+
+    # Pattern 3: --gpu-architecture=compute_XX or --gpu-architecture=sm_XX
+    elif flag_lower.startswith("--gpu-architecture="):
+        try:
+            arch_part = flag.split("=", 1)[1]
+            if "compute_" in arch_part.lower():
+                arch_num = int(re.search(r"compute_(\d+)", arch_part.lower()).group(1))
+            elif "sm_" in arch_part.lower():
+                arch_num = int(arch_part.lower().split("sm_")[1])
+            else:
+                return flag
+            
+            if arch_num < 75:
+                if "compute_" in arch_part.lower():
+                    return f"--gpu-architecture=compute_75"
+                else:
+                    return f"--gpu-architecture=sm_75"
+        except (ValueError, IndexError, AttributeError):
+            pass
+
+    # Pattern 4: -code=sm_XX (standalone)
+    elif flag_lower.startswith("-code=sm_"):
+        try:
+            arch_num = int(flag.split("=")[1].replace("sm_", ""))
+            if arch_num < 75:
+                return "-code=sm_75"
+        except (ValueError, IndexError):
+            pass
+
+    return flag
 
 
 def compile_cuda_handler(
@@ -71,12 +141,8 @@ def compile_cuda_handler(
                     "errors": f"Invalid compiler flag: {f!r}",
                     "binary_path": "",
                 }
-        # Filter out invalid architecture flags (e.g., sm_0)
-        if f.startswith("-arch=sm_") and f.replace("-arch=sm_", "").isdigit():
-            arch_num = int(f.replace("-arch=sm_", ""))
-            if arch_num < 75:
-                # Auto-correct to sm_75 for CUDA 12.x compatibility
-                f = "-arch=sm_75"
+        # Auto-correct architecture flags to sm_75+ for CUDA 12.x compatibility
+        f = _correct_arch_flag(f)
         safe_flags.append(f)
 
     # INT-9 fix: compile inside sandbox so output binary is in sandbox root
