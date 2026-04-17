@@ -5,6 +5,7 @@ to specialist agents, and integrates final results.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from src.application.context import ContextManager, Role
@@ -17,6 +18,8 @@ from src.domain.subagent import (
     SubAgentStatus,
 )
 from src.domain.tool_contract import ToolRegistry
+
+logger = logging.getLogger(__name__)
 
 
 class PlannerAgent(BaseSubAgent):
@@ -42,11 +45,11 @@ class PlannerAgent(BaseSubAgent):
             max_tokens=max_tokens,
         )
         if self.tool_registry.list_tools():
-            print("[Planner] WARNING: Planner received non-empty tool_registry, "
-                  "but Planner MUST have zero tools (P1/P2 enforcement). "
-                  "Forcing empty registry.")
-        print("[Planner] Tool isolation active: 0 tools registered. "
-              "Planner outputs pure JSON text only, no tool calls.")
+            logger.warning("[Planner] WARNING: Planner received non-empty tool_registry, "
+                           "but Planner MUST have zero tools (P1/P2 enforcement). "
+                           "Forcing empty registry.")
+        logger.info("[Planner] Tool isolation active: 0 tools registered. "
+                     "Planner outputs pure JSON text only, no tool calls.")
 
     def _process(self, message: CollaborationMessage) -> SubAgentResult:
         """Parse target spec and create a task plan."""
@@ -61,6 +64,11 @@ class PlannerAgent(BaseSubAgent):
                 data={"targets": [], "tasks": [], "plan": []},
             )
 
+        valid_categories = {
+            "latency_measurement", "capacity_measurement",
+            "clock_measurement", "bandwidth_measurement", "unknown",
+        }
+
         # Try LLM-based planning first, fall back to rule-based
         if self._model_caller is not None:
             tasks, plan = self._llm_plan(target_spec, targets)
@@ -69,13 +77,10 @@ class PlannerAgent(BaseSubAgent):
             tasks = self.parse_targets(target_spec)
             plan = self.create_plan(tasks)
 
-        # CRITICAL SAFETY NET: Ensure tasks is never empty (per spec.md P6)
-        # This prevents Handoff Validation failure which blocks the entire pipeline
+        # SAFETY NET 1: Ensure tasks is never empty
         if not tasks:
-            print(f"[Planner] WARNING: _llm_plan returned {len(tasks)} tasks, forcing rule-based fallback")
             tasks = self.parse_targets(target_spec)
         if not tasks:
-            print("[Planner] CRITICAL: parse_targets also returned empty! Force-creating minimal tasks")
             tasks = [
                 {"target": t, "category": "unknown", "method": "custom micro-benchmark"}
                 for t in targets
@@ -83,16 +88,43 @@ class PlannerAgent(BaseSubAgent):
         if not plan:
             plan = self.create_plan(tasks)
 
-        # FINAL CONTRACT VALIDATION: Ensure required keys exist before returning
-        # Per spec.md §5.1: Planner must produce structured task list for CodeGen dispatch
+        # SAFETY NET 2: Validate and normalize every task
+        validated_tasks = []
+        for t in tasks:
+            if not isinstance(t, dict):
+                continue
+            target = t.get("target", "")
+            if not isinstance(target, str) or not target.strip():
+                continue
+            category = t.get("category", "unknown")
+            if category not in valid_categories:
+                category = "unknown"
+            validated_tasks.append({
+                "target": target.strip(),
+                "category": category,
+                "method": t.get("method", "custom micro-benchmark"),
+            })
+        tasks = validated_tasks if validated_tasks else [
+            {"target": t, "category": "unknown", "method": "custom micro-benchmark"}
+            for t in targets
+        ]
+
         data = {
             "targets": targets,
             "tasks": tasks,
             "plan": [p.to_dict() for p in plan],
         }
 
-        print(f"[Planner] Output contract validated: "
-              f"{len(targets)} targets → {len(tasks)} tasks → {len(plan)} plan items")
+        # ASSERT: Verify output contract before returning
+        assert "tasks" in data, "[P0 BUG] data missing 'tasks' key"
+        assert isinstance(data["tasks"], list), "[P0 BUG] data['tasks'] is not a list"
+        assert len(data["tasks"]) > 0, "[P0 BUG] data['tasks'] is empty"
+        for t in data["tasks"]:
+            assert "target" in t, f"[P0 BUG] task missing 'target': {t}"
+            assert "category" in t, f"[P0 BUG] task missing 'category': {t}"
+
+        logger.info(f"[Planner] Output contract validated: "
+                     f"{len(targets)} targets → {len(tasks)} tasks → {len(plan)} plan items")
 
         return SubAgentResult(
             agent_role=self.role,
@@ -104,8 +136,12 @@ class PlannerAgent(BaseSubAgent):
     def _llm_plan(
         self, target_spec: dict[str, Any], targets: list[str]
     ) -> tuple[list[dict[str, Any]], list[CollaborationMessage]]:
-        """Use LLM to decompose targets into a plan."""
+        """Use LLM to decompose targets into a plan with retry logic."""
         import json as _json
+        import time
+
+        max_retries = 3
+        base_delay = 1.0
 
         user_msg = (
             "You are a PLANNING AGENT. Your ONLY job is to decompose targets into tasks.\n\n"
@@ -138,70 +174,68 @@ class PlannerAgent(BaseSubAgent):
         messages.append({"role": "user", "content": user_msg})
 
         tasks: list[dict[str, Any]] = []
-        try:
-            response = self._model_caller(messages)
+        last_error = ""
 
-            if response is None or not isinstance(response, str):
-                print(f"[Planner] LLM returned non-string response (type={type(response).__name__}), "
-                      "falling back to rule-based")
-                raise ValueError("Invalid response type")
+        for attempt in range(max_retries):
+            if attempt > 0:
+                delay = base_delay * (2 ** (attempt - 1))
+                logger.warning(f"[Planner] LLM planning retry {attempt}/{max_retries} "
+                               f"(waiting {delay}s, last error: {last_error})")
+                time.sleep(delay)
 
-            response = response.strip()
-            if len(response) == 0:
-                print("[Planner] LLM returned empty response, falling back to rule-based")
-                raise ValueError("Empty response")
+                retry_msg = {
+                    "role": "user",
+                    "content": (
+                        f"Your previous response did not contain valid task JSON. "
+                        f"Please return ONLY a JSON array of task objects with "
+                        f'"target", "category", and "method" fields. '
+                        f"NO explanations, NO tool calls, just the JSON array."
+                    ),
+                }
+                messages.append(retry_msg)
 
-            if len(response) < 20:
-                print(f"[Planner] LLM returned suspiciously short response "
-                      f"({len(response)} chars): {response[:100]}, falling back to rule-based")
-                raise ValueError("Response too short to contain valid JSON")
+            try:
+                response = self._model_caller(messages)
 
-            start = response.find("[")
-            end = response.rfind("]") + 1
-            if start >= 0 and end > start:
-                json_str = response[start:end]
-                task_list = _json.loads(json_str)
-                if not isinstance(task_list, list):
-                    print(f"[Planner] LLM JSON is not a list (type={type(task_list).__name__}), "
-                          "falling back to rule-based")
-                    raise ValueError("JSON root is not an array")
-                for t in task_list:
-                    if not isinstance(t, dict):
-                        continue
-                    target_name = t.get("target", "unknown")
-                    if not isinstance(target_name, str) or len(target_name.strip()) == 0:
-                        continue
-                    tasks.append({
-                        "target": target_name,
-                        "category": t.get("category", "unknown"),
-                        "method": t.get("method", "custom micro-benchmark"),
-                    })
+                if response is None or not isinstance(response, str):
+                    last_error = f"Invalid response type: {type(response).__name__}"
+                    raise ValueError(last_error)
+
+                response = response.strip()
+                if len(response) == 0:
+                    last_error = "Empty response"
+                    raise ValueError(last_error)
+
+                if len(response) < 20:
+                    last_error = f"Response too short ({len(response)} chars): {response[:100]}"
+                    raise ValueError(last_error)
+
+                tasks = self._extract_tasks_from_response(response)
                 if tasks:
-                    print(f"[Planner] LLM returned {len(tasks)} valid tasks from JSON extraction")
+                    logger.info(f"[Planner] LLM returned {len(tasks)} valid tasks from JSON extraction")
+                    return tasks, self.create_plan(tasks)
                 else:
-                    print("[Planner] LLM JSON array contained no valid task objects, "
-                          "falling back to rule-based")
-                    raise ValueError("No valid tasks in JSON array")
-            else:
-                print(f"[Planner] LLM response did not contain JSON array "
-                      f"(first 200 chars: {response[:200]}), falling back to rule-based")
-                raise ValueError("No JSON array found in response")
+                    last_error = f"No valid tasks found in response (first 200 chars: {response[:200]})"
+                    raise ValueError(last_error)
 
-        except (_json.JSONDecodeError, ValueError) as e:
-            print(f"[Planner] LLM output parsing failed: {e}, using rule-based fallback")
-        except Exception as e:
-            print(f"[Planner] LLM planning exception: {type(e).__name__}: {e}, "
-                  "using rule-based fallback")
+            except (_json.JSONDecodeError, ValueError) as e:
+                if attempt == max_retries - 1:
+                    logger.error(f"[Planner] LLM output parsing failed after {max_retries} attempts: {e}")
+                else:
+                    logger.warning(f"[Planner] LLM output parsing failed on attempt {attempt + 1}: {e}")
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    logger.error(f"[Planner] LLM planning exception after {max_retries} attempts: "
+                                 f"{type(e).__name__}: {e}")
+                else:
+                    logger.warning(f"[Planner] LLM planning exception on attempt {attempt + 1}: "
+                                   f"{type(e).__name__}: {e}")
 
-        # Triple-safety fallback: ensure we always have at least one task per target
-        if not tasks:
-            print("[Planner] LLM produced no valid tasks, using rule-based classification")
-            tasks = self.parse_targets(target_spec)
+        logger.warning("[Planner] All LLM retries exhausted, using rule-based classification")
+        tasks = self.parse_targets(target_spec)
 
         if not tasks or len(tasks) < len(targets):
             missing_count = max(0, len(targets) - len(tasks))
-            print(f"[Planner] WARNING: Only {len(tasks)}/{len(targets)} tasks, "
-                  f"force-creating {missing_count} fallback task(s)")
             existing_targets = {t["target"] for t in tasks}
             for t in targets:
                 if t not in existing_targets:
@@ -213,6 +247,118 @@ class PlannerAgent(BaseSubAgent):
 
         plan = self.create_plan(tasks)
         return tasks, plan
+
+    @staticmethod
+    def _extract_tasks_from_response(response: str) -> list[dict[str, Any]]:
+        """Extract task list from LLM response using robust parsing.
+
+        Strategies (in order):
+        1. Parse entire response as JSON
+        2. Code block extraction
+        3. Bracket-matching for JSON arrays
+        4. First-[ to last-] fallback
+        """
+        import json as _json
+        import re
+
+        # Strategy 1: Parse entire response as JSON
+        try:
+            parsed = _json.loads(response)
+            tasks = PlannerAgent._normalize_response_tasks(parsed)
+            if tasks:
+                return tasks
+        except (_json.JSONDecodeError, TypeError):
+            pass
+
+        # Strategy 2: Extract from code blocks
+        code_block_match = re.search(r'```(?:json)?\s*\n?([\s\S]*?)\n?\s*```', response)
+        if code_block_match:
+            json_content = code_block_match.group(1).strip()
+            try:
+                parsed = _json.loads(json_content)
+                tasks = PlannerAgent._normalize_response_tasks(parsed)
+                if tasks:
+                    return tasks
+            except (_json.JSONDecodeError, TypeError):
+                pass
+
+        # Strategy 3: Bracket-matching for JSON arrays
+        for i, ch in enumerate(response):
+            if ch == '[':
+                depth = 0
+                in_string = False
+                escape_next = False
+                for j in range(i, len(response)):
+                    cj = response[j]
+                    if escape_next:
+                        escape_next = False
+                        continue
+                    if cj == '\\' and in_string:
+                        escape_next = True
+                        continue
+                    if cj == '"' and not escape_next:
+                        in_string = not in_string
+                        continue
+                    if in_string:
+                        continue
+                    if cj == '[':
+                        depth += 1
+                    elif cj == ']':
+                        depth -= 1
+                        if depth == 0:
+                            json_str = response[i:j+1]
+                            try:
+                                parsed = _json.loads(json_str)
+                                if isinstance(parsed, list):
+                                    tasks = PlannerAgent._normalize_response_tasks(parsed)
+                                    if tasks:
+                                        return tasks
+                            except (_json.JSONDecodeError, TypeError):
+                                pass
+                            break
+
+        # Strategy 4: Simple first-[ to last-] extraction
+        start = response.find("[")
+        end = response.rfind("]") + 1
+        if start >= 0 and end > start + 2:
+            try:
+                parsed = _json.loads(response[start:end])
+                if isinstance(parsed, list):
+                    tasks = PlannerAgent._normalize_response_tasks(parsed)
+                    if tasks:
+                        return tasks
+            except (_json.JSONDecodeError, TypeError):
+                pass
+
+        return []
+
+    @staticmethod
+    def _normalize_response_tasks(parsed: Any) -> list[dict[str, Any]]:
+        """Normalize parsed JSON into task list."""
+        valid_categories = {
+            "latency_measurement", "capacity_measurement",
+            "clock_measurement", "bandwidth_measurement", "unknown",
+        }
+        if isinstance(parsed, list):
+            tasks = []
+            for t in parsed:
+                if not isinstance(t, dict):
+                    continue
+                target = t.get("target", "")
+                if not isinstance(target, str) or not target.strip():
+                    continue
+                category = t.get("category", "unknown")
+                if category not in valid_categories:
+                    category = "unknown"
+                tasks.append({
+                    "target": target.strip(),
+                    "category": category,
+                    "method": t.get("method", "custom micro-benchmark"),
+                })
+            return tasks
+        if isinstance(parsed, dict) and "tasks" in parsed:
+            return PlannerAgent._normalize_response_tasks(parsed["tasks"])
+        return []
 
     def parse_targets(self, spec: dict[str, Any]) -> list[dict[str, Any]]:
         """Decompose target_spec into individual task descriptions."""

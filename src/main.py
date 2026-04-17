@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 import uuid
@@ -21,6 +22,13 @@ from typing import Any
 from src.application.agent_loop import AgentLoop, EventKind
 from src.application.system_builder import SystemBuilder, try_wire_model_caller
 from src.presentation.terminal_ui import TerminalUI
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+    stream=sys.stdout,
+)
 
 
 def _create_argparse() -> argparse.ArgumentParser:

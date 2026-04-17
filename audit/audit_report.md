@@ -1,8 +1,8 @@
 # Pipeline Execution Audit Report
 
-**Generated:** 2026-04-15 09:40:05 UTC
-**Start:** 2026-04-15T09:34:53.224214+00:00
-**End:** 2026-04-15T09:40:05.975875+00:00
+**Generated:** 2026-04-17 05:31:44 UTC
+**Start:** 2026-04-17T05:27:25.529541+00:00
+**End:** 2026-04-17T05:31:44.883383+00:00
 
 ## Stage Timeline
 
@@ -12,4 +12,4 @@
 
 ## Final Status
 
-- Pipeline result: **success**
+- Pipeline result: **rejected**

@@ -9,6 +9,7 @@ subclasses could override individual steps if needed.
 from __future__ import annotations
 
 import json as _json
+import logging
 import re
 import uuid
 from typing import Any
@@ -28,6 +29,8 @@ from src.domain.subagent import (
     SubAgentResult,
     SubAgentStatus,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class StageExecutor:
@@ -71,14 +74,14 @@ class StageExecutor:
             SubAgentResult from the last attempt.
         """
         self._log("pipeline_stage_start", {"stage": step.stage.value, "retry_limit": step.retry_on_failure})
-        print(f"[StageExecutor] Starting stage {step.stage.value} with {step.retry_on_failure} retries")
+        logger.info("[StageExecutor] Starting stage %s with %d retries", step.stage.value, step.retry_on_failure)
 
         last_result: SubAgentResult | None = None
 
         for attempt in range(1 + step.retry_on_failure):
             if attempt > 0:
                 self._log("pipeline_retry", {"stage": step.stage.value, "attempt": attempt})
-                print(f"[StageExecutor] Retry {attempt} for stage {step.stage.value}")
+                logger.info("[StageExecutor] Retry %d for stage %s", attempt, step.stage.value)
 
             feedback = ctx.get_feedback_for_codegen()
             if feedback and step.stage == PipelineStage.CODE_GEN:
@@ -87,7 +90,7 @@ class StageExecutor:
                 message = self._build_collaboration_message(step, ctx)
             last_result = self._run_with_agent_loop(step, message, ctx)
 
-            print(f"[StageExecutor] Attempt status: {last_result.status.value}")
+            logger.info("[StageExecutor] Attempt status: %s", last_result.status.value)
             if last_result.is_success():
                 break
             if last_result.status == SubAgentStatus.REJECTED:
@@ -106,7 +109,7 @@ class StageExecutor:
                 error="Stage produced no result after all retries",
             )
 
-        print(f"[StageExecutor] Stage {step.stage.value} finished: {last_result.status.value}")
+        logger.info("[StageExecutor] Stage %s finished: %s", step.stage.value, last_result.status.value)
         return last_result
 
     def _build_collaboration_message(
@@ -280,7 +283,7 @@ class StageExecutor:
         if agent._model_caller is not None:
             loop.set_model_caller(agent._model_caller)
         else:
-            print(f"[StageExecutor] WARNING: No model caller for {stage_name}!")
+            logger.warning("[StageExecutor] No model caller for %s!", stage_name)
 
         if self._sandbox and self._tool_handlers:
             handlers = dict(self._tool_handlers)
@@ -294,11 +297,11 @@ class StageExecutor:
         agent.context_manager.add_entry(Role.USER, user_task, token_count=30)
 
         try:
-            print(f"[StageExecutor] Starting AgentLoop for {stage_name}")
+            logger.info("[StageExecutor] Starting AgentLoop for %s", stage_name)
             loop.start()
-            print(f"[StageExecutor] AgentLoop finished for {stage_name} (turns={loop.loop_state.turn_count})")
+            logger.info("[StageExecutor] AgentLoop finished for %s (turns=%d)", stage_name, loop.loop_state.turn_count)
         except Exception as e:
-            print(f"[StageExecutor] AgentLoop CRASHED in {stage_name}: {e}")
+            logger.error("[StageExecutor] AgentLoop CRASHED in %s: %s", stage_name, e)
             return SubAgentResult(
                 agent_role=agent.role,
                 status=SubAgentStatus.FAILED,
@@ -477,7 +480,7 @@ class StageExecutor:
         for name in handlers:
             # Skip tools not in registry (agent doesn't have permission for this tool)
             if not tool_registry.has_tool(name):
-                print(f"[StageExecutor] Tool '{name}' not in registry for this agent role, skipping")
+                logger.debug("[StageExecutor] Tool '%s' not in registry for this agent role, skipping", name)
                 continue
             try:
                 contract = tool_registry.get(name)
@@ -498,7 +501,7 @@ class StageExecutor:
                 })
             except KeyError:
                 # This should not happen since we checked has_tool() above, but handle gracefully
-                print(f"[StageExecutor] WARNING: Tool contract for '{name}' not found in registry")
+                logger.warning("[StageExecutor] Tool contract for '%s' not found in registry", name)
                 tools.append({
                     "type": "function",
                     "function": {
@@ -553,6 +556,18 @@ class StageExecutor:
         }
         effective_text = final_text if final_text not in _empty_placeholders else ""
 
+        # P0 FIX: For PLAN stage, parse LLM output into structured tasks
+        # This bridges AgentLoop's text output with HandoffValidator's contract
+        if stage == PipelineStage.PLAN:
+            # Pass ALL assistant outputs so _parse_planner_tasks can find JSON in any turn
+            tasks = self._parse_planner_tasks(effective_text, agent, assistant_outputs)
+            if tasks:
+                data["tasks"] = tasks
+                logger.info("[StageExecutor] Extracted %d tasks from Planner LLM output", len(tasks))
+            else:
+                logger.warning("[StageExecutor] Failed to extract tasks from Planner output, "
+                               "HandoffValidator will likely reject this")
+
         status = self._determine_status(stage, effective_text, tool_results, data)
 
         error_msg = self._build_error_message(stage, status, data, effective_text, tool_results)
@@ -576,6 +591,227 @@ class StageExecutor:
         return result
 
     @staticmethod
+    def _parse_planner_tasks(
+        final_text: str, agent: BaseSubAgent, all_assistant_outputs: list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        """Parse Planner LLM output into structured task list.
+
+        Multiple fallback strategies to ensure tasks are always extracted:
+        1. Scan ALL assistant outputs (not just final) for valid JSON arrays
+        2. Parse final output as direct JSON
+        3. Extract JSON array from mixed content
+        4. Try code block JSON
+        5. Rule-based classification as ultimate fallback
+        """
+        # Strategy 1: Scan ALL assistant outputs for the FIRST valid JSON task list
+        # This handles cases where early turns produced valid JSON but later turns did not
+        all_outputs = all_assistant_outputs or []
+        if final_text and final_text not in all_outputs:
+            all_outputs = list(all_outputs) + [final_text]
+
+        for i, output in enumerate(all_outputs):
+            if not output or not output.strip():
+                continue
+            tasks = StageExecutor._try_extract_tasks(output)
+            if tasks:
+                logger.info("[StageExecutor] Found valid tasks in assistant output #%d (%d chars)", i+1, len(output))
+                return tasks
+
+        logger.info("[StageExecutor] LLM output parsing failed, using rule-based task classification")
+        try:
+            if hasattr(agent, 'context_manager'):
+                cm = agent.context_manager
+                entries = cm.get_entries()
+                for entry in entries:
+                    if entry.role.value == "user":
+                        content = entry.content
+                        if "target_spec" in content[:500] or "PLANNER" in content[:100]:
+                            spec_match = re.search(r'\{[^{}]*(?:"targets"\s*:\s*\[[^\]]*\]|"tasks"\s*:\s*\[[^\]]*\])[^{}]*\}', content, re.DOTALL)
+                            if spec_match:
+                                spec = _json.loads(spec_match.group())
+                                targets = spec.get("targets", [])
+                                if targets and hasattr(agent, "_classify_target"):
+                                    tasks = [agent._classify_target(t) for t in targets]
+                                    logger.info("[StageExecutor] Rule-based fallback produced %d tasks", len(tasks))
+                                    return tasks
+        except Exception as e:
+            logger.warning("[StageExecutor] Rule-based fallback also failed: %s", e)
+
+        return []
+
+    @staticmethod
+    def _try_extract_tasks(text: str) -> list[dict[str, Any]]:
+        """Try to extract task list from a single text output.
+
+        Returns normalized task list if successful, empty list otherwise.
+        Uses bracket-matching algorithm for nested JSON structures.
+        """
+        if not text or not text.strip():
+            return []
+
+        # Strategy A: Try to parse entire output as JSON
+        try:
+            parsed = _json.loads(text)
+            result = StageExecutor._try_parse_json_value(parsed)
+            if result:
+                return result
+        except (_json.JSONDecodeError, TypeError):
+            pass
+
+        # Strategy B: Extract JSON from code blocks first (highest signal-to-noise)
+        try:
+            code_block_match = re.search(r'```(?:json)?\s*\n?([\s\S]*?)\n?\s*```', text)
+            if code_block_match:
+                json_content = code_block_match.group(1).strip()
+                parsed = _json.loads(json_content)
+                result = StageExecutor._try_parse_json_value(parsed)
+                if result:
+                    return result
+        except (_json.JSONDecodeError, TypeError, ValueError):
+            pass
+
+        # Strategy C: Scan for JSON objects/arrays using bracket matching
+        # Find all potential JSON starts (either { or [)
+        candidates = []
+        for i, ch in enumerate(text):
+            if ch in ('{', '['):
+                candidates.append(i)
+
+        # Try each candidate position, using bracket matching to find the end
+        for start_pos in candidates:
+            for end_pos in StageExecutor._find_json_end(text, start_pos):
+                json_str = text[start_pos:end_pos]
+                try:
+                    parsed = _json.loads(json_str)
+                    result = StageExecutor._try_parse_json_value(parsed)
+                    if result:
+                        return result
+                except (_json.JSONDecodeError, TypeError, ValueError):
+                    continue
+
+        # Strategy D: Simple first-[ to last-] extraction (deprecated, kept as fallback)
+        try:
+            start = text.find("[")
+            end = text.rfind("]") + 1
+            if start >= 0 and end > start + 2:
+                json_str = text[start:end]
+                parsed = _json.loads(json_str)
+                if isinstance(parsed, list):
+                    tasks = StageExecutor._normalize_tasks(parsed)
+                    if tasks:
+                        return tasks
+        except (_json.JSONDecodeError, TypeError, ValueError):
+            pass
+
+        return []
+
+    @staticmethod
+    def _find_json_end(text: str, start: int) -> list[int]:
+        """Find potential JSON end positions using bracket matching.
+
+        Returns a list of end positions (exclusive) that form valid bracket matching.
+        Only returns the first valid match to keep it efficient.
+        """
+        if start >= len(text):
+            return []
+
+        open_char = text[start]
+        if open_char == '{':
+            close_char = '}'
+        elif open_char == '[':
+            close_char = ']'
+        else:
+            return []
+
+        depth = 0
+        in_string = False
+        escape_next = False
+
+        for i in range(start, len(text)):
+            ch = text[i]
+
+            if escape_next:
+                escape_next = False
+                continue
+
+            if ch == '\\' and in_string:
+                escape_next = True
+                continue
+
+            if ch == '"' and not escape_next:
+                in_string = not in_string
+                continue
+
+            if in_string:
+                continue
+
+            if ch == open_char:
+                depth += 1
+            elif ch == close_char:
+                depth -= 1
+                if depth == 0:
+                    # Found a balanced bracket sequence
+                    # Try a few variations: this exact end, and also with trailing whitespace
+                    yield i + 1
+                    return
+
+    @staticmethod
+    def _try_parse_json_value(parsed: Any) -> list[dict[str, Any]]:
+        """Try to extract tasks from a parsed JSON value.
+
+        Handles: list of tasks, dict with 'tasks' key.
+        Does NOT treat arbitrary dicts with 'target' key as tasks
+        to avoid false positives on non-task JSON objects.
+        """
+        if isinstance(parsed, list):
+            tasks = StageExecutor._normalize_tasks(parsed)
+            if tasks:
+                return tasks
+        if isinstance(parsed, dict):
+            # Check for 'tasks' key
+            if "tasks" in parsed:
+                tasks = StageExecutor._normalize_tasks(parsed["tasks"])
+                if tasks:
+                    return tasks
+            # Only treat as single task if it looks like a complete task object
+            # (has target AND category, not just a stray target field)
+            if "target" in parsed and "category" in parsed and "method" in parsed:
+                normalized = StageExecutor._normalize_tasks([parsed])
+                if normalized:
+                    return normalized
+        return []
+
+    @staticmethod
+    def _normalize_tasks(raw_tasks: list) -> list[dict[str, Any]]:
+        """Normalize raw task dicts to ensure required fields.
+
+        Validates and normalizes:
+        - target: must be non-empty string
+        - category: must be one of the valid categories, defaults to "unknown"
+        - method: defaults to "custom micro-benchmark" if missing
+        """
+        valid_categories = {
+            "latency_measurement", "capacity_measurement",
+            "clock_measurement", "bandwidth_measurement", "unknown",
+        }
+        tasks = []
+        for t in raw_tasks:
+            if not isinstance(t, dict):
+                continue
+            target = t.get("target", "")
+            if not isinstance(target, str) or not target.strip():
+                continue
+            category = t.get("category", "unknown")
+            if category not in valid_categories:
+                category = "unknown"
+            tasks.append({
+                "target": target.strip(),
+                "category": category,
+                "method": t.get("method", "custom micro-benchmark"),
+            })
+        return tasks
+
+    @staticmethod
     def _determine_status(
         stage: PipelineStage,
         final_text: str,
@@ -585,9 +821,15 @@ class StageExecutor:
         """Determine the SubAgentStatus for a stage result."""
         if stage == PipelineStage.PLAN:
             data["plan_text"] = final_text[:2000]
-            if not final_text and not tool_results:
+            has_tasks = "tasks" in data and isinstance(data.get("tasks"), list) and len(data.get("tasks", [])) > 0
+            if not final_text and not tool_results and not has_tasks:
                 data["error_detail"] = "Planner produced no output"
-            return SubAgentStatus.SUCCESS if final_text else SubAgentStatus.FAILED
+                return SubAgentStatus.FAILED
+            if has_tasks:
+                return SubAgentStatus.SUCCESS
+            if final_text:
+                return SubAgentStatus.SUCCESS
+            return SubAgentStatus.FAILED
 
         if stage == PipelineStage.CODE_GEN:
             return StageExecutor._codegen_status(final_text, tool_results, data)

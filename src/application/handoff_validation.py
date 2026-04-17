@@ -9,10 +9,14 @@ Harness principle: "If you can't validate it, you can't pass it."
 """
 from __future__ import annotations
 
+import logging
+
 from dataclasses import dataclass, field
 from typing import Any
 
 from src.domain.subagent import PipelineStage, SubAgentResult, SubAgentStatus
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -134,10 +138,14 @@ class HandoffValidator:
         data = result.data
 
         # DEBUG: Log what we received for diagnostics
-        print(f"[HandoffValidator] Planner output data keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
-        print(f"[HandoffValidator] data['tasks'] = {data.get('tasks', 'MISSING')}")
+        logger.debug("[HandoffValidator] Planner output data keys: %s", list(data.keys()) if isinstance(data, dict) else type(data))
+        logger.debug("[HandoffValidator] data['tasks'] = %s", data.get('tasks', 'MISSING'))
         if "targets" in data:
-            print(f"[HandoffValidator] data['targets'] = {data.get('targets', 'MISSING')}")
+            logger.debug("[HandoffValidator] data['targets'] = %s", data.get('targets', 'MISSING'))
+        if "plan" in data:
+            logger.debug("[HandoffValidator] data['plan'] = %d items", len(data.get('plan', [])))
+        if "final_output" in data:
+            logger.debug("[HandoffValidator] data['final_output'] (first 200 chars): %s", str(data.get('final_output', ''))[:200])
 
         # Required: tasks key
         if "tasks" not in data:
