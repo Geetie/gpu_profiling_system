@@ -238,13 +238,28 @@ class LocalSandbox(SandboxRunner):
                 # Fallback to Latin-1 if UTF-8 fails
                 stdout = result.stdout.decode('latin-1')
                 stderr = result.stderr.decode('latin-1')
+            
+            # Bug fix: Distinguish between warning and error
+            # nvcc may return warnings but still succeed (returncode=0)
+            # Only treat as error if returncode != 0 OR stderr contains actual errors
+            stderr_lower = stderr.lower()
+            has_actual_error = result.returncode != 0 or (
+                "error:" in stderr_lower or
+                "fatal" in stderr_lower or
+                "undefined reference" in stderr_lower
+            )
+            has_warning_only = result.returncode == 0 and "warning" in stderr_lower and not has_actual_error
+            
             return SandboxResult(
                 stdout=stdout,
                 stderr=stderr,
                 return_code=result.returncode,
-                success=result.returncode == 0,
+                success=not has_actual_error,
                 artifacts={"source": source_path} if source_path else {},
-                error_category="compilation_error" if result.returncode != 0 and "nvcc" in command.lower() else "",
+                error_type="warning" if has_warning_only else "",
+                error_category="compilation_warning" if has_warning_only else (
+                    "compilation_error" if result.returncode != 0 and "nvcc" in command.lower() else ""
+                ),
             )
         except subprocess.TimeoutExpired:
             return SandboxResult(

@@ -101,11 +101,24 @@ def compile_cuda_handler(
     if result.success:
         binary_path = os.path.join(binary_dir, binary_name)
 
+    # Bug fix: Properly handle warnings vs errors
+    # If compilation succeeded but has warnings, still return success
+    # but include the warning in the response for visibility
+    has_warning = result.error_type == "warning" or (
+        result.returncode == 0 and "warning" in result.stderr.lower() and 
+        "error:" not in result.stderr.lower() and "fatal" not in result.stderr.lower()
+    )
+    
+    status = "success" if result.success else "error"
+    if has_warning and result.success:
+        status = "success_with_warning"
+
     return {
-        "status": "success" if result.success else "error",
+        "status": status,
         "success": result.success,
         "output": result.stdout,
-        "errors": result.stderr if not result.success else "",
+        "errors": result.stderr if not result.success else (result.stderr if has_warning else ""),
         "binary_path": binary_path,
         "source_path": os.path.join(source_dir, "source.cu") if result.success else "",
+        "has_warning": has_warning,
     }
