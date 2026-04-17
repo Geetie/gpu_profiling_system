@@ -138,5 +138,12 @@ class InvariantTracker:
         return self._failure_counts.get(pattern, 0)
 
     def should_terminate(self, pattern: str) -> bool:
-        """M4: terminate if the same failure pattern repeats 3 times."""
+        """M4: terminate if the same failure pattern repeats 3 times.
+        
+        Exception: no_tool_call pattern gets higher tolerance (5 retries)
+        to give LLM more opportunities to output tool calls.
+        """
+        # no_tool_call gets higher tolerance
+        if pattern == "no_tool_call":
+            return self._failure_counts.get(pattern, 0) >= 5
         return self._failure_counts.get(pattern, 0) >= 3

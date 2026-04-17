@@ -94,6 +94,8 @@ class FuzzyToolCallParser(ToolCallParser):
     - "I'll call compile_cuda with source=..."
     - "compile_cuda(source='...', flags=[...])"
     - "Let me use the run_ncu tool on ..."
+    - "Now I will compile using compile_cuda"
+    - "Let's execute the binary"
     """
 
     def parse(self, text: str, tool_registry: ToolRegistry) -> ToolCall | None:
@@ -110,6 +112,9 @@ class FuzzyToolCallParser(ToolCallParser):
                 rf'\b{re.escape(tool_name)}\s*\{{([^}}]*)\}}',
                 rf'(?:call|use|invoke|run)\s+(?:the\s+)?{re.escape(tool_name)}\b',
                 rf'{re.escape(tool_name)}\s+with\s',
+                rf'(?:will|shall|going to|should|must|need to)\s+(?:now\s+)?(?:call|use|invoke|run|compile|execute)\s+(?:the\s+)?(?:tool\s+)?{re.escape(tool_name)}',
+                rf'(?:compile|execute|run|read|write)\s+(?:using|with|via)\s+{re.escape(tool_name)}',
+                rf'(?:let|I|we)\s+(?:will|shall|now|should|can|must)\s+(?:call|use|invoke|run|compile|execute)\s+{re.escape(tool_name)}',
             ]
             for pattern in patterns:
                 match = re.search(pattern, text, re.IGNORECASE)

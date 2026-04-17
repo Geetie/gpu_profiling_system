@@ -95,8 +95,12 @@ _CODE_GEN = (
     "- Planning which targets to measure (that's Planner's job)\n"
     "- Generating measurement methodology descriptions (that's Planner's job)\n\n"
     "TOOL USAGE PROTOCOL (CRITICAL):\n"
-    "- ALWAYS call compile_cuda with source code and flags: "
-    '{"tool": "compile_cuda", "args": {"source": "...full .cu code...", "flags": ["-O3", "-arch=sm_XX"]}}\n'
+    "- You MUST call tools as JSON objects. DO NOT just describe what you would do — ACTUALLY CALL the tools.\n"
+    "- Call tools ONE AT A TIME. After each tool call, you will see the result. Then call the next tool.\n"
+    "- When you need to call compile_cuda, output EXACTLY this format:\n"
+    '{"tool": "compile_cuda", "args": {"source": "...full .cu code...", "flags": ["-O3", "-arch=sm_75"]}}\n'
+    "- When you need to call execute_binary, output EXACTLY this format:\n"
+    '{"tool": "execute_binary", "args": {"binary_path": "<path_from_compile_cuda>"}}\n'
     "- IMPORTANT: flags array must contain only non-empty strings, no spaces or empty elements\n"
     "- ⚠️ ARCHITECTURE REQUIREMENT (CUDA 12.x): ALWAYS use `-arch=sm_75` or higher (e.g., sm_80, sm_86, sm_90)\n"
     "- ❌ NEVER use `-arch=sm_0`, `-arch=sm_50`, `-arch=sm_60`, or any architecture below sm_75\n"
@@ -110,6 +114,12 @@ _CODE_GEN = (
     "- On compile failure: FIX the source code and retry compile_cuda (do NOT proceed to execution)\n"
     "- After execute_binary succeeds: parse stdout for 'target_name: numeric_value' lines\n"
     "- Repeat for each target before giving your final answer\n\n"
+    "EXAMPLE WORKFLOW:\n"
+    "Step 1: Output: {\"tool\": \"compile_cuda\", \"args\": {\"source\": \"#include <cuda_runtime.h>\\n...\", \"flags\": [\"-O3\", \"-arch=sm_75\"]}}\n"
+    "Step 2: Wait for compile result\n"
+    "Step 3: If success, output: {\"tool\": \"execute_binary\", \"args\": {\"binary_path\": \"bin/benchmark\"}}\n"
+    "Step 4: Wait for execution result\n"
+    "Step 5: If execution succeeded, parse the output and report values\n\n"
     "PROHIBITED ACTIONS:\n"
     "- DO NOT call write_file for CUDA source code — use compile_cuda instead\n"
     "- DO NOT write files outside the sandbox directory\n"
