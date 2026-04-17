@@ -242,9 +242,10 @@ class AgentLoop:
             try:
                 result = self._execute_tool_call(tool_call)
                 print(f"[AgentLoop] Tool result: {tool_call.name} -> {str(result)[:200]}")
+                tool_status = result.get("status", "success") if isinstance(result, dict) else "success"
                 self._emit(EventKind.TOOL_RESULT, {
                     "tool": tool_call.name,
-                    "status": "success",
+                    "status": tool_status,
                 })
                 self.context_manager.add_entry(
                     Role.ASSISTANT,

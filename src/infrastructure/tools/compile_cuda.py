@@ -129,6 +129,7 @@ def compile_cuda_handler(
     # Sanitize flags: only allow safe characters
     _SAFE_FLAG_CHARS = set("-_./+=:,\n")
     safe_flags = []
+    has_arch_flag = False
     for f in flags:
         # Skip empty flags
         if not f or not f.strip():
@@ -143,7 +144,19 @@ def compile_cuda_handler(
                 }
         # Auto-correct architecture flags to sm_75+ for CUDA 12.x compatibility
         f = _correct_arch_flag(f)
+        # Track if any architecture flag was provided
+        if any(f.lower().startswith(p) for p in ["-arch=", "-gencode=", "--gpu-architecture=", "-code="]):
+            has_arch_flag = True
         safe_flags.append(f)
+    
+    # Auto-inject architecture flag if LLM didn't provide one
+    if not has_arch_flag:
+        try:
+            from src.infrastructure.probing.arch_detection import detect_gpu_arch
+            detected_arch = detect_gpu_arch(runner)
+            safe_flags.append(f"-arch={detected_arch}")
+        except Exception:
+            safe_flags.append("-arch=sm_75")
 
     # INT-9 fix: compile inside sandbox so output binary is in sandbox root
     # Use src/bin subdirectories to avoid polluting sandbox root
@@ -168,11 +181,19 @@ def compile_cuda_handler(
         binary_path = os.path.join(binary_dir, binary_name)
 
     # Bug fix: Properly handle warnings vs errors
-    # If compilation succeeded but has warnings, still return success
-    # but include the warning in the response for visibility
+    # Must use same patterns as sandbox.py for consistency
     has_warning = result.error_type == "warning" or (
-        result.returncode == 0 and "warning" in result.stderr.lower() and 
-        "error:" not in result.stderr.lower() and "fatal" not in result.stderr.lower()
+        result.return_code == 0 and (
+            "warning" in result.stderr.lower() or 
+            "deprecated" in result.stderr.lower() or
+            "will be removed" in result.stderr.lower()
+        ) and not (
+            "error: " in result.stderr.lower() or
+            "fatal error:" in result.stderr.lower() or
+            "undefined reference to" in result.stderr.lower() or
+            "cannot open" in result.stderr.lower() or
+            ("invalid" in result.stderr.lower() and "option" in result.stderr.lower())
+        )
     )
     
     status = "success" if result.success else "error"
