@@ -74,19 +74,26 @@ def compile_cuda_handler(
         safe_flags.append(f)
 
     # INT-9 fix: compile inside sandbox so output binary is in sandbox root
+    # Use src/bin subdirectories to avoid polluting sandbox root
+    import os
+    source_dir = os.path.join(runner.sandbox_root, "src")
+    binary_dir = os.path.join(runner.sandbox_root, "bin")
+    os.makedirs(source_dir, exist_ok=True)
+    os.makedirs(binary_dir, exist_ok=True)
+    
     binary_name = "benchmark"
-    cmd_args = ["-o", binary_name, "source.cu"] + safe_flags
+    cmd_args = ["-o", os.path.join(binary_dir, binary_name), "source.cu"] + safe_flags
 
     result = runner.run(
         source_code=source,
         command=nvcc_path,
         args=cmd_args,
-        work_dir=runner.sandbox_root,
+        work_dir=source_dir,
     )
 
     binary_path = ""
     if result.success:
-        binary_path = os.path.join(runner.sandbox_root, binary_name)
+        binary_path = os.path.join(binary_dir, binary_name)
 
     return {
         "status": "success" if result.success else "error",
@@ -94,4 +101,5 @@ def compile_cuda_handler(
         "output": result.stdout,
         "errors": result.stderr if not result.success else "",
         "binary_path": binary_path,
+        "source_path": os.path.join(source_dir, "source.cu") if result.success else "",
     }

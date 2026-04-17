@@ -31,25 +31,26 @@ def detect_gpu_arch(
         prefer_method: "auto", "cuda_api", "nvidia_smi", or "compilation".
 
     Returns:
-        Architecture string like 'sm_60', 'sm_80', etc.
+        Architecture string like 'sm_75', 'sm_80', etc.
+        Ensures minimum sm_75 to avoid CUDA 12.x deprecation warnings.
     """
     if prefer_method == "cuda_api" or prefer_method == "auto":
         arch = _detect_arch_via_cuda_api(runner)
         if arch:
-            return arch
+            return _ensure_minimum_arch(arch)
 
     if prefer_method == "nvidia_smi" or prefer_method == "auto":
         arch = _detect_arch_via_nvidia_smi()
         if arch:
-            return arch
+            return _ensure_minimum_arch(arch)
 
     if prefer_method == "compilation" or prefer_method == "auto":
         if runner:
             arch = _detect_arch_by_compilation(runner)
             if arch:
-                return arch
+                return _ensure_minimum_arch(arch)
 
-    return "sm_50"
+    return _ensure_minimum_arch("sm_50")
 
 
 def _detect_arch_via_cuda_api(runner: "SandboxRunner | None") -> str | None:
@@ -217,6 +218,24 @@ int main() {
             return arch
 
     return None
+
+
+def _ensure_minimum_arch(arch: str) -> str:
+    """Ensure architecture is at least sm_75 to avoid CUDA 12.x warnings.
+
+    CUDA 12.8+ warns about architectures prior to sm_75.
+    For compatibility, we use sm_75 as minimum.
+    """
+    if arch.startswith("sm_"):
+        try:
+            arch_num = int(arch[3:])
+            if arch_num < 75:
+                print(f"[detect_gpu_arch] Detected {arch}, but upgrading to sm_75 "
+                      f"to avoid CUDA 12.x deprecation warnings.")
+                return "sm_75"
+        except ValueError:
+            pass
+    return arch
 
 
 def get_arch_fallback() -> str:

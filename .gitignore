@@ -79,3 +79,7 @@ test_output/*.jsonl
 # pipeline_log.jsonl
 # session_log.jsonl
 # audit_report.md
+
+# Documentation directories (ignore all, keep .gitignore)
+reports/
+kaggle_docs/
