@@ -98,8 +98,11 @@ _CODE_GEN = (
     "- ALWAYS call compile_cuda with source code and flags: "
     '{"tool": "compile_cuda", "args": {"source": "...full .cu code...", "flags": ["-O3", "-arch=sm_XX"]}}\n'
     "- IMPORTANT: flags array must contain only non-empty strings, no spaces or empty elements\n"
-    "- Example: flags: [\"-O3\", \"-arch=sm_60\"] for Tesla P100\n"
-    "- Example: flags: [\"-O3\", \"-arch=sm_80\"] for newer GPUs\n"
+    "- ⚠️ ARCHITECTURE REQUIREMENT (CUDA 12.x): ALWAYS use `-arch=sm_75` or higher (e.g., sm_80, sm_86, sm_90)\n"
+    "- ❌ NEVER use `-arch=sm_0`, `-arch=sm_50`, `-arch=sm_60`, or any architecture below sm_75\n"
+    "- ❌ CUDA 12.8+ has deprecated architectures prior to sm_75 — using them causes compilation failures\n"
+    "- Example: flags: [\"-O3\", \"-arch=sm_75\"] for Tesla P100 (sm_60 GPU, but use sm_75 for compatibility)\n"
+    "- Example: flags: [\"-O3\", \"-arch=sm_80\"] for A100 GPU\n"
     "- Never include empty strings in the flags array\n\n"
     "- NEVER use write_file to write .cu files — compile_cuda handles file writing internally\n"
     "- On compile success: call execute_binary with the binary path: "

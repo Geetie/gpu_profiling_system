@@ -83,3 +83,4 @@ test_output/*.jsonl
 # Documentation directories (ignore all, keep .gitignore)
 reports/
 kaggle_docs/
+docs/

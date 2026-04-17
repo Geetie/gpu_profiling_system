@@ -71,6 +71,12 @@ def compile_cuda_handler(
                     "errors": f"Invalid compiler flag: {f!r}",
                     "binary_path": "",
                 }
+        # Filter out invalid architecture flags (e.g., sm_0)
+        if f.startswith("-arch=sm_") and f.replace("-arch=sm_", "").isdigit():
+            arch_num = int(f.replace("-arch=sm_", ""))
+            if arch_num < 75:
+                # Auto-correct to sm_75 for CUDA 12.x compatibility
+                f = "-arch=sm_75"
         safe_flags.append(f)
 
     # INT-9 fix: compile inside sandbox so output binary is in sandbox root

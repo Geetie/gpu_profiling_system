@@ -80,6 +80,21 @@ class CodeGenAgent(BaseSubAgent):
         category = task.get("category", "unknown")
         method = task.get("method", "custom micro-benchmark")
 
+        # Bug fix: Detect GPU architecture before compilation
+        # This ensures CodeGen knows the correct architecture to use
+        detected_arch = self._detect_gpu_arch()
+        print(f"[CodeGen] Detected GPU architecture: {detected_arch}")
+        
+        # Add architecture info to context so model knows the correct arch
+        self.context_manager.add_entry(
+            Role.SYSTEM,
+            f"🔧 Detected GPU architecture: {detected_arch}\n"
+            f"IMPORTANT: Use `-arch={detected_arch}` in compile_cuda flags.\n"
+            f"NEVER use `-arch=sm_0`, `-arch=sm_50`, `-arch=sm_60`.\n"
+            f"CUDA 12.x requires sm_75 or higher for compatibility.",
+            token_count=50,
+        )
+
         self.context_manager.add_entry(
             Role.USER,
             f"Generate a CUDA micro-benchmark for target '{target}' "
