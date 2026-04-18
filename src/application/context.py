@@ -70,15 +70,24 @@ class ContextManager:
         self._total_tokens += entry.token_count
 
     def update_system_entry(self, content: str, token_count: int = 0) -> None:
-        """Replace the existing SYSTEM entry or add a new one if none exists.
+        """Replace the Control Plane SYSTEM entry or add a new one if none exists.
 
-        Prevents duplicate system context injection across turns (BUG-1 fix).
+        Only replaces entries tagged as Control Plane content, preserving
+        other SYSTEM entries (e.g., architecture detection info).
         """
+        cp_marker = "[ControlPlane]"
         existing_idx = None
         for i, e in enumerate(self._entries):
-            if e.role == Role.SYSTEM:
+            if e.role == Role.SYSTEM and cp_marker in e.content:
                 existing_idx = i
                 break
+
+        # If no CP entry found, look for any SYSTEM entry that looks like CP output
+        if existing_idx is None:
+            for i, e in enumerate(self._entries):
+                if e.role == Role.SYSTEM and ("Turn " in e.content or "Progress:" in e.content):
+                    existing_idx = i
+                    break
 
         new_entry = ContextEntry(role=Role.SYSTEM, content=content, token_count=token_count)
 

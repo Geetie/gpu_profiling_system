@@ -119,6 +119,7 @@ class StageExecutor:
 
         Includes MetricAnalysis feedback when available to enable
         the MetricAnalysis → CodeGen optimization loop.
+        Includes CodeGen data for downstream stages (MetricAnalysis, Verification).
         """
         payload: dict[str, Any] = {}
         if ctx.target_spec:
@@ -126,6 +127,14 @@ class StageExecutor:
         if ctx.prev_result is not None:
             payload["prev_result"] = ctx.prev_result.to_dict()
             payload["prev_fingerprint"] = ctx.prev_result.context_fingerprint
+
+        # Bug fix: Include CodeGen data for downstream stages
+        # MetricAnalysis needs CodeGen's tool_results (execute_binary stdout)
+        # Verification needs CodeGen's measurements for review
+        if ctx.code_gen_data and step.stage in (
+            PipelineStage.METRIC_ANALYSIS, PipelineStage.VERIFICATION
+        ):
+            payload["codegen_data"] = ctx.code_gen_data
 
         metric_feedback = self._extract_metric_feedback(ctx)
         if metric_feedback and step.stage == PipelineStage.CODE_GEN:
@@ -467,9 +476,9 @@ class StageExecutor:
                 "\n\nYOUR TOOL: read_file ONLY\n"
                 "YOUR JOB: Independently review all previous stage results\n"
                 "You CANNOT: compile, execute, profile, write files, or generate measurements\n\n"
-                "IMPORTANT: All previous stage data is provided in the task description below.\n"
-                "You do NOT need to use read_file to find data — it is already given to you.\n"
-                "Only use read_file if you need to check a specific evidence file.\n\n"
+                "⚠️ CRITICAL: DO NOT call read_file! All data is already in the task description above.\n"
+                "The task description contains CodeGen measurements and MetricAnalysis results.\n"
+                "You only need to ANALYZE the data provided — do NOT try to read files.\n\n"
                 "VERIFICATION CHECKS (perform in order):\n"
                 "1. Data completeness — are ALL targets measured?\n"
                 "2. Numeric sanity — are values in plausible GPU hardware ranges?\n"

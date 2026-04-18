@@ -171,9 +171,15 @@ def _get_fallback_source(loop_iterations: int) -> str:
 __global__ void clock_calibrate_kernel(long long* cycles, int iterations) {{
     long long start = clock64();
     
-    volatile int sink = 0;
+    // Use volatile to prevent compiler optimization
+    volatile long long sink = 0;
     for (int i = 0; i < iterations; i++) {{
-        sink += i;
+        sink += (long long)i * i;
+    }}
+    // Ensure sink is used (prevent dead code elimination)
+    if (sink < 0) {{
+        cycles[0] = -1;
+        return;
     }}
     
     long long end = clock64();
@@ -187,17 +193,33 @@ int main() {{
     int iterations = {loop_iterations};
     
     long long* d_cycles;
-    cudaMalloc(&d_cycles, sizeof(long long));
+    cudaError_t err = cudaMalloc(&d_cycles, sizeof(long long));
+    if (err != cudaSuccess) {{
+        printf("total_cycles: 0\\n");
+        printf("iterations: %d\\n", iterations);
+        printf("cycles_per_iter: 0.00\\n");
+        return 1;
+    }}
+    
+    // Initialize device memory to zero
+    long long zero = 0;
+    cudaMemcpy(d_cycles, &zero, sizeof(long long), cudaMemcpyHostToDevice);
     
     // Warmup
     clock_calibrate_kernel<<<1, 1>>>(d_cycles, iterations / 10);
-    cudaDeviceSynchronize();
+    err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {{
+        printf("total_cycles: 0\\n");
+        printf("iterations: %d\\n", iterations);
+        printf("cycles_per_iter: 0.00\\n");
+        return 1;
+    }}
     
     // Measurement
     clock_calibrate_kernel<<<1, 1>>>(d_cycles, iterations);
     cudaDeviceSynchronize();
     
-    long long h_cycles;
+    long long h_cycles = 0;
     cudaMemcpy(&h_cycles, d_cycles, sizeof(long long), cudaMemcpyDeviceToHost);
     
     printf("total_cycles: %lld\\n", h_cycles);

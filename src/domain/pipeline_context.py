@@ -132,16 +132,33 @@ class PipelineContext:
         return result
 
     def assemble_final_result(self, result: SubAgentResult) -> SubAgentResult:
-        """Merge CodeGen data into the final pipeline result."""
-        if not self.code_gen_data or not result.is_success():
+        """Merge CodeGen data into the final pipeline result.
+        
+        Always merges CodeGen measurements (even if downstream stages
+        produced their own), because CodeGen's execute_binary output
+        is the primary source of measurement data.
+        """
+        if not self.code_gen_data:
             return result
 
         merge_keys = [
-            "measurements", "analysis_method", "code_gen_output",
+            "analysis_method", "code_gen_output",
             "tool_results", "binary_path",
         ]
         for key in merge_keys:
-            if key in self.code_gen_data:
+            if key in self.code_gen_data and key not in result.data:
                 result.data[key] = self.code_gen_data[key]
+
+        # Always merge measurements - CodeGen's are the primary source
+        if "measurements" in self.code_gen_data:
+            existing = result.data.get("measurements", {})
+            if isinstance(existing, dict):
+                # CodeGen measurements fill gaps, don't overwrite downstream values
+                for k, v in self.code_gen_data["measurements"].items():
+                    if k not in existing:
+                        existing[k] = v
+                result.data["measurements"] = existing
+            else:
+                result.data["measurements"] = self.code_gen_data["measurements"]
 
         return result

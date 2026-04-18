@@ -82,6 +82,7 @@ class InjectedContext:
     def render(self) -> str:
         """Render as a system prompt section."""
         lines: list[str] = []
+        lines.append("[ControlPlane]")
         lines.append("=" * 60)
         lines.append("SYSTEM CONTEXT (READ-ONLY — do not attempt to modify)")
         lines.append("=" * 60)

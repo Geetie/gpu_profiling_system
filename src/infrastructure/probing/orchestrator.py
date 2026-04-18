@@ -608,6 +608,9 @@ def _run_cross_validation(results: dict[str, Any]) -> dict[str, Any]:
     # Both methods run independently — if they disagree significantly,
     # one may be virtualized or the microbenchmark may have noise issues.
     sm_micro = measurements.get("sm_count_microbenchmark", "")
+    # Bug fix: sm_micro might be int, not str — ensure string type
+    if not isinstance(sm_micro, str):
+        sm_micro = str(sm_micro) if sm_micro is not None else ""
     if sm_count > 0 and sm_micro:
         # Parse microbenchmark result (could be "40", ">=128", etc.)
         if sm_micro.startswith(">="):

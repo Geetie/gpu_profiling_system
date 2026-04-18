@@ -63,6 +63,8 @@ def run_ncu_handler(
         # Sanitize: only allow alphanumeric, underscore, double underscore, tilde, dot
         if not all(c.isalnum() or c in ("_", "~", ".") for c in m):
             return {
+                "status": "error",
+                "success": False,
                 "raw_output": "",
                 "parsed_metrics": {
                     "error": f"Invalid metric name: {m!r}",
@@ -74,6 +76,8 @@ def run_ncu_handler(
         # Reject single-dot metric (common LLM mistake)
         if m.strip() == ".":
             return {
+                "status": "error",
+                "success": False,
                 "raw_output": "",
                 "parsed_metrics": {
                     "error": f"Invalid metric name: {m!r} — '.' is not a valid metric",

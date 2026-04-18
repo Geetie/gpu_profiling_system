@@ -247,10 +247,13 @@ class AgentLoop:
                     "tool": tool_call.name,
                     "status": tool_status,
                 })
+                # Estimate token count from content length
+                result_str = json.dumps(result, ensure_ascii=False)
+                estimated_tokens = max(20, len(result_str) // 3)
                 self.context_manager.add_entry(
                     Role.ASSISTANT,
-                    json.dumps(result, ensure_ascii=False),
-                    token_count=20,
+                    result_str,
+                    token_count=estimated_tokens,
                 )
                 # When tool returns error status, add system guidance to help LLM learn
                 if isinstance(result, dict) and result.get("status") == "error":
