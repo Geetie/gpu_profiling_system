@@ -398,6 +398,97 @@ def _run_probes_no_write(sandbox):
         return None
 
 
+def _validate_results_quality(results: dict, target_spec: dict) -> tuple[bool, list[str], dict]:
+    """Validate results.json quality before writing.
+    
+    Checks for common data quality issues that indicate measurement failure:
+    - Zero values in critical measurements
+    - Missing requested targets
+    - Implausible values
+    - Empty evidence
+    
+    Returns:
+        (quality_ok: bool, warnings: list[str], cleaned_results: dict)
+        - quality_ok: True if results pass quality checks
+        - warnings: list of warning messages
+        - cleaned_results: results with zero/invalid values filtered out
+    """
+    warnings = []
+    requested_targets = set(target_spec.get("targets", []))
+    cleaned = dict(results)  # Start with a copy
+    
+    # Collect measurement keys (excluding metadata fields)
+    metadata_keys = {"_quality_warnings", "_quality_ok", "_pipeline_metadata", 
+                     "evidence", "methodology", "targets_profiled", "cross_validation"}
+    measurement_keys = []
+    for k, v in results.items():
+        if k.startswith("_") or k in metadata_keys:
+            continue
+        if isinstance(v, (int, float)):
+            measurement_keys.append((k, v))
+    
+    # Check 1: Zero values — FILTER THEM OUT
+    zero_keys = {k for k, v in measurement_keys if v == 0 and k not in ("exit_code", "binary_count")}
+    if zero_keys:
+        warnings.append(
+            f"Zero measurements detected and REMOVED: {', '.join(sorted(zero_keys)[:5])}. "
+            "This indicates measurement code is broken (clock64() not called, code optimized away)."
+        )
+        # Remove zero values from cleaned results
+        for k in zero_keys:
+            cleaned.pop(k, None)
+    
+    # Check 2: Negative values — FILTER THEM OUT
+    negative_keys = {k for k, v in measurement_keys if v < 0}
+    if negative_keys:
+        warnings.append(
+            f"Negative measurements detected and REMOVED: {', '.join(sorted(negative_keys)[:5])}."
+        )
+        for k in negative_keys:
+            cleaned.pop(k, None)
+    
+    # Check 3: Implausibly large values — FILTER THEM OUT
+    large_keys = {k for k, v in measurement_keys if v > 1e12}
+    if large_keys:
+        warnings.append(
+            f"Suspiciously large values detected and REMOVED: {', '.join(sorted(large_keys)[:5])}."
+        )
+        for k in large_keys:
+            cleaned.pop(k, None)
+    
+    # Check 4: Missing requested targets
+    if requested_targets:
+        remaining_measured = {k for k, v in cleaned.items() if isinstance(v, (int, float)) and not k.startswith("_")}
+        missing = requested_targets - remaining_measured
+        if missing:
+            warnings.append(f"Missing requested targets (not measured or filtered): {', '.join(sorted(missing))}")
+    
+    # Check 5: Empty or missing evidence
+    evidence = cleaned.get("evidence", [])
+    if not evidence:
+        warnings.append("No evidence files or references — measurements may not be verifiable")
+    
+    # Check 6: Empty methodology
+    methodology = cleaned.get("methodology", "")
+    if not methodology or len(methodology) < 20:
+        warnings.append("Missing or incomplete methodology description")
+    
+    # Check 7: Too few measurements overall
+    remaining_count = sum(1 for v in cleaned.values() if isinstance(v, (int, float)))
+    if remaining_count < 2 and requested_targets:
+        warnings.append(
+            f"Only {remaining_count} valid measurement(s) after quality filtering — "
+            f"expected more for target spec with {len(requested_targets)} targets"
+        )
+    
+    # Quality verdict
+    remaining_numeric = sum(1 for v in cleaned.values() if isinstance(v, (int, float)))
+    quality_ok = remaining_numeric >= min(2, len(requested_targets)) if requested_targets else remaining_numeric >= 1
+    cleaned["_quality_ok"] = quality_ok
+    
+    return quality_ok, warnings, cleaned
+
+
 def _assemble_final_results(output_dir, hardware_results, pipeline_data, target_spec):
     try:
         os.makedirs(output_dir, exist_ok=True)
@@ -480,13 +571,59 @@ def _assemble_final_results(output_dir, hardware_results, pipeline_data, target_
 
         output["targets_profiled"] = target_spec.get("targets", [])
 
+        # Quality check: validate, filter invalid values, and get cleaned results
+        quality_ok, quality_issues, cleaned_output = _validate_results_quality(output, target_spec)
+        
+        if quality_issues:
+            cleaned_output["_quality_warnings"] = quality_issues
+            print(f"[pipeline] Results quality warnings: {len(quality_issues)}")
+            for issue in quality_issues[:5]:
+                print(f"  ⚠️ {issue}")
+        
+        if not quality_ok:
+            print("[pipeline] Results FAILED quality check — writing with _quality_ok: false flag")
+        
         with open(results_path, "w") as f:
-            json.dump(output, f, indent=2)
+            json.dump(cleaned_output, f, indent=2)
 
         return results_path
     except Exception as e:
         print(f"[pipeline] Failed to assemble results: {e}")
         return None
+
+
+def _extract_rejection_feedback(result) -> str:
+    """Extract actionable feedback from a REJECTED pipeline result.
+    
+    Parses the Verification output to identify specific concerns and
+    suggested fixes that should be injected into the next CodeGen iteration.
+    """
+    if not result.data:
+        return ""
+    
+    feedback_parts = []
+    
+    # Extract review_text from Verification
+    review_text = result.data.get("review_text", "")
+    if review_text:
+        feedback_parts.append(f"Verification concerns:\n{review_text[:500]}")
+    
+    # Extract concerns from metadata
+    metadata = result.data.get("metadata", {})
+    if isinstance(metadata, dict):
+        concerns = metadata.get("concerns", [])
+        if concerns:
+            feedback_parts.append(f"Specific issues:\n" + "\n".join(f"- {c}" for c in concerns))
+    
+    # Extract final_output if it contains verdict
+    final_output = result.data.get("final_output", "")
+    if "REJECT" in final_output.upper():
+        lines = final_output.splitlines()
+        reject_lines = [l for l in lines if any(kw in l.lower() for kw in ("issue", "problem", "fix", "error", "wrong", "incorrect"))]
+        if reject_lines:
+            feedback_parts.append(f"Key issues identified:\n" + "\n".join(reject_lines[:5]))
+    
+    return "\n\n".join(feedback_parts) if feedback_parts else ""
 
 
 def _write_results_json(result, target_spec, output_dir):
@@ -561,8 +698,20 @@ def _write_results_json(result, target_spec, output_dir):
 
         output["evidence"] = artifacts
 
+        # Quality check: validate, filter invalid values, and get cleaned results
+        quality_ok, quality_issues, cleaned_output = _validate_results_quality(output, target_spec)
+        
+        if quality_issues:
+            cleaned_output["_quality_warnings"] = quality_issues
+            print(f"[results] Quality warnings: {len(quality_issues)}")
+            for issue in quality_issues[:5]:
+                print(f"  ⚠️ {issue}")
+        
+        if not quality_ok:
+            print("[results] Results FAILED quality check — writing with _quality_ok: false flag")
+        
         with open(results_path, "w") as f:
-            json.dump(output, f, indent=2)
+            json.dump(cleaned_output, f, indent=2)
 
         return results_path
     except Exception as e:

@@ -180,6 +180,17 @@ class VerificationAgent(BaseSubAgent):
         concerns: list[str] = []
         accepted = True
 
+        # Check 0: Empty data — fundamental failure
+        if not data:
+            concerns.append("No data provided for review — this indicates a complete pipeline failure or data flow break")
+            accepted = False
+            return {
+                "status": SubAgentStatus.REJECTED,
+                "findings": findings,
+                "concerns": concerns,
+                "accepted": False,
+            }
+
         # Check 1: Data completeness against target_spec
         requested_targets = set()
         if target_spec:
@@ -199,22 +210,19 @@ class VerificationAgent(BaseSubAgent):
                     findings.append(f"All {len(requested_targets)} requested targets measured")
                 findings.append(f"Data contains {len(data)} fields")
             else:
-                if not data:
-                    concerns.append("No data provided for review")
-                    accepted = False
-                else:
-                    findings.append(f"Data contains {len(data)} fields")
+                findings.append(f"Data contains {len(data)} fields")
         else:
-            if not data:
-                concerns.append("No data provided for review")
-                accepted = False
-            else:
-                findings.append(f"Data contains {len(data)} fields (no target_spec for completeness check)")
+            findings.append(f"Data contains {len(data)} fields (no target_spec for completeness check)")
 
         # Check 2: Numeric sanity
+        has_zero_measurement = False
         for key, value in data.items():
             if isinstance(value, (int, float)):
-                if value < 0:
+                if value == 0 and key not in ("exit_code", "binary_count"):
+                    concerns.append(f"Zero measurement for '{key}': {value} — this indicates a measurement failure (e.g., clock64() not called, code optimized away)")
+                    accepted = False
+                    has_zero_measurement = True
+                elif value < 0:
                     concerns.append(f"Negative value for '{key}': {value}")
                     accepted = False
                 elif value > 1e12:
@@ -222,6 +230,14 @@ class VerificationAgent(BaseSubAgent):
                     accepted = False
                 else:
                     findings.append(f"'{key}' = {value} (within plausible range)")
+
+        # If there are zero measurements, the entire result is suspect
+        if has_zero_measurement:
+            concerns.append(
+                "CRITICAL: Multiple measurements are zero — this indicates the measurement code is fundamentally broken. "
+                "CodeGen must fix the CUDA kernel (e.g., ensure clock64() is called in the right code section, "
+                "prevent compiler optimization with volatile/asm, use proper synchronization)."
+            )
 
         # Check 3: Methodology
         if "bottleneck_type" in data:
