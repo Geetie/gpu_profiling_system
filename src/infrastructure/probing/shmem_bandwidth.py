@@ -113,13 +113,68 @@ def probe_shmem_bandwidth(
         except Exception as e:
             print(f"[shmem_bandwidth] ncu profiling failed: {e}")
 
+    return _run_with_cuda_events_fallback(source, sandbox, block_threads)
+
+
+def _run_with_cuda_events_fallback(
+    source: str, sandbox: SandboxRunner | None, block_threads: int,
+) -> dict[str, Any] | None:
+    """Fallback: measure shmem bandwidth using cudaEventElapsedTime when ncu unavailable."""
+    import time as _time
+
+    runner = sandbox
+    work_dir = getattr(runner, "sandbox_root", None) or getattr(runner, "_sandbox_root", None) if runner else None
+    if not work_dir:
+        return None
+
+    event_source = source.replace(
+        "int main() {",
+        '#include <stdio.h>\n#include <cuda_runtime.h>\n\nint main() {'
+    ).replace(
+        "    shmem_bw_kernel<<<1, block_threads, shmem_bytes>>>(iterations);\n    cudaDeviceSynchronize();",
+        '    cudaEvent_t evt_start, evt_stop;\n'
+        '    cudaEventCreate(&evt_start);\n'
+        '    cudaEventCreate(&evt_stop);\n\n'
+        '    // Warmup\n'
+        '    shmem_bw_kernel<<<1, block_threads, shmem_bytes>>>(iterations);\n'
+        '    cudaDeviceSynchronize();\n\n'
+        '    cudaEventRecord(evt_start);\n'
+        '    shmem_bw_kernel<<<1, block_threads, shmem_bytes>>>(iterations);\n'
+        '    cudaEventRecord(evt_stop);\n'
+        '    cudaEventSynchronize(evt_stop);\n\n'
+        '    float elapsed_ms;\n'
+        '    cudaEventElapsedTime(&elapsed_ms, evt_start, evt_stop);\n'
+        '    printf("elapsed_time_ms: %.4f\\n", elapsed_ms);\n'
+        '    cudaEventDestroy(evt_start);\n'
+        '    cudaEventDestroy(evt_stop);'
+    )
+
+    result = compile_and_run(event_source, sandbox=sandbox)
+    if not result or not result.success:
+        return None
+
+    parsed = parse_nvcc_output(result.stdout)
+    total_bytes = parsed.get("total_bytes_transferred", 0)
+    elapsed_ms = parsed.get("elapsed_time_ms", 0)
+
+    if total_bytes and elapsed_ms and elapsed_ms > 0:
+        gpu_time_ns = elapsed_ms * 1_000_000
+        bandwidth_gbps = total_bytes / gpu_time_ns * 1e9 / 1e9
+        return {
+            "shmem_bandwidth_gbps": round(bandwidth_gbps, 2),
+            "total_bytes": int(total_bytes),
+            "gpu_time_ns": round(gpu_time_ns, 2),
+            "method": "cuda_events_fallback",
+            "_confidence": round(_assess_confidence(bandwidth_gbps, 100, 20000) * 0.7, 2),
+        }
+
     return {
         "shmem_bandwidth_gbps": None,
-        "total_bytes": int(total_bytes),
+        "total_bytes": int(total_bytes) if total_bytes else 0,
         "gpu_time_ns": None,
         "method": "ncu_unavailable",
         "_confidence": 0.0,
-        "error": "ncu not found or profiling failed",
+        "error": "ncu not found and cudaEvents fallback failed",
     }
 
 

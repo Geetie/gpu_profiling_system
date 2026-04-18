@@ -291,7 +291,7 @@ int main() {{
     compile_result = runner.run(
         source_code=source,
         command=nvcc,
-        args=["-o", os.path.join(work_dir, "probe_binaries", "stream_event"), "source.cu", f"-arch={arch}"],
+        args=["-o", os.path.join(work_dir, "probe_binaries", "stream_event"), "source.cu", f"-arch={arch}", "-Wno-deprecated-gpu-targets"],
         work_dir=work_dir,
     )
     if not compile_result.success:

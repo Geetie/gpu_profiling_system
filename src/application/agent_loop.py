@@ -235,11 +235,21 @@ class AgentLoop:
         if tool_call is not None:
             self._failure_pattern = None
             # P2 Harness: auto-inject binary_path when LLM omits it
+            # But only if this binary hasn't already been executed (prevent re-exec loop)
             if tool_call.name == "execute_binary" and not tool_call.arguments.get("binary_path"):
                 last_bp = self._find_last_binary_path()
-                if last_bp:
+                if last_bp and not self._already_executed_binary(last_bp):
                     tool_call.arguments["binary_path"] = last_bp
                     print(f"[AgentLoop] P2 auto-inject: binary_path={last_bp}")
+                elif last_bp:
+                    print(f"[AgentLoop] P2 auto-inject SKIPPED: {last_bp} already executed, LLM should compile new code")
+                    self.context_manager.add_entry(
+                        Role.SYSTEM,
+                        f"⚠️ You already executed {last_bp}. Do NOT execute the same binary again.\n"
+                        f"If you need to measure a DIFFERENT target, write NEW CUDA code and call compile_cuda first.\n"
+                        f"If you have measured all targets, output your final results as: target_name: value",
+                        token_count=50,
+                    )
             print(f"[AgentLoop] Tool call: {tool_call.name}({list(tool_call.arguments.keys())})")
             self._emit(EventKind.TOOL_CALL, {
                 "tool": tool_call.name,
@@ -438,6 +448,22 @@ class AgentLoop:
                 except (json.JSONDecodeError, TypeError):
                     pass
         return ""
+
+    def _already_executed_binary(self, binary_path: str) -> bool:
+        """Check if a binary has already been executed in this session."""
+        entries = self.context_manager.get_entries()
+        exec_count = 0
+        for entry in entries:
+            if entry.role.value == "assistant":
+                try:
+                    data = json.loads(entry.content)
+                    if isinstance(data, dict) and data.get("tool") == "execute_binary":
+                        bp = data.get("binary_path", data.get("args", {}).get("binary_path", ""))
+                        if bp == binary_path:
+                            exec_count += 1
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return exec_count >= 1
 
     def _execute_tool_call(self, tool_call: ToolCall) -> dict[str, Any]:
         contract = self.tool_registry.get(tool_call.name)

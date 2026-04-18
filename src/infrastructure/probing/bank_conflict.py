@@ -165,44 +165,45 @@ __global__ void bank_conflict_kernel(long long* result_strided, long long* resul
     extern __shared__ int shmem[];
     
     int tid = threadIdx.x;
-    int stride = 32;
     
-    for (int i = 0; i < size; i += blockDim.x) {{
-        if (i + tid < size) {{
-            shmem[i + tid] = i + tid;
+    for (int i = tid; i < size; i += blockDim.x) {{
+        shmem[i] = i;
+    }}
+    __syncthreads();
+    
+    long long start_strided = 0, end_strided = 0;
+    if (tid < 32) {{
+        start_strided = clock64();
+        volatile int sink1 = 0;
+        #pragma unroll 1
+        for (int iter = 0; iter < 1000; iter++) {{
+            int idx = (tid * 32) % size;
+            sink1 = shmem[idx];
+            shmem[idx] = sink1 + 1;
         }}
+        asm volatile("" : "+l"((long long)sink1) : : "memory");
+        end_strided = clock64();
     }}
     __syncthreads();
     
-    long long start_strided = clock64();
-    volatile int sink1 = 0;
-    #pragma unroll 1
-    for (int iter = 0; iter < 1000; iter++) {{
-        int idx = (tid * stride) % size;
-        sink1 = shmem[idx];
-        shmem[idx] = sink1 + 1;
+    for (int i = tid; i < size; i += blockDim.x) {{
+        shmem[i] = i;
     }}
-    asm volatile("" : "+r"(sink1) : : "memory");
-    long long end_strided = clock64();
     __syncthreads();
     
-    for (int i = 0; i < size; i += blockDim.x) {{
-        if (i + tid < size) {{
-            shmem[i + tid] = i + tid;
+    long long start_sequential = 0, end_sequential = 0;
+    if (tid < 32) {{
+        start_sequential = clock64();
+        volatile int sink2 = 0;
+        #pragma unroll 1
+        for (int iter = 0; iter < 1000; iter++) {{
+            int idx = tid;
+            sink2 = shmem[idx];
+            shmem[idx] = sink2 + 1;
         }}
+        asm volatile("" : "+l"((long long)sink2) : : "memory");
+        end_sequential = clock64();
     }}
-    __syncthreads();
-    
-    long long start_sequential = clock64();
-    volatile int sink2 = 0;
-    #pragma unroll 1
-    for (int iter = 0; iter < 1000; iter++) {{
-        int idx = tid;
-        sink2 = shmem[idx];
-        shmem[idx] = sink2 + 1;
-    }}
-    asm volatile("" : "+r"(sink2) : : "memory");
-    long long end_sequential = clock64();
     
     if (tid == 0) {{
         result_strided[0] = end_strided - start_strided;

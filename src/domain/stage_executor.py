@@ -498,6 +498,10 @@ class StageExecutor:
                 "DO NOT: write/compile CUDA code (that's CodeGen's job)\n"
                 "DO NOT: verify results (that's Verification's job)\n"
                 "DO NOT: read files — all data is already in your task description above\n\n"
+                "⚠️ IMPORTANT: If ncu fails with ERR_NVGPUCTRPERM (permission denied),\n"
+                "do NOT retry run_ncu. Instead, analyze CodeGen's measurements directly.\n"
+                "You can still provide bottleneck classification and confidence assessment\n"
+                "based on the measurement values already available in your task.\n\n"
             )
             if has_codegen:
                 guidance += (
@@ -948,7 +952,6 @@ class StageExecutor:
 
         if stage == PipelineStage.METRIC_ANALYSIS:
             data["analysis_output"] = final_text[:2000]
-            # Check for meaningful analysis output
             has_tool_result = any(
                 r.get("status") in ("success", "success_with_warning", True) or r.get("success") is True
                 for r in tool_results
@@ -959,9 +962,18 @@ class StageExecutor:
                 for kw in ["dram_latency", "dram_bandwidth", "l2_cache", "compute_bound", 
                            "memory_bound", "latency_bound", "cache_capacity", "confidence"]
             )
+            has_ncu_error = any(
+                "ERR_NVGPUCTRPERM" in str(r.get("stderr", "")) or "permission" in str(r.get("stderr", "")).lower()
+                for r in tool_results
+            )
+            if has_ncu_error and not has_bottleneck and not has_metrics:
+                data["error_detail"] = (
+                    "MetricAnalysis: ncu permission denied (ERR_NVGPUCTRPERM). "
+                    "Agent should analyze CodeGen measurements directly instead of calling run_ncu."
+                )
             if has_tool_result or (final_text and (has_bottleneck or has_metrics)):
                 return SubAgentStatus.SUCCESS
-            if final_text:
+            if final_text and len(final_text) > 100:
                 return SubAgentStatus.SUCCESS
             return SubAgentStatus.FAILED
 

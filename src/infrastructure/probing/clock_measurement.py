@@ -101,7 +101,10 @@ def probe_actual_clock_frequency(
             "total_sm_cycles": int(total_cycles),
             "cycles_per_iteration": parsed.get("cycles_per_iter", 0),
             "_confidence": _assess_clock_confidence(freq_mhz),
-            "method": "sm_clock_cycles_vs_ncu_wall_clock",
+            "method": "sm_clock_cycles_vs_host_wall_clock",
+            "_note": "clock64() measures SM clock, which may differ from GPU boost clock. "
+                     "On some GPUs (e.g., P100), SM clock runs lower than boost clock. "
+                     "Low power states can further reduce the actual frequency.",
         }
         if ncu_raw:
             result_dict["_ncu_raw_output"] = ncu_raw
@@ -300,7 +303,7 @@ def _measure_with_host_timing(
     compile_result = runner.run(
         source_code=source,
         command=nvcc,
-        args=["-o", os.path.join(probe_binary_dir, "freq_probe"), "source.cu", f"-arch={arch}"],
+        args=["-o", os.path.join(probe_binary_dir, "freq_probe"), "source.cu", f"-arch={arch}", "-Wno-deprecated-gpu-targets"],
         work_dir=work_dir,
     )
     if not compile_result.success:
@@ -464,7 +467,7 @@ def _measure_with_cuda_events(
     compile_result = runner.run(
         source_code=source,
         command=nvcc,
-        args=["-o", os.path.join(probe_binary_dir, "freq_event_probe"), "source.cu", f"-arch={arch}"],
+        args=["-o", os.path.join(probe_binary_dir, "freq_event_probe"), "source.cu", f"-arch={arch}", "-Wno-deprecated-gpu-targets"],
         work_dir=work_dir,
     )
     if not compile_result.success:
@@ -495,7 +498,7 @@ def _measure_with_cuda_events(
     compile_result2 = runner.run(
         source_code=event_source,
         command=nvcc,
-        args=["-o", os.path.join(probe_binary_dir, "freq_event_timed"), "source.cu", f"-arch={arch}"],
+        args=["-o", os.path.join(probe_binary_dir, "freq_event_timed"), "source.cu", f"-arch={arch}", "-Wno-deprecated-gpu-targets"],
         work_dir=work_dir,
     )
     if not compile_result2.success:

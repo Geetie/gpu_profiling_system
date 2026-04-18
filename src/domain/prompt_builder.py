@@ -133,15 +133,26 @@ class StagePromptBuilder:
         ]
 
         if targets and len(targets) > 1:
+            target_list_str = "\n".join(f"  {i+1}. {t}" for i, t in enumerate(targets))
             parts.append(
                 f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"⚠️  CRITICAL: You MUST measure ALL {len(targets)} targets\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"Targets: {targets}\n\n"
-                f"For EACH target, you MUST:\n"
-                f"  1. compile_cuda with the CUDA source for that target\n"
-                f"  2. execute_binary to run the compiled binary\n"
-                f"  3. Record the measured value from stdout\n\n"
+                f"Targets:\n{target_list_str}\n\n"
+                f"WORKFLOW (repeat for EACH target):\n"
+                f"  1. Write CUDA code for ONE target\n"
+                f"  2. compile_cuda(source=\"...\", flags=[\"-O3\"])\n"
+                f"  3. execute_binary(binary_path=\"<from compile>\")\n"
+                f"  4. Record the measured value from stdout\n"
+                f"  5. Go to next target — write NEW code, compile, execute\n\n"
+                f"⚠️  Each target needs DIFFERENT CUDA code!\n"
+                f"  - dram_latency → pointer-chasing kernel\n"
+                f"  - l2_cache_size → working-set sweep kernel\n"
+                f"  - actual_boost_clock → clock64() calibration kernel\n"
+                f"  - dram_bandwidth → stream copy kernel\n\n"
+                f"⚠️  compile_cuda OVERWRITES the previous binary each time.\n"
+                f"  So you MUST execute_binary IMMEDIATELY after each compile_cuda.\n"
+                f"  Do NOT compile all targets first — compile+execute one at a time.\n\n"
                 f"Do NOT skip any target. The pipeline will FAIL if any target is missing.\n"
             )
 
