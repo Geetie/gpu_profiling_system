@@ -106,15 +106,13 @@ _CODE_GEN = (
     "- You MUST call tools as JSON objects. DO NOT just describe what you would do — ACTUALLY CALL the tools.\n"
     "- Call tools ONE AT A TIME. After each tool call, you will see the result. Then call the next tool.\n"
     "- When you need to call compile_cuda, output EXACTLY this format:\n"
-    '{"tool": "compile_cuda", "args": {"source": "...full .cu code...", "flags": ["-O3", "-arch=sm_75"]}}\n'
+    '{"tool": "compile_cuda", "args": {"source": "...full .cu code...", "flags": ["-O3"]}}\n'
     "- When you need to call execute_binary, output EXACTLY this format:\n"
     '{"tool": "execute_binary", "args": {"binary_path": "<path_from_compile_cuda>"}}\n'
     "- IMPORTANT: flags array must contain only non-empty strings, no spaces or empty elements\n"
-    "- ⚠️ ARCHITECTURE REQUIREMENT (CUDA 12.x): ALWAYS use `-arch=sm_75` or higher (e.g., sm_80, sm_86, sm_90)\n"
-    "- ❌ NEVER use `-arch=sm_0`, `-arch=sm_50`, `-arch=sm_60`, or any architecture below sm_75\n"
-    "- ❌ CUDA 12.8+ has deprecated architectures prior to sm_75 — using them causes compilation failures\n"
-    "- Example: flags: [\"-O3\", \"-arch=sm_75\"] for Tesla P100 (sm_60 GPU, but use sm_75 for compatibility)\n"
-    "- Example: flags: [\"-O3\", \"-arch=sm_80\"] for A100 GPU\n"
+    "- ⚠️ ARCHITECTURE: The system will auto-detect and inject the correct -arch flag. You do NOT need to specify it.\n"
+    "- ❌ NEVER use `-arch=sm_0` or `-arch=sm_50`\n"
+    "- If you do specify -arch, use the detected architecture reported in your context\n"
     "- Never include empty strings in the flags array\n\n"
     "- NEVER use write_file to write .cu files — compile_cuda handles file writing internally\n"
     "- On compile success: call execute_binary with the binary path: "
@@ -123,7 +121,7 @@ _CODE_GEN = (
     "- After execute_binary succeeds: parse stdout for 'target_name: numeric_value' lines\n"
     "- Repeat for each target before giving your final answer\n\n"
     "EXAMPLE WORKFLOW:\n"
-    "Step 1: Output: {\"tool\": \"compile_cuda\", \"args\": {\"source\": \"#include <cuda_runtime.h>\\n...\", \"flags\": [\"-O3\", \"-arch=sm_75\"]}}\n"
+    "Step 1: Output: {\"tool\": \"compile_cuda\", \"args\": {\"source\": \"#include <cuda_runtime.h>\\n...\", \"flags\": [\"-O3\"]}}\n"
     "Step 2: Wait for compile result\n"
     "Step 3: If success, output: {\"tool\": \"execute_binary\", \"args\": {\"binary_path\": \"bin/benchmark\"}}\n"
     "Step 4: Wait for execution result\n"

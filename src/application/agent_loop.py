@@ -303,7 +303,7 @@ class AgentLoop:
                     elif tool_call.name == "compile_cuda":
                         guidance += (
                             "\n💡 Common fixes: Check source code for syntax errors. "
-                            "Ensure flags include '-arch=sm_75' or higher. "
+                            "Ensure flags include the correct -arch=sm_XX for this GPU. "
                             "Do NOT use '-arch=0' or '-arch=sm_0'."
                         )
                     self.context_manager.add_entry(
@@ -404,7 +404,7 @@ class AgentLoop:
                 guidance = (
                     f"⚠️ ERROR: You did not call any tool in this turn. "
                     f"You MUST output a JSON tool call like: "
-                    f'{{\"tool\": \"compile_cuda\", \"args\": {{\"source\": \"...\", \"flags\": [\"-O3\", \"-arch=sm_75\"]}}}}\n'
+                    f'{{\"tool\": \"compile_cuda\", \"args\": {{\"source\": \"...\", \"flags\": [\"-O3\"]}}}}\n'
                     f"Do NOT output natural language — ACTUALLY CALL the tools."
                 )
             

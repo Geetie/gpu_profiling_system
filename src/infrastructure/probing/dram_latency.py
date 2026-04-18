@@ -224,15 +224,17 @@ def _get_fallback_source(array_size: int, iterations: int) -> str:
 #include <stdlib.h>
 #include <time.h>
 
-__global__ void pointer_chase_kernel(int* array, int* result, int size, int iterations) {{
+__global__ void pointer_chase_kernel(int* array, int* result, int size, int iterations, long long* d_cycles) {{
     int idx = 0;
-    long long total_cycles = 0;
-    
+    long long start = clock64();
     for (int i = 0; i < iterations; i++) {{
         idx = array[idx];
     }}
-    
-    result[0] = idx;
+    long long end = clock64();
+    if (threadIdx.x == 0) {{
+        d_cycles[0] = end - start;
+        result[0] = idx;
+    }}
 }}
 
 int main() {{
@@ -240,7 +242,7 @@ int main() {{
     int iterations = {iterations};
     
     int* h_array = (int*)malloc(size * sizeof(int));
-    for (int i = 0; i < size; i++) h_array[i] = i;
+    for (int i = 0; i < size; i++) h_array[i] = (i + 1) % size;
     
     srand(42);
     for (int i = size - 1; i > 0; i--) {{
@@ -252,35 +254,48 @@ int main() {{
     
     int* d_array;
     int* d_result;
+    long long* d_cycles;
     cudaMalloc(&d_array, size * sizeof(int));
     cudaMalloc(&d_result, sizeof(int));
+    cudaMalloc(&d_cycles, sizeof(long long));
     cudaMemcpy(d_array, h_array, size * sizeof(int), cudaMemcpyHostToDevice);
     
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
+    for (int warmup = 0; warmup < 100; warmup++) {{
+        int idx = 0;
+        for (int i = 0; i < iterations; i++) {{
+            idx = h_array[idx];
+        }}
+    }}
     
-    cudaEventRecord(start);
-    pointer_chase_kernel<<<1, 1>>>(d_array, d_result, size, iterations);
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
+    pointer_chase_kernel<<<1, 1>>>(d_array, d_result, size, iterations, d_cycles);
+    cudaError_t err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {{
+        printf("CUDA_ERROR: %s\\n", cudaGetErrorString(err));
+        return 1;
+    }}
     
-    float elapsed_ms;
-    cudaEventElapsedTime(&elapsed_ms, start, stop);
+    long long h_cycles = 0;
+    cudaMemcpy(&h_cycles, d_cycles, sizeof(long long), cudaMemcpyDeviceToHost);
     
     int h_result;
     cudaMemcpy(&h_result, d_result, sizeof(int), cudaMemcpyDeviceToHost);
     
+    if (h_cycles <= 0) {{
+        printf("CUDA_ERROR: Measured cycles is 0 (expected > 0)\\n");
+        return 1;
+    }}
+    
+    double cycles_per_access = (double)h_cycles / iterations;
+    
     printf("size_bytes: %d\\n", size * 4);
     printf("iterations: %d\\n", iterations);
-    printf("total_time_ms: %.4f\\n", elapsed_ms);
-    printf("cycles_per_access: %.2f\\n", (elapsed_ms * 1e6) / iterations);
+    printf("total_cycles: %lld\\n", h_cycles);
+    printf("cycles_per_access: %.2f\\n", cycles_per_access);
     printf("chain_checksum: %d\\n", h_result);
     
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
     cudaFree(d_array);
     cudaFree(d_result);
+    cudaFree(d_cycles);
     free(h_array);
     
     return 0;

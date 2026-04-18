@@ -160,7 +160,7 @@ def compile_cuda_handler(
                     "errors": f"Invalid compiler flag: {f!r}",
                     "binary_path": "",
                 }
-        # Auto-correct architecture flags to sm_75+ for CUDA 12.x compatibility
+        # Auto-correct architecture flags (e.g. sm_35→sm_60) for CUDA 12.x compatibility
         f = _correct_arch_flag(f)
         # Track if any architecture flag was provided
         if any(f.lower().startswith(p) for p in ["-arch=", "-gencode=", "--gpu-architecture=", "-code="]):
@@ -174,7 +174,7 @@ def compile_cuda_handler(
             detected_arch = detect_gpu_arch(runner)
             safe_flags.append(f"-arch={detected_arch}")
         except Exception:
-            safe_flags.append("-arch=sm_75")
+            safe_flags.append("-arch=sm_60")
 
     # INT-9 fix: compile inside sandbox so output binary is in sandbox root
     # Use src/bin subdirectories to avoid polluting sandbox root
@@ -185,7 +185,7 @@ def compile_cuda_handler(
     os.makedirs(binary_dir, exist_ok=True)
     
     binary_name = "benchmark"
-    cmd_args = ["-o", os.path.join(binary_dir, binary_name), "source.cu"] + safe_flags
+    cmd_args = ["-o", os.path.join(binary_dir, binary_name), "source.cu"] + safe_flags + ["-Wno-deprecated-gpu-targets"]
 
     result = runner.run(
         source_code=source,

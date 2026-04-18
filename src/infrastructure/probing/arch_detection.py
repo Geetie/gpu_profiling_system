@@ -31,8 +31,10 @@ def detect_gpu_arch(
         prefer_method: "auto", "cuda_api", "nvidia_smi", or "compilation".
 
     Returns:
-        Architecture string like 'sm_75', 'sm_80', etc.
-        Ensures minimum sm_75 to avoid CUDA 12.x deprecation warnings.
+        Architecture string like 'sm_60', 'sm_80', etc.
+        Uses the native GPU architecture to ensure correct clock64() behavior.
+        Deprecation warnings for sm_60/sm_70 are suppressed via
+        -Wno-deprecated-gpu-targets in compilation flags.
     """
     if prefer_method == "cuda_api" or prefer_method == "auto":
         arch = _detect_arch_via_cuda_api(runner)
@@ -160,7 +162,6 @@ def _detect_arch_via_nvidia_smi() -> str | None:
             "gtx 10": "sm_61",
             "gtx 16": "sm_75",
             "quadro rtx": "sm_75",
-            "tesla": "sm_75",
         }
 
         for pattern, cc in gpu_to_cc.items():
@@ -221,18 +222,19 @@ int main() {
 
 
 def _ensure_minimum_arch(arch: str) -> str:
-    """Ensure architecture is at least sm_75 to avoid CUDA 12.x warnings.
+    """Return the detected architecture unchanged.
 
-    CUDA 12.8+ warns about architectures prior to sm_75.
-    For compatibility, we use sm_75 as minimum.
+    Previously upgraded sm_60→sm_75 to suppress CUDA 12.x deprecation warnings,
+    but this causes clock64() to return 0 on P100 (sm_60 hardware running sm_75 PTX).
+    The correct fix is to keep the native arch and suppress warnings with
+    -Wno-deprecated-gpu-targets in the compilation flags.
     """
     if arch.startswith("sm_"):
         try:
             arch_num = int(arch[3:])
-            if arch_num < 75:
-                print(f"[detect_gpu_arch] Detected {arch}, but upgrading to sm_75 "
-                      f"to avoid CUDA 12.x deprecation warnings.")
-                return "sm_75"
+            if arch_num < 50:
+                print(f"[detect_gpu_arch] Detected {arch} is below minimum sm_50, upgrading to sm_50")
+                return "sm_50"
         except ValueError:
             pass
     return arch

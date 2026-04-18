@@ -40,7 +40,7 @@ def compile_and_run(
 
     # Determine GPU architecture
     arch = _detect_arch(runner)
-    flags = [f"-arch={arch}"] + (nvcc_flags or [])
+    flags = [f"-arch={arch}", "-Wno-deprecated-gpu-targets"] + (nvcc_flags or [])
 
     # Sanitize flags
     safe_flags = _sanitize_flags(flags)

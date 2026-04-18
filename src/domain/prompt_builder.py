@@ -123,13 +123,27 @@ class StagePromptBuilder:
         from src.domain.design_principles import get_design_principle
 
         target = target_spec.get("target", "unknown")
+        targets = target_spec.get("targets", [])
         principle = get_design_principle(target)
 
         parts = [
-            f"Write a CUDA micro-benchmark for: {target}",
+            f"Write CUDA micro-benchmarks for: {target}",
             f"\nTarget specification: {target_spec}",
             f"\n{principle}",
         ]
+
+        if targets and len(targets) > 1:
+            parts.append(
+                f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"⚠️  CRITICAL: You MUST measure ALL {len(targets)} targets\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Targets: {targets}\n\n"
+                f"For EACH target, you MUST:\n"
+                f"  1. compile_cuda with the CUDA source for that target\n"
+                f"  2. execute_binary to run the compiled binary\n"
+                f"  3. Record the measured value from stdout\n\n"
+                f"Do NOT skip any target. The pipeline will FAIL if any target is missing.\n"
+            )
 
         if prev_result is not None:
             prev_data = prev_result.data if hasattr(prev_result, "data") else (prev_result.get("data", {}) if isinstance(prev_result, dict) else {})

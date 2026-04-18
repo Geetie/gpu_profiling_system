@@ -90,8 +90,8 @@ class CodeGenAgent(BaseSubAgent):
             Role.SYSTEM,
             f"🔧 Detected GPU architecture: {detected_arch}\n"
             f"IMPORTANT: Use `-arch={detected_arch}` in compile_cuda flags.\n"
-            f"NEVER use `-arch=sm_0`, `-arch=sm_50`, `-arch=sm_60`.\n"
-            f"CUDA 12.x requires sm_75 or higher for compatibility.",
+            f"NEVER use `-arch=sm_0` or `-arch=sm_50`.\n"
+            f"Use the detected architecture {detected_arch} exactly.",
             token_count=50,
         )
 
@@ -302,7 +302,7 @@ class CodeGenAgent(BaseSubAgent):
         result = self._sandbox.run(
             source_code=None,
             command="nvcc",
-            args=["-o", os.path.join(binary_dir, binary_name), "source.cu", f"-arch={arch}", "-O3"],
+            args=["-o", os.path.join(binary_dir, binary_name), "source.cu", f"-arch={arch}", "-O3", "-Wno-deprecated-gpu-targets"],
             work_dir=source_dir,
         )
 
