@@ -328,7 +328,7 @@ def _run_pipeline_mode(args, builder: SystemBuilder):
                     f"Final results written to: {os.path.join(output_dir, 'results.json')}"
                 )
             else:
-                ui.show_message("[probe] No GPU available — skipping hardware probes")
+                ui.show_message("[probe] Hardware probes returned no results — using pipeline measurements only")
                 ui.show_message("[probe] Pipeline results contain estimated values only")
                 _write_results_json(
                     result=result,
@@ -403,24 +403,67 @@ def _assemble_final_results(output_dir, hardware_results, pipeline_data, target_
         os.makedirs(output_dir, exist_ok=True)
         results_path = os.path.join(output_dir, "results.json")
 
-        measurements = hardware_results.get("measurements", {})
-        output = dict(measurements)
+        hw_measurements = hardware_results.get("measurements", {}) if hardware_results else {}
+        output = {}
 
         pipeline_measurements = pipeline_data.get("measurements", {})
-        for k, v in pipeline_measurements.items():
+        if isinstance(pipeline_measurements, dict):
+            for k, v in pipeline_measurements.items():
+                if k not in output:
+                    output[k] = v
+
+        tool_results = pipeline_data.get("tool_results", [])
+        if isinstance(tool_results, list):
+            for tr in tool_results:
+                if not isinstance(tr, dict):
+                    continue
+                stdout = tr.get("stdout", "") or tr.get("output", "")
+                if stdout:
+                    for line in stdout.splitlines():
+                        line = line.strip()
+                        if ":" in line and not line.startswith("//") and not line.startswith("#"):
+                            parts = line.split(":", 1)
+                            if len(parts) == 2:
+                                key = parts[0].strip()
+                                val_str = parts[1].strip()
+                                try:
+                                    val = float(val_str)
+                                    if key not in output:
+                                        output[key] = val
+                                except ValueError:
+                                    pass
+
+        final_output = pipeline_data.get("final_output", "")
+        if final_output and not pipeline_measurements:
+            import re
+            for line in final_output.splitlines():
+                line = line.strip()
+                match = re.match(r'^([\w_]+)\s*[:=]\s*([\d.]+)', line)
+                if match:
+                    key = match.group(1)
+                    try:
+                        val = float(match.group(2))
+                        if key not in output:
+                            output[key] = val
+                    except ValueError:
+                        pass
+
+        for k, v in hw_measurements.items():
             if k not in output:
                 output[k] = v
 
         for k, v in pipeline_data.items():
-            if k in ("_pipeline_metadata", "measurements"):
+            if k in ("_pipeline_metadata", "measurements", "tool_results",
+                      "final_output", "code_gen_output", "analysis_method",
+                      "review_text", "plan_text", "analysis_output"):
                 continue
             if k not in output:
                 output[k] = v
 
-        if "cross_validation" in hardware_results:
+        if hardware_results and "cross_validation" in hardware_results:
             output["cross_validation"] = hardware_results["cross_validation"]
 
-        evidence = list(hardware_results.get("evidence_files", []))
+        evidence = list(hardware_results.get("evidence_files", [])) if hardware_results else []
         if "_pipeline_metadata" in pipeline_data:
             meta = pipeline_data["_pipeline_metadata"]
             if "evidence" in meta and isinstance(meta["evidence"], list):

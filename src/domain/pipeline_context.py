@@ -23,6 +23,12 @@ class PipelineContext:
 
     Each stage reads from and writes to this context.
     The context is the single source of truth for inter-stage data flow.
+
+    Memory Architecture (4 layers):
+    - L0 (Permanent): Architecture info, target spec — never compressed
+    - L1 (High): CodeGen measurements, binary paths — preserved across stages
+    - L2 (Medium): MetricAnalysis results, error patterns — compressed on budget pressure
+    - L3 (Low): Conversation history, Control Plane snapshots — aggressively compressed
     """
 
     prev_result: SubAgentResult | None = None
@@ -35,10 +41,53 @@ class PipelineContext:
     rejection_history: list[dict[str, Any]] = field(default_factory=list)
     metric_feedback: list[dict[str, Any]] = field(default_factory=list)
 
+    # L0: Permanent memory — never compressed
+    architecture_info: dict[str, Any] = field(default_factory=dict)
+    # L1: High-priority memory — preserved across stages
+    key_measurements: dict[str, Any] = field(default_factory=dict)
+    binary_paths: list[str] = field(default_factory=list)
+    # L2: Medium-priority memory — compressed on budget pressure
+    stage_summaries: dict[str, str] = field(default_factory=dict)
+    error_patterns: list[str] = field(default_factory=list)
+
     def update(self, stage: PipelineStage, result: SubAgentResult) -> None:
-        """Advance the context after a stage completes."""
+        """Advance the context after a stage completes.
+        
+        Populates the layered memory architecture:
+        - L0: Architecture info from any stage that detects it
+        - L1: Key measurements and binary paths from CodeGen
+        - L2: Stage summaries and error patterns from all stages
+        """
         if stage == PipelineStage.CODE_GEN and result.is_success():
             self.code_gen_data = dict(result.data)
+            # L1: Extract key measurements and binary paths
+            if "measurements" in result.data and isinstance(result.data["measurements"], dict):
+                for k, v in result.data["measurements"].items():
+                    self.key_measurements[k] = v
+            if "binary_path" in result.data:
+                bp = result.data["binary_path"]
+                if isinstance(bp, str) and bp not in self.binary_paths:
+                    self.binary_paths.append(bp)
+            if "tool_results" in result.data and isinstance(result.data["tool_results"], list):
+                for tr in result.data["tool_results"]:
+                    if isinstance(tr, dict) and "binary_path" in tr:
+                        bp = tr["binary_path"]
+                        if isinstance(bp, str) and bp not in self.binary_paths:
+                            self.binary_paths.append(bp)
+
+        # L2: Record stage summary
+        if result.is_success():
+            summary = result.data.get("final_output", "")[:500] if result.data.get("final_output") else ""
+            self.stage_summaries[stage.value] = summary
+        else:
+            error_msg = result.data.get("errors", result.data.get("error", "unknown"))
+            self.error_patterns.append(f"{stage.value}: {str(error_msg)[:200]}")
+
+        # L0: Extract architecture info if present
+        if "arch" in result.data:
+            self.architecture_info["gpu_arch"] = result.data["arch"]
+        if "architecture" in result.data:
+            self.architecture_info["gpu_architecture"] = result.data["architecture"]
 
         self.prev_result = result
         self.prev_stage = stage
@@ -132,13 +181,29 @@ class PipelineContext:
         return result
 
     def assemble_final_result(self, result: SubAgentResult) -> SubAgentResult:
-        """Merge CodeGen data into the final pipeline result.
+        """Merge CodeGen data and layered memory into the final pipeline result.
         
-        Always merges CodeGen measurements (even if downstream stages
-        produced their own), because CodeGen's execute_binary output
-        is the primary source of measurement data.
+        Uses the 4-layer memory architecture:
+        - L0: Architecture info always included
+        - L1: Key measurements and binary paths always included
+        - L2: Stage summaries and error patterns included for debugging
+        - L3: Conversation history excluded from final result (too verbose)
         """
         if not self.code_gen_data:
+            # Even without CodeGen data, include L0 and L1 memory
+            if self.architecture_info:
+                result.data["architecture_info"] = dict(self.architecture_info)
+            if self.key_measurements:
+                existing = result.data.get("measurements", {})
+                if isinstance(existing, dict):
+                    for k, v in self.key_measurements.items():
+                        if k not in existing:
+                            existing[k] = v
+                    result.data["measurements"] = existing
+                else:
+                    result.data["measurements"] = dict(self.key_measurements)
+            if self.binary_paths:
+                result.data["binary_paths"] = list(self.binary_paths)
             return result
 
         merge_keys = [
@@ -153,12 +218,36 @@ class PipelineContext:
         if "measurements" in self.code_gen_data:
             existing = result.data.get("measurements", {})
             if isinstance(existing, dict):
-                # CodeGen measurements fill gaps, don't overwrite downstream values
                 for k, v in self.code_gen_data["measurements"].items():
                     if k not in existing:
                         existing[k] = v
                 result.data["measurements"] = existing
             else:
                 result.data["measurements"] = self.code_gen_data["measurements"]
+
+        # L0: Architecture info
+        if self.architecture_info:
+            result.data["architecture_info"] = dict(self.architecture_info)
+
+        # L1: Key measurements (supplementary)
+        if self.key_measurements:
+            existing = result.data.get("measurements", {})
+            if isinstance(existing, dict):
+                for k, v in self.key_measurements.items():
+                    if k not in existing:
+                        existing[k] = v
+                result.data["measurements"] = existing
+
+        # L1: Binary paths
+        if self.binary_paths:
+            result.data["binary_paths"] = list(self.binary_paths)
+
+        # L2: Stage summaries
+        if self.stage_summaries:
+            result.data["stage_summaries"] = dict(self.stage_summaries)
+
+        # L2: Error patterns
+        if self.error_patterns:
+            result.data["error_patterns"] = list(self.error_patterns)
 
         return result

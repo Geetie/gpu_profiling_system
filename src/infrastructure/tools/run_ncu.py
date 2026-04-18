@@ -57,6 +57,8 @@ def run_ncu_handler(
     # Build ncu command — metrics are passed as a comma-separated list
     safe_metrics = []
     for m in metrics:
+        if not isinstance(m, str):
+            continue
         # Skip empty or whitespace-only metrics
         if not m or not m.strip():
             continue
@@ -83,7 +85,11 @@ def run_ncu_handler(
                     "error": f"Invalid metric name: {m!r} — '.' is not a valid metric",
                     "hint": "You must provide real ncu metric names like: 'sm__cycles', 'dram__throughput', "
                             "'l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum'. "
-                            "Do NOT use '.' as a metric name.",
+                            "Do NOT use '.' as a metric name. "
+                            "If you're unsure which metrics to use, try: "
+                            "'sm__cycles', 'dram__throughput', 'lts__t_sectors_op_read.sum', "
+                            "'l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum', "
+                            "'gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed'",
                 },
             }
         safe_metrics.append(m)

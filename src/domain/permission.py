@@ -138,12 +138,20 @@ class InvariantTracker:
         return self._failure_counts.get(pattern, 0)
 
     def should_terminate(self, pattern: str) -> bool:
-        """M4: terminate if the same failure pattern repeats 3 times.
+        """M4: terminate if the same failure pattern repeats.
         
-        Exception: no_tool_call pattern gets higher tolerance (5 retries)
-        to give LLM more opportunities to output tool calls.
+        Thresholds:
+        - no_tool_call: 2 retries (reduce empty turns aggressively)
+        - tool_error:compile_cuda: 4 retries (allow more compilation attempts)
+        - tool_error:run_ncu: 3 retries (ncu errors are usually parameter issues)
+        - tool_error:run_ncu:invalid_metric: 2 retries (same invalid metric repeated)
+        - other patterns: 3 retries
         """
-        # no_tool_call gets higher tolerance
+        count = self._failure_counts.get(pattern, 0)
         if pattern == "no_tool_call":
-            return self._failure_counts.get(pattern, 0) >= 5
-        return self._failure_counts.get(pattern, 0) >= 3
+            return count >= 2
+        if pattern == "tool_error:compile_cuda":
+            return count >= 4
+        if pattern == "tool_error:run_ncu:invalid_metric":
+            return count >= 2
+        return count >= 3

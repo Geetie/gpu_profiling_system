@@ -448,6 +448,8 @@ def _record_evidence(
         # LLM-as-a-Judge visibility into measurement quality
         clean_result = {}
         for k, v in probe_result.items():
+            if not isinstance(k, str):
+                continue
             if k.startswith("_"):
                 if k == "_confidence":
                     clean_result["confidence"] = v

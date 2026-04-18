@@ -264,7 +264,7 @@ class StageExecutor:
             if tasks_list:
                 task = {"tasks": tasks_list}
 
-        system_prompt = self._build_system_prompt(agent, step.stage)
+        system_prompt = self._build_system_prompt(agent, step.stage, ctx)
         user_task = self._build_user_task(step.stage, task, prev_result, target_spec)
 
         if rejection_feedback:
@@ -323,10 +323,51 @@ class StageExecutor:
 
     @staticmethod
     def _save_conversation_history(agent: BaseSubAgent, ctx: PipelineContext) -> None:
-        """Save agent's conversation entries to PipelineContext for cross-Stage inheritance."""
+        """Save agent's conversation entries to PipelineContext for cross-Stage inheritance.
+        
+        Uses structured truncation instead of simple character cutoff:
+        - Tool results: preserve status, binary_path, key measurements; truncate stdout/stderr
+        - System messages: preserve full content (usually short and important)
+        - Natural language: truncate to 800 chars with ellipsis
+        """
         entries = agent.context_manager.get_entries()
         for entry in entries:
-            ctx.append_history(entry.role.value, entry.content[:500])
+            role = entry.role.value
+            content = entry.content
+            
+            if entry.role == Role.ASSISTANT:
+                try:
+                    data = _json.loads(content)
+                    if isinstance(data, dict):
+                        summary_parts = []
+                        for key in ("tool", "status", "success", "binary_path", "arch"):
+                            if key in data:
+                                summary_parts.append(f"{key}={data[key]}")
+                        if "stdout" in data and data["stdout"]:
+                            stdout = str(data["stdout"])[:300]
+                            summary_parts.append(f"stdout={stdout}")
+                        if "output" in data and data["output"]:
+                            output = str(data["output"])[:300]
+                            summary_parts.append(f"output={output}")
+                        if "errors" in data and data["errors"]:
+                            errors = str(data["errors"])[:200]
+                            summary_parts.append(f"errors={errors}")
+                        if "parsed_metrics" in data and data["parsed_metrics"]:
+                            metrics = str(data["parsed_metrics"])[:200]
+                            summary_parts.append(f"metrics={metrics}")
+                        if "measurements" in data and isinstance(data["measurements"], dict):
+                            measurements = str(data["measurements"])[:200]
+                            summary_parts.append(f"measurements={measurements}")
+                        if summary_parts:
+                            content = "[SUMMARY] " + ", ".join(summary_parts)
+                        else:
+                            content = content[:800]
+                except (_json.JSONDecodeError, TypeError):
+                    content = content[:800]
+            elif len(content) > 1000:
+                content = content[:1000] + "...[truncated]"
+            
+            ctx.append_history(role, content)
 
     @staticmethod
     def _format_conversation_history(ctx: PipelineContext) -> str:
@@ -342,12 +383,12 @@ class StageExecutor:
                 parts.append(f"[{role}]: {content[:300]}")
         return "\n".join(parts)
 
-    def _build_system_prompt(self, agent: BaseSubAgent, stage: PipelineStage) -> str:
+    def _build_system_prompt(self, agent: BaseSubAgent, stage: PipelineStage, ctx: PipelineContext | None = None) -> str:
         """Build system prompt for a pipeline stage's AgentLoop."""
         available_tools = agent.tool_registry.list_tools()
         tool_list = _json.dumps(available_tools, indent=2) if available_tools else "(no tools registered)"
 
-        tool_guidance = self._get_tool_guidance(stage)
+        tool_guidance = self._get_tool_guidance(stage, ctx)
 
         return (
             f"You are the {stage.value} stage in a GPU hardware profiling pipeline.\n"
@@ -385,8 +426,7 @@ class StageExecutor:
 
         return f"You are the {stage.value} stage. Execute your task."
 
-    @staticmethod
-    def _get_tool_guidance(stage: PipelineStage) -> str:
+    def _get_tool_guidance(self, stage: PipelineStage, ctx: PipelineContext | None = None) -> str:
         """Return stage-specific tool usage instructions."""
         if stage == PipelineStage.CODE_GEN:
             return (
@@ -447,13 +487,39 @@ class StageExecutor:
                 "for each target measured.\n"
             )
         if stage == PipelineStage.METRIC_ANALYSIS:
-            return (
+            codegen_summary = ""
+            codegen_data = ctx.code_gen_data if ctx else None
+            if codegen_data:
+                codegen_summary = _format_codegen_summary(codegen_data)
+            has_codegen = bool(codegen_data and codegen_summary)
+            guidance = (
                 "\n\nYOUR TOOLS: run_ncu, read_file\n"
                 "YOUR JOB: Profile CodeGen's binaries with ncu → analyze bottlenecks → extract metrics\n"
                 "DO NOT: write/compile CUDA code (that's CodeGen's job)\n"
                 "DO NOT: verify results (that's Verification's job)\n\n"
-                "⚠️ CRITICAL: You MUST call tools as JSON objects. DO NOT just describe analysis.\n"
-                "ACTUALLY CALL the tools to get data.\n\n"
+            )
+            if has_codegen:
+                guidance += (
+                    "⚠️ CRITICAL: CodeGen has ALREADY produced measurements below.\n"
+                    "Your PRIMARY job is to ANALYZE these measurements, NOT re-measure them.\n"
+                    "Only call run_ncu if you need ADDITIONAL hardware counters that CodeGen didn't measure.\n"
+                    "DO NOT call run_ncu just to re-measure the same values CodeGen already measured.\n\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "CODEGEN MEASUREMENT RESULTS (USE THESE AS YOUR PRIMARY DATA):\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"{codegen_summary}\n\n"
+                    "YOUR ANALYSIS TASK:\n"
+                    "1. Classify the bottleneck type for each measurement above\n"
+                    "2. Assess confidence based on measurement methodology and value plausibility\n"
+                    "3. If ncu is available, run it ONLY for metrics not already measured\n"
+                    "4. Cross-validate CodeGen values against known GPU hardware ranges\n\n"
+                )
+            else:
+                guidance += (
+                    "⚠️ CRITICAL: You MUST call tools as JSON objects. DO NOT just describe analysis.\n"
+                    "ACTUALLY CALL the tools to get data.\n\n"
+                )
+            guidance += (
                 "WORKFLOW:\n"
                 "1. Review CodeGen's stdout output provided in the task description\n"
                 "2. If binary paths are available AND ncu is installed, call run_ncu:\n"
@@ -471,14 +537,35 @@ class StageExecutor:
                 "- confidence: high/medium/low\n"
                 "- At least one measured value per target\n"
             )
+            return guidance
         if stage == PipelineStage.VERIFICATION:
-            return (
+            codegen_summary = ""
+            codegen_data = ctx.code_gen_data if ctx else None
+            if codegen_data:
+                codegen_summary = _format_codegen_summary(codegen_data)
+            has_codegen = bool(codegen_data and codegen_summary)
+            guidance = (
                 "\n\nYOUR TOOL: read_file ONLY\n"
                 "YOUR JOB: Independently review all previous stage results\n"
                 "You CANNOT: compile, execute, profile, write files, or generate measurements\n\n"
-                "⚠️ CRITICAL: DO NOT call read_file! All data is already in the task description above.\n"
-                "The task description contains CodeGen measurements and MetricAnalysis results.\n"
-                "You only need to ANALYZE the data provided — do NOT try to read files.\n\n"
+            )
+            if has_codegen:
+                guidance += (
+                    "⚠️ CRITICAL: All measurement data is provided BELOW. You do NOT need to call read_file.\n"
+                    "The data from CodeGen and MetricAnalysis is already in your task description.\n"
+                    "Just ANALYZE the data — do NOT try to read files.\n\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "MEASUREMENT DATA TO VERIFY:\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"{codegen_summary}\n\n"
+                )
+            else:
+                guidance += (
+                    "⚠️ CRITICAL: DO NOT call read_file! All data is already in the task description above.\n"
+                    "The task description contains CodeGen measurements and MetricAnalysis results.\n"
+                    "You only need to ANALYZE the data provided — do NOT try to read files.\n\n"
+                )
+            guidance += (
                 "VERIFICATION CHECKS (perform in order):\n"
                 "1. Data completeness — are ALL targets measured?\n"
                 "2. Numeric sanity — are values in plausible GPU hardware ranges?\n"
@@ -493,6 +580,7 @@ class StageExecutor:
                 "Concerns: [list of concerns]\n"
                 "If REJECT, provide suggested fixes.\n"
             )
+            return guidance
         return ""
 
     @staticmethod
@@ -1008,3 +1096,51 @@ class StageExecutor:
         """Persist a log entry if persister is available."""
         if self._persister:
             self._persister.log_entry(action, details=details)
+
+
+def _format_codegen_summary(code_gen_data: dict[str, Any]) -> str:
+    """Format CodeGen data into a human-readable summary for MetricAnalysis injection.
+
+    Extracts measurements, tool results, and methodology from CodeGen output
+    to provide MetricAnalysis with primary data without needing to re-run tools.
+    """
+    if not code_gen_data:
+        return ""
+
+    parts: list[str] = []
+
+    # Extract measurements
+    measurements = code_gen_data.get("measurements", {})
+    if measurements:
+        parts.append("📊 Measured Values:")
+        for target, value in measurements.items():
+            parts.append(f"  {target}: {value}")
+        parts.append("")
+
+    # Extract tool results with stdout
+    tool_results = code_gen_data.get("tool_results", [])
+    for i, result in enumerate(tool_results):
+        if isinstance(result, dict):
+            stdout = result.get("stdout", "")
+            if stdout:
+                parts.append(f"🔧 Tool Result #{i+1} stdout:")
+                for line in stdout.splitlines()[:20]:
+                    parts.append(f"  {line}")
+                parts.append("")
+
+    # Extract final output
+    final_output = code_gen_data.get("final_output", "")
+    if final_output:
+        parts.append("📝 CodeGen Final Output:")
+        for line in final_output.splitlines()[:15]:
+            parts.append(f"  {line}")
+        parts.append("")
+
+    # Extract analysis method
+    analysis_method = code_gen_data.get("analysis_method", "")
+    if analysis_method:
+        parts.append("🔬 Methodology:")
+        for line in analysis_method.splitlines()[:10]:
+            parts.append(f"  {line}")
+
+    return "\n".join(parts)

@@ -249,7 +249,19 @@ class AgentLoop:
                 })
                 # Estimate token count from content length
                 result_str = json.dumps(result, ensure_ascii=False)
-                estimated_tokens = max(20, len(result_str) // 3)
+                # Truncate large tool outputs to prevent context bloat
+                MAX_TOOL_RESULT_CHARS = 3000
+                if len(result_str) > MAX_TOOL_RESULT_CHARS:
+                    truncated_result = dict(result) if isinstance(result, dict) else result
+                    if isinstance(truncated_result, dict):
+                        for key in ("raw_output", "stdout", "stderr", "output"):
+                            val = truncated_result.get(key, "")
+                            if isinstance(val, str) and len(val) > 1500:
+                                truncated_result[key] = val[:1500] + f"...[truncated, {len(val)} chars total]"
+                    result_str = json.dumps(truncated_result, ensure_ascii=False)
+                # Estimate token count: code/JSON is denser (~2 chars/token), text is ~4 chars/token
+                code_ratio = 2.5 if any(c in result_str for c in "{}[];=<>") else 4.0
+                estimated_tokens = max(20, int(len(result_str) / code_ratio))
                 self.context_manager.add_entry(
                     Role.ASSISTANT,
                     result_str,
@@ -268,6 +280,20 @@ class AgentLoop:
                             "'dram__throughput', 'l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum'. "
                             "Do NOT use '.' or empty strings as metric names."
                         )
+                        # Track specific invalid metric patterns for stronger anti-loop
+                        metrics_arg = tool_call.arguments.get("metrics", [])
+                        if isinstance(metrics_arg, list):
+                            invalid_metrics = [m for m in metrics_arg if not isinstance(m, str) or m.strip() in ("", ".")]
+                            if invalid_metrics:
+                                specific_pattern = f"tool_error:run_ncu:invalid_metric"
+                                self._failure_tracker.record_failure(specific_pattern)
+                                if self._failure_tracker.should_terminate(specific_pattern):
+                                    self._emit(EventKind.STOP, {
+                                        "reason": "M4_repeated_invalid_metric",
+                                        "pattern": specific_pattern,
+                                    })
+                                    self.stop()
+                                    return
                     elif tool_call.name == "compile_cuda":
                         guidance += (
                             "\n💡 Common fixes: Check source code for syntax errors. "

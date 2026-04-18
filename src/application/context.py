@@ -5,6 +5,8 @@ assembled, compressed, and managed — not a static prompt.
 """
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -16,6 +18,14 @@ class Role(Enum):
     ASSISTANT = "assistant"
 
 
+class Priority(Enum):
+    PERMANENT = 0
+    HIGH = 1
+    MEDIUM = 2
+    LOW = 3
+    DISPOSABLE = 4
+
+
 @dataclass
 class ContextEntry:
     """A single entry in the conversation context."""
@@ -23,30 +33,157 @@ class ContextEntry:
     role: Role
     content: str
     token_count: int = 0
+    priority: Priority = Priority.MEDIUM
 
     def __post_init__(self) -> None:
         if self.token_count <= 0:
-            # Rough estimate: ~4 chars per token for English text
-            self.token_count = max(1, len(self.content) // 4 + 1)
+            self.token_count = max(1, len(self.content) // 3 + 1)
+
+
+def _classify_priority(role: Role, content: str) -> Priority:
+    """Classify entry priority based on role and content.
+
+    Priority levels:
+    - PERMANENT: Architecture info, user instructions, P7 constraints
+    - HIGH: Successful tool outputs (compile/execute results)
+    - MEDIUM: Error messages, LLM natural language responses
+    - LOW: Control Plane snapshots, repetitive guidance
+    - DISPOSABLE: Old anti-loop guidance, duplicate entries
+    """
+    if role == Role.SYSTEM:
+        # Architecture detection info — always preserve
+        if "Detected GPU architecture" in content or "arch=sm_" in content:
+            return Priority.PERMANENT
+        # Control Plane — can be replaced each turn
+        if "[ControlPlane]" in content:
+            return Priority.LOW
+        # Error guidance — medium importance
+        if "⚠️" in content or "ERROR" in content:
+            return Priority.MEDIUM
+        # Tool usage instructions — high importance
+        if "TOOL USAGE" in content or "MANDATORY" in content:
+            return Priority.HIGH
+        # Other system messages — medium
+        return Priority.MEDIUM
+
+    if role == Role.USER:
+        return Priority.HIGH
+
+    if role == Role.ASSISTANT:
+        # Tool call results — classify by success/failure
+        try:
+            data = json.loads(content)
+            if isinstance(data, dict):
+                status = data.get("status", "")
+                if status in ("success", "success_with_warning"):
+                    return Priority.HIGH
+                if status == "error":
+                    return Priority.MEDIUM
+                if "binary_path" in data and data.get("binary_path"):
+                    return Priority.HIGH
+        except (json.JSONDecodeError, TypeError):
+            pass
+        # Natural language responses — low priority
+        if len(content) < 100:
+            return Priority.DISPOSABLE
+        return Priority.LOW
+
+    return Priority.MEDIUM
+
+
+def _estimate_tokens(content: str) -> int:
+    """Estimate token count based on content type.
+    
+    Code/JSON: ~2.5 chars/token (denser, more special chars)
+    Natural language: ~4 chars/token (sparser)
+    Mixed: ~3 chars/token (default)
+    """
+    if not content:
+        return 0
+    
+    special_char_count = sum(1 for c in content if c in "{}[]();=<>\"':,")
+    total_chars = len(content)
+    
+    if total_chars == 0:
+        return 0
+    
+    special_ratio = special_char_count / total_chars
+    
+    if special_ratio > 0.15:
+        estimated = int(total_chars / 2.5)
+    elif special_ratio < 0.05:
+        estimated = int(total_chars / 4.0)
+    else:
+        estimated = int(total_chars / 3.0)
+    
+    return max(10, estimated)
+
+
+def _summarize_entry(entry: ContextEntry) -> ContextEntry:
+    """Summarize a context entry to reduce token usage.
+
+    Preserves key information while reducing verbosity:
+    - Tool results: keep status, binary_path, key measurements
+    - Error messages: keep error type and hint
+    - Natural language: truncate to first sentence
+    """
+    if entry.role == Role.ASSISTANT:
+        try:
+            data = json.loads(entry.content)
+            if isinstance(data, dict):
+                summary_parts = []
+                if "status" in data:
+                    summary_parts.append(f"status={data['status']}")
+                if "success" in data:
+                    summary_parts.append(f"success={data['success']}")
+                if "binary_path" in data and data["binary_path"]:
+                    summary_parts.append(f"binary_path={data['binary_path']}")
+                if "output" in data and data["output"]:
+                    output = str(data["output"])[:200]
+                    summary_parts.append(f"output={output}")
+                if "errors" in data and data["errors"]:
+                    errors = str(data["errors"])[:200]
+                    summary_parts.append(f"errors={errors}")
+                if "next_action" in data:
+                    summary_parts.append(f"next_action={data['next_action']}")
+                if "parsed_metrics" in data and data["parsed_metrics"]:
+                    metrics = str(data["parsed_metrics"])[:200]
+                    summary_parts.append(f"metrics={metrics}")
+                if "has_warning" in data:
+                    summary_parts.append(f"has_warning={data['has_warning']}")
+                if summary_parts:
+                    summary = "[SUMMARY] " + ", ".join(summary_parts)
+                    return ContextEntry(
+                        role=entry.role,
+                        content=summary,
+                        priority=entry.priority,
+                    )
+        except (json.JSONDecodeError, TypeError):
+            pass
+        # Truncate long natural language
+        if len(entry.content) > 200:
+            return ContextEntry(
+                role=entry.role,
+                content=entry.content[:200] + "...[truncated]",
+                priority=entry.priority,
+            )
+
+    return entry
 
 
 class ContextManager:
     """Manages the dynamic assembly and compression of model context.
 
-    - Entries are appended as the conversation progresses.
-    - When token budget is exceeded, oldest non-system entries are removed.
-    - System entries are protected from compression.
+    Features:
+    - Priority-based entry classification (PERMANENT > HIGH > MEDIUM > LOW > DISPOSABLE)
+    - Smart compression: summarize before deleting, preserve important info
+    - System entries protected from compression
+    - Control Plane entries tracked separately to avoid overwriting
     """
 
-    # Compression targets ~80% of max_tokens to leave headroom
     COMPRESSION_RATIO = 0.8
 
     def __init__(self, max_tokens: int = 16000) -> None:
-        """Initialize context manager with larger default budget.
-
-        Args:
-            max_tokens: Maximum tokens budget (default: 16000 for 32k context models)
-        """
         self._entries: list[ContextEntry] = []
         self._max_tokens = max_tokens
         self._total_tokens = 0
@@ -65,15 +202,19 @@ class ContextManager:
         content: str,
         token_count: int = 0,
     ) -> None:
-        entry = ContextEntry(role=role, content=content, token_count=token_count)
+        priority = _classify_priority(role, content)
+        if token_count <= 0:
+            token_count = _estimate_tokens(content)
+        entry = ContextEntry(role=role, content=content, token_count=token_count, priority=priority)
         self._entries.append(entry)
         self._total_tokens += entry.token_count
 
     def update_system_entry(self, content: str, token_count: int = 0) -> None:
         """Replace the Control Plane SYSTEM entry or add a new one if none exists.
-
-        Only replaces entries tagged as Control Plane content, preserving
-        other SYSTEM entries (e.g., architecture detection info).
+        
+        NEVER replaces PERMANENT priority entries (architecture detection, etc.).
+        Only replaces entries that are LOW priority (Control Plane snapshots)
+        or entries that contain [ControlPlane] markers.
         """
         cp_marker = "[ControlPlane]"
         existing_idx = None
@@ -82,14 +223,17 @@ class ContextManager:
                 existing_idx = i
                 break
 
-        # If no CP entry found, look for any SYSTEM entry that looks like CP output
         if existing_idx is None:
             for i, e in enumerate(self._entries):
-                if e.role == Role.SYSTEM and ("Turn " in e.content or "Progress:" in e.content):
+                if e.role == Role.SYSTEM and e.priority == Priority.LOW and ("Turn " in e.content or "Progress:" in e.content):
                     existing_idx = i
                     break
 
-        new_entry = ContextEntry(role=Role.SYSTEM, content=content, token_count=token_count)
+        if existing_idx is not None and self._entries[existing_idx].priority == Priority.PERMANENT:
+            existing_idx = None
+
+        priority = _classify_priority(Role.SYSTEM, content)
+        new_entry = ContextEntry(role=Role.SYSTEM, content=content, token_count=token_count, priority=priority)
 
         if existing_idx is not None:
             old = self._entries[existing_idx]
@@ -108,49 +252,80 @@ class ContextManager:
         return self._total_tokens > self._max_tokens
 
     def compress(self) -> int:
-        """Remove oldest non-system entries until under budget.
+        """Smart compression: summarize before deleting, respect priorities.
+
+        Compression strategy (in order):
+        1. Remove DISPOSABLE entries (old guidance, short responses)
+        2. Summarize LOW priority entries (Control Plane, long responses)
+        3. Summarize MEDIUM priority entries (error messages)
+        4. Remove summarized entries that are still over budget
+        5. Never remove PERMANENT or HIGH priority entries
 
         Returns the number of entries removed.
-        If system entries alone exceed the target, all non-system entries
-        are dropped (cannot fit anything).
-        Atomic: builds new list without intermediate None markers.
         """
         target = int(self._max_tokens * self.COMPRESSION_RATIO)
+        if self._total_tokens <= target:
+            return 0
 
-        # Identify entries to keep: all system entries + newest N non-system entries
-        system_entries = [e for e in self._entries if e.role == Role.SYSTEM]
-        non_system = [e for e in self._entries if e.role != Role.SYSTEM]
+        removed_count = 0
 
-        system_tokens = sum(e.token_count for e in system_entries)
-        remaining_budget = target - system_tokens
+        # Phase 1: Remove DISPOSABLE entries
+        new_entries = []
+        for e in self._entries:
+            if e.priority == Priority.DISPOSABLE and self._total_tokens > target:
+                self._total_tokens -= e.token_count
+                removed_count += 1
+            else:
+                new_entries.append(e)
+        self._entries = new_entries
 
-        # Edge case: system entries alone exceed target — drop all non-system entries
-        if remaining_budget <= 0:
-            removed = len(non_system)
-            self._entries = system_entries
-            self._total_tokens = system_tokens
-            return removed
+        if self._total_tokens <= target:
+            return removed_count
 
-        kept_non_system: list[ContextEntry] = []
-        current_tokens = 0
-        # Iterate from newest to oldest (reverse) to keep the most recent entries
-        for entry in reversed(non_system):
-            if current_tokens + entry.token_count <= remaining_budget:
-                kept_non_system.append(entry)
-                current_tokens += entry.token_count
-            # Always keep at least the newest non-system entry
-            if not kept_non_system:
-                kept_non_system.append(entry)
-                current_tokens += entry.token_count
+        # Phase 2: Summarize LOW priority entries
+        new_entries = []
+        for e in self._entries:
+            if e.priority == Priority.LOW and self._total_tokens > target:
+                summarized = _summarize_entry(e)
+                if summarized.content != e.content:
+                    self._total_tokens -= e.token_count
+                    self._total_tokens += summarized.token_count
+                    new_entries.append(summarized)
+                else:
+                    self._total_tokens -= e.token_count
+                    removed_count += 1
+            else:
+                new_entries.append(e)
+        self._entries = new_entries
+
+        if self._total_tokens <= target:
+            return removed_count
+
+        # Phase 3: Summarize MEDIUM priority entries (oldest first)
+        medium_entries = [(i, e) for i, e in enumerate(self._entries) if e.priority == Priority.MEDIUM]
+        for idx, entry in medium_entries:
+            if self._total_tokens <= target:
                 break
+            summarized = _summarize_entry(entry)
+            if summarized.content != entry.content:
+                self._total_tokens -= entry.token_count
+                self._total_tokens += summarized.token_count
+                self._entries[idx] = summarized
 
-        # Atomic rebuild (no None markers)
-        # Keep all system entries first, then the kept non-system entries (in original order)
-        kept_non_system.reverse()  # restore original order
-        self._entries = system_entries + kept_non_system
-        self._total_tokens = system_tokens + current_tokens
+        if self._total_tokens <= target:
+            return removed_count
 
-        return len(non_system) - len(kept_non_system)
+        # Phase 4: Remove oldest MEDIUM entries if still over budget
+        new_entries = []
+        for e in self._entries:
+            if e.priority == Priority.MEDIUM and self._total_tokens > target:
+                self._total_tokens -= e.token_count
+                removed_count += 1
+            else:
+                new_entries.append(e)
+        self._entries = new_entries
+
+        return removed_count
 
     def clear(self) -> None:
         self._entries.clear()
