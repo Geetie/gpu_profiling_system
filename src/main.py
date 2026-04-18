@@ -564,10 +564,14 @@ def _assemble_final_results(output_dir, hardware_results, pipeline_data, target_
                         evidence.append(s)
         output["evidence"] = evidence
 
-        if "methodology" not in output:
-            output["methodology"] = pipeline_data.get(
-                "analysis_method", "pipeline_analysis"
-            )
+        if "methodology" not in output or len(str(output.get("methodology", ""))) < 50:
+            pipeline_method = pipeline_data.get("analysis_method", "")
+            if pipeline_method and len(pipeline_method) > 50:
+                output["methodology"] = pipeline_method
+            elif hardware_results and "methodology" in hardware_results:
+                output["methodology"] = hardware_results["methodology"]
+            else:
+                output["methodology"] = "pipeline_analysis"
 
         output["targets_profiled"] = target_spec.get("targets", [])
 

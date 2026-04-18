@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -264,6 +265,9 @@ class AgentLoop:
                     "status": tool_status,
                 })
                 # Estimate token count from content length
+                # Track which tool was called (for _already_executed_binary detection)
+                if isinstance(result, dict) and "tool" not in result:
+                    result["tool"] = tool_call.name
                 result_str = json.dumps(result, ensure_ascii=False)
                 # Truncate large tool outputs to prevent context bloat
                 MAX_TOOL_RESULT_CHARS = 3000
@@ -296,6 +300,24 @@ class AgentLoop:
                             "'dram__throughput', 'l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum'. "
                             "Do NOT use '.' or empty strings as metric names."
                         )
+                        stderr = result.get("stderr", "")
+                        if "ERR_NVGPUCTRPERM" in stderr or "permission" in stderr.lower():
+                            guidance = (
+                                "⛔ NCU PERMISSION DENIED (ERR_NVGPUCTRPERM).\n"
+                                "You CANNOT use run_ncu in this environment.\n"
+                                "Instead, analyze CodeGen's measurements directly from your task description.\n"
+                                "Provide bottleneck classification and confidence based on available data.\n"
+                                "Do NOT call run_ncu again."
+                            )
+                            ncu_perm_pattern = "tool_error:run_ncu:permission"
+                            self._failure_tracker.record_failure(ncu_perm_pattern)
+                            if self._failure_tracker.should_terminate(ncu_perm_pattern):
+                                self._emit(EventKind.STOP, {
+                                    "reason": "M4_ncu_permission_denied",
+                                    "pattern": ncu_perm_pattern,
+                                })
+                                self.stop()
+                                return
                         # Track specific invalid metric patterns for stronger anti-loop
                         metrics_arg = tool_call.arguments.get("metrics", [])
                         if isinstance(metrics_arg, list):
@@ -405,11 +427,21 @@ class AgentLoop:
                     f"Do NOT output natural language — CALL the tool now."
                 )
             elif has_compiled and has_executed:
-                guidance = (
-                    f"⚠️ ERROR: You did not call any tool in this turn.\n"
-                    f"If you have measurements, output them as: target_name: value\n"
-                    f"If not, call the appropriate tool to get more data."
-                )
+                unmeasured = self._find_unmeasured_targets()
+                if unmeasured:
+                    next_target = unmeasured[0]
+                    guidance = (
+                        f"⚠️ You have NOT measured all targets yet!\n"
+                        f"Remaining targets: {unmeasured}\n"
+                        f"NEXT: Write CUDA code for '{next_target}' and call compile_cuda.\n"
+                        f"Do NOT output text — CALL compile_cuda NOW."
+                    )
+                else:
+                    guidance = (
+                        f"⚠️ ERROR: You did not call any tool in this turn.\n"
+                        f"If you have measurements, output them as: target_name: value\n"
+                        f"If not, call the appropriate tool to get more data."
+                    )
             else:
                 guidance = (
                     f"⚠️ ERROR: You did not call any tool in this turn. "
@@ -464,6 +496,33 @@ class AgentLoop:
                 except (json.JSONDecodeError, TypeError):
                     pass
         return exec_count >= 1
+
+    def _find_unmeasured_targets(self) -> list[str]:
+        """Find targets that have not yet been measured in this session."""
+        all_targets = []
+        measured = set()
+        entries = self.context_manager.get_entries()
+        for entry in entries:
+            content = entry.content
+            if entry.role.value == "system" and "targets" in content:
+                m = re.search(r'"targets"\s*:\s*\[([^\]]+)\]', content)
+                if m:
+                    all_targets = re.findall(r'"([^"]+)"', m.group(1))
+            if entry.role.value == "assistant":
+                for line in content.splitlines():
+                    m2 = re.match(r'\s*([\w_]+)\s*[:=]\s*[\d.]+', line)
+                    if m2:
+                        measured.add(m2.group(1))
+                    try:
+                        data = json.loads(content)
+                        if isinstance(data, dict) and "stdout" in data:
+                            for stdout_line in data["stdout"].splitlines():
+                                m3 = re.match(r'\s*([\w_]+)\s*[:=]\s*[\d.]+', stdout_line)
+                                if m3:
+                                    measured.add(m3.group(1))
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+        return [t for t in all_targets if t not in measured]
 
     def _execute_tool_call(self, tool_call: ToolCall) -> dict[str, Any]:
         contract = self.tool_registry.get(tool_call.name)

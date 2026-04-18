@@ -143,7 +143,7 @@ class InvariantTracker:
         Thresholds:
         - no_tool_call: 2 retries (reduce empty turns aggressively)
         - tool_error:compile_cuda: 4 retries (allow more compilation attempts)
-        - tool_error:run_ncu: 3 retries (ncu errors are usually parameter issues)
+        - tool_error:run_ncu: 2 retries (ncu errors are usually environment issues)
         - tool_error:run_ncu:invalid_metric: 2 retries (same invalid metric repeated)
         - other patterns: 3 retries
         """
@@ -152,6 +152,6 @@ class InvariantTracker:
             return count >= 2
         if pattern == "tool_error:compile_cuda":
             return count >= 4
-        if pattern == "tool_error:run_ncu:invalid_metric":
+        if pattern.startswith("tool_error:run_ncu"):
             return count >= 2
         return count >= 3

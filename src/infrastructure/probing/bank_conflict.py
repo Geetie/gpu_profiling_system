@@ -174,14 +174,14 @@ __global__ void bank_conflict_kernel(long long* result_strided, long long* resul
     long long start_strided = 0, end_strided = 0;
     if (tid < 32) {{
         start_strided = clock64();
-        volatile int sink1 = 0;
+        volatile long long sink1 = 0;
         #pragma unroll 1
         for (int iter = 0; iter < 1000; iter++) {{
             int idx = (tid * 32) % size;
             sink1 = shmem[idx];
-            shmem[idx] = sink1 + 1;
+            shmem[idx] = (int)sink1 + 1;
         }}
-        asm volatile("" : "+l"((long long)sink1) : : "memory");
+        asm volatile("" : "+l"(sink1) : : "memory");
         end_strided = clock64();
     }}
     __syncthreads();
@@ -194,14 +194,14 @@ __global__ void bank_conflict_kernel(long long* result_strided, long long* resul
     long long start_sequential = 0, end_sequential = 0;
     if (tid < 32) {{
         start_sequential = clock64();
-        volatile int sink2 = 0;
+        volatile long long sink2 = 0;
         #pragma unroll 1
         for (int iter = 0; iter < 1000; iter++) {{
             int idx = tid;
             sink2 = shmem[idx];
-            shmem[idx] = sink2 + 1;
+            shmem[idx] = (int)sink2 + 1;
         }}
-        asm volatile("" : "+l"((long long)sink2) : : "memory");
+        asm volatile("" : "+l"(sink2) : : "memory");
         end_sequential = clock64();
     }}
     
