@@ -234,6 +234,12 @@ class AgentLoop:
 
         if tool_call is not None:
             self._failure_pattern = None
+            # P2 Harness: auto-inject binary_path when LLM omits it
+            if tool_call.name == "execute_binary" and not tool_call.arguments.get("binary_path"):
+                last_bp = self._find_last_binary_path()
+                if last_bp:
+                    tool_call.arguments["binary_path"] = last_bp
+                    print(f"[AgentLoop] P2 auto-inject: binary_path={last_bp}")
             print(f"[AgentLoop] Tool call: {tool_call.name}({list(tool_call.arguments.keys())})")
             self._emit(EventKind.TOOL_CALL, {
                 "tool": tool_call.name,
@@ -309,8 +315,20 @@ class AgentLoop:
                     self._failure_pattern = f"tool_error:{tool_call.name}"
                     self._failure_tracker.record_failure(self._failure_pattern)
                 elif isinstance(result, dict) and result.get("success") is True:
-                    # Tool succeeded - clear failure pattern
                     self._failure_pattern = None
+                    # Auto-inject binary_path hint after compile_cuda success
+                    if tool_call.name == "compile_cuda" and result.get("binary_path"):
+                        bp = result["binary_path"]
+                        auto_hint = (
+                            f"✅ Compilation succeeded! Binary saved to: {bp}\n"
+                            f"👉 To run it, call: "
+                            f'{{"tool": "execute_binary", "args": {{"binary_path": "{bp}"}}}}'
+                        )
+                        self.context_manager.add_entry(
+                            Role.SYSTEM,
+                            auto_hint,
+                            token_count=40,
+                        )
             except Exception as e:
                 self.loop_state.last_error = str(e)
                 self._failure_pattern = f"tool_error:{tool_call.name}"
@@ -405,6 +423,21 @@ class AgentLoop:
                 return
 
         self._persist_state()
+
+    def _find_last_binary_path(self) -> str:
+        """P2 Harness: find last binary_path from compile_cuda results in context."""
+        entries = self.context_manager.get_entries()
+        for entry in reversed(entries):
+            if entry.role.value == "assistant":
+                try:
+                    data = json.loads(entry.content)
+                    if isinstance(data, dict) and data.get("binary_path"):
+                        bp = data["binary_path"]
+                        if isinstance(bp, str) and bp.strip():
+                            return bp.strip()
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return ""
 
     def _execute_tool_call(self, tool_call: ToolCall) -> dict[str, Any]:
         contract = self.tool_registry.get(tool_call.name)

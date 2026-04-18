@@ -493,10 +493,11 @@ class StageExecutor:
                 codegen_summary = _format_codegen_summary(codegen_data)
             has_codegen = bool(codegen_data and codegen_summary)
             guidance = (
-                "\n\nYOUR TOOLS: run_ncu, read_file\n"
+                "\n\nYOUR TOOLS: run_ncu\n"
                 "YOUR JOB: Profile CodeGen's binaries with ncu → analyze bottlenecks → extract metrics\n"
                 "DO NOT: write/compile CUDA code (that's CodeGen's job)\n"
-                "DO NOT: verify results (that's Verification's job)\n\n"
+                "DO NOT: verify results (that's Verification's job)\n"
+                "DO NOT: read files — all data is already in your task description above\n\n"
             )
             if has_codegen:
                 guidance += (
@@ -545,25 +546,22 @@ class StageExecutor:
                 codegen_summary = _format_codegen_summary(codegen_data)
             has_codegen = bool(codegen_data and codegen_summary)
             guidance = (
-                "\n\nYOUR TOOL: read_file ONLY\n"
-                "YOUR JOB: Independently review all previous stage results\n"
-                "You CANNOT: compile, execute, profile, write files, or generate measurements\n\n"
+                "\n\nYOUR JOB: Independently review all previous stage results\n"
+                "You have NO tools — all data is in your task description above.\n"
+                "You CANNOT: compile, execute, profile, read files, or generate measurements\n"
+                "You MUST: Analyze the data provided in your task description and output a verdict.\n\n"
             )
             if has_codegen:
                 guidance += (
-                    "⚠️ CRITICAL: All measurement data is provided BELOW. You do NOT need to call read_file.\n"
-                    "The data from CodeGen and MetricAnalysis is already in your task description.\n"
-                    "Just ANALYZE the data — do NOT try to read files.\n\n"
                     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    "MEASUREMENT DATA TO VERIFY:\n"
+                    "MEASUREMENT DATA TO VERIFY (already in your task description):\n"
                     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"{codegen_summary}\n\n"
                 )
             else:
                 guidance += (
-                    "⚠️ CRITICAL: DO NOT call read_file! All data is already in the task description above.\n"
-                    "The task description contains CodeGen measurements and MetricAnalysis results.\n"
-                    "You only need to ANALYZE the data provided — do NOT try to read files.\n\n"
+                    "⚠️ No CodeGen measurement data was provided. "
+                    "Review whatever data is available in your task description.\n\n"
                 )
             guidance += (
                 "VERIFICATION CHECKS (perform in order):\n"
@@ -989,12 +987,24 @@ class StageExecutor:
         )
         has_binary = any(r.get("binary_path") for r in tool_results)
         has_output = any(r.get("stdout") for r in tool_results)
+        has_exec_result = any(
+            "return_code" in r and "stdout" in r and "binary_path" not in r
+            for r in tool_results
+        )
         exec_succeeded = any(
             r.get("return_code", -1) == 0 for r in tool_results
             if "return_code" in r or "stdout" in r
         )
 
-        if tool_results and (tool_succeeded or has_binary or has_output or exec_succeeded):
+        if has_binary and has_exec_result:
+            status = SubAgentStatus.SUCCESS
+        elif has_binary and not has_exec_result:
+            status = SubAgentStatus.FAILED
+            data["error_detail"] = (
+                "CodeGen compiled but NEVER executed the binary. "
+                "Measurements are missing. The pipeline requires both compile_cuda AND execute_binary."
+            )
+        elif tool_results and (tool_succeeded or has_output or exec_succeeded):
             status = SubAgentStatus.SUCCESS
         else:
             status = SubAgentStatus.FAILED

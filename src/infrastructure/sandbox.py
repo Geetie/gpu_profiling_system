@@ -194,6 +194,31 @@ class LocalSandbox(SandboxRunner):
             )
         return resolved
 
+    @staticmethod
+    def _ensure_execute_permission(command: str, work_dir: str) -> None:
+        """Ensure the command binary has execute permission.
+        
+        This handles cases where nvcc-compiled binaries may not have
+        the execute bit set, particularly in containerized or mounted
+        filesystem environments.
+        """
+        import stat
+        binary_path = None
+        if command.startswith("./"):
+            binary_path = os.path.join(work_dir, command[2:])
+        elif os.path.sep not in command and command != "nvcc":
+            binary_path = os.path.join(work_dir, command)
+        elif os.path.isabs(command):
+            binary_path = command
+        
+        if binary_path and os.path.isfile(binary_path):
+            try:
+                if not os.access(binary_path, os.X_OK):
+                    current_mode = os.stat(binary_path).st_mode
+                    os.chmod(binary_path, current_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            except OSError:
+                pass
+
     def run(
         self,
         source_code: str | None = None,
@@ -209,11 +234,13 @@ class LocalSandbox(SandboxRunner):
         source_path: str | None = None
         if source_code is not None:
             source_path = os.path.join(target_dir, "source.cu")
-            # INT-6 fix: record the write in tracker for M1 audit compliance
             if self._tracker is not None:
                 self._tracker.record_created(source_path)
             with open(source_path, "w", encoding="utf-8") as f:
                 f.write(source_code)
+
+        # Ensure execute permission on the command binary if it's a local file
+        self._ensure_execute_permission(command, target_dir)
 
         # Build command line
         cmd = [command] + (args or [])

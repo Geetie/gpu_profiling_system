@@ -13,7 +13,14 @@ from src.infrastructure.sandbox import LocalSandbox, SandboxConfig, SandboxRunne
 
 
 def _correct_arch_flag(flag: str) -> str:
-    """Auto-correct architecture flags below sm_75 to sm_75 for CUDA 12.x.
+    """Auto-correct architecture flags for CUDA 12.x compatibility.
+
+    CUDA 12.x still supports sm_60+ for compilation (with deprecation warning).
+    Only sm_35 and below are truly removed. We correct those to the minimum
+    supported version (sm_60), NOT to sm_75, because:
+    - sm_75 code cannot run on sm_60 hardware (Tesla P100)
+    - sm_60 code CAN run on sm_75+ hardware (forward compatibility via PTX)
+    - The deprecation warning for sm_60 is non-fatal in CUDA 12.x
 
     Supports multiple flag formats:
     - -arch=sm_XX
@@ -22,7 +29,7 @@ def _correct_arch_flag(flag: str) -> str:
     - --gpu-architecture=compute_XX
     - -code=sm_XX
 
-    Returns corrected flag if arch < 75, otherwise original flag.
+    Returns corrected flag if arch < 60, otherwise original flag.
     """
     if not flag or not flag.strip():
         return flag
@@ -35,16 +42,16 @@ def _correct_arch_flag(flag: str) -> str:
         value = flag.split("=", 1)[1].strip()
         if value.isdigit():
             arch_num = int(value)
-            if arch_num < 75:
-                return "-arch=sm_75"
+            if arch_num < 60:
+                return "-arch=sm_60"
             return f"-arch=sm_{arch_num}"
 
     # Pattern 1: -arch=sm_XX
     if flag_lower.startswith("-arch=sm_"):
         try:
             arch_num = int(flag.split("=")[1].replace("sm_", ""))
-            if arch_num < 75:
-                return "-arch=sm_75"
+            if arch_num < 60:
+                return "-arch=sm_60"
         except (ValueError, IndexError):
             pass
 
@@ -54,9 +61,9 @@ def _correct_arch_flag(flag: str) -> str:
             match = re.search(r"compute_(\d+)", flag_lower)
             if match:
                 arch_num = int(match.group(1))
-                if arch_num < 75:
-                    flag = re.sub(r"compute_\d+", "compute_75", flag, count=1)
-                    flag = re.sub(r"code=sm_\d+", "code=sm_75", flag, count=1)
+                if arch_num < 60:
+                    flag = re.sub(r"compute_\d+", "compute_60", flag, count=1)
+                    flag = re.sub(r"code=sm_\d+", "code=sm_60", flag, count=1)
                     return flag
         except ValueError:
             pass
@@ -72,11 +79,11 @@ def _correct_arch_flag(flag: str) -> str:
             else:
                 return flag
             
-            if arch_num < 75:
+            if arch_num < 60:
                 if "compute_" in arch_part.lower():
-                    return "--gpu-architecture=compute_75"
+                    return "--gpu-architecture=compute_60"
                 else:
-                    return "--gpu-architecture=sm_75"
+                    return "--gpu-architecture=sm_60"
         except (ValueError, IndexError, AttributeError):
             pass
 
@@ -84,8 +91,8 @@ def _correct_arch_flag(flag: str) -> str:
     elif flag_lower.startswith("-code=sm_"):
         try:
             arch_num = int(flag.split("=")[1].replace("sm_", ""))
-            if arch_num < 75:
-                return "-code=sm_75"
+            if arch_num < 60:
+                return "-code=sm_60"
         except (ValueError, IndexError):
             pass
 

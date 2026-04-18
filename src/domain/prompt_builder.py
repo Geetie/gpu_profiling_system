@@ -132,11 +132,12 @@ class StagePromptBuilder:
         ]
 
         if prev_result is not None:
+            prev_data = prev_result.data if hasattr(prev_result, "data") else (prev_result.get("data", {}) if isinstance(prev_result, dict) else {})
             plan_output = ""
-            if hasattr(prev_result, "data") and prev_result.data:
-                plan_output = prev_result.data.get("final_output", "")
+            if prev_data:
+                plan_output = prev_data.get("final_output", "")
 
-                tasks = prev_result.data.get("tasks", [])
+                tasks = prev_data.get("tasks", [])
                 method = ""
                 for task in tasks:
                     if isinstance(task, dict) and task.get("target") == target:
@@ -161,6 +162,8 @@ class StagePromptBuilder:
 
             if not plan_output and hasattr(prev_result, "error") and prev_result.error:
                 plan_output = prev_result.error
+            if isinstance(prev_result, dict) and not plan_output:
+                plan_output = prev_result.get("error", "")
             if plan_output:
                 parts.append(
                     f"\n\n--- Plan from previous stage ---\n{plan_output}"
@@ -185,22 +188,23 @@ class StagePromptBuilder:
             f"\n\n--- Design Principle for this target ---\n{principle[:2000]}",
         ]
 
-        if prev_result is not None and hasattr(prev_result, "data"):
-            data = prev_result.data
-            if "final_output" in data:
-                parts.append(f"\n\nBenchmark output:\n{data['final_output']}")
-            if "tool_results" in data:
-                parts.append(f"\nTool results:\n{str(data['tool_results'])}")
-            if "raw_output" in data:
-                parts.append(f"\nRaw benchmark output:\n{data['raw_output']}")
-            if "binary_path" in data:
-                parts.append(f"\nCompiled binary path: {data['binary_path']}")
-            if "measurements" in data:
-                parts.append(f"\nCodeGen measurements:\n{data['measurements']}")
-            if "detected_arch" in data:
-                parts.append(f"\nDetected GPU architecture: {data['detected_arch']}")
-            if "analysis_method" in data:
-                parts.append(f"\nCodeGen methodology: {data['analysis_method'][:1000]}")
+        if prev_result is not None:
+            data = prev_result.data if hasattr(prev_result, "data") else (prev_result.get("data", {}) if isinstance(prev_result, dict) else {})
+            if data:
+                if "final_output" in data:
+                    parts.append(f"\n\nBenchmark output:\n{data['final_output']}")
+                if "tool_results" in data:
+                    parts.append(f"\nTool results:\n{str(data['tool_results'])}")
+                if "raw_output" in data:
+                    parts.append(f"\nRaw benchmark output:\n{data['raw_output']}")
+                if "binary_path" in data:
+                    parts.append(f"\nCompiled binary path: {data['binary_path']}")
+                if "measurements" in data:
+                    parts.append(f"\nCodeGen measurements:\n{data['measurements']}")
+                if "detected_arch" in data:
+                    parts.append(f"\nDetected GPU architecture: {data['detected_arch']}")
+                if "analysis_method" in data:
+                    parts.append(f"\nCodeGen methodology: {data['analysis_method'][:1000]}")
 
         parts.append(
             "\n\nIMPORTANT: Perform Roofline analysis on the data above.\n"
@@ -215,17 +219,42 @@ class StagePromptBuilder:
     @staticmethod
     def _verification_task(target_spec: dict[str, Any], prev_result: Any | None) -> str:
         target = target_spec.get("target", "unknown")
+        targets = target_spec.get("targets", [])
         parts = [
             f"Verify the benchmark results for: {target}",
+            f"\nRequested targets: {targets}",
             f"\nTarget specification: {target_spec}",
         ]
 
-        if prev_result is not None and hasattr(prev_result, "data"):
-            data = prev_result.data
+        data = {}
+        if prev_result is not None:
+            if hasattr(prev_result, "data"):
+                data = prev_result.data
+            elif isinstance(prev_result, dict):
+                data = prev_result.get("data", {})
+
+        if data:
+            if "measurements" in data and isinstance(data["measurements"], dict):
+                parts.append(f"\n\nMeasurements:")
+                for k, v in data["measurements"].items():
+                    parts.append(f"  {k}: {v}")
             if "final_output" in data:
-                parts.append(f"\nResults to verify:\n{data['final_output']}")
-            if "measurements" in data:
-                parts.append(f"\nMeasurements:\n{data['measurements']}")
+                parts.append(f"\n\nFinal output:\n{data['final_output'][:2000]}")
+            if "tool_results" in data and isinstance(data["tool_results"], list):
+                parts.append(f"\n\nTool execution results:")
+                for i, tr in enumerate(data["tool_results"]):
+                    if isinstance(tr, dict):
+                        stdout = tr.get("stdout", "")
+                        if stdout:
+                            parts.append(f"  Tool #{i+1} stdout:")
+                            for line in stdout.splitlines()[:20]:
+                                parts.append(f"    {line}")
+                        if tr.get("return_code") is not None:
+                            parts.append(f"  Tool #{i+1} return_code: {tr['return_code']}")
+            if "analysis_method" in data:
+                parts.append(f"\n\nMethodology:\n{data['analysis_method'][:1000]}")
+            if "code_gen_output" in data:
+                parts.append(f"\n\nCodeGen summary:\n{data['code_gen_output'][:500]}")
 
         parts.append(
             "\n\nProvide your verdict: ACCEPT or REJECT. "

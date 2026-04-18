@@ -48,8 +48,22 @@ class FileOperations:
 
     # ── Read ───────────────────────────────────────────────────────
 
+    _BINARY_EXTENSIONS = frozenset({
+        ".o", ".obj", ".exe", ".dll", ".so", ".dylib",
+        ".ptx", ".cubin", ".fatbin",
+        ".a", ".lib", ".la",
+        ".pyc", ".pyo", ".class",
+        ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z",
+        ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico",
+        ".pdf", ".doc", ".docx",
+        ".ncu-rep", ".nsight-cuprof-report",
+    })
+
     def read(self, file_path: str) -> str:
         """Read a file and record it in the M1 ledger.
+
+        Binary files are detected and return a metadata summary
+        instead of raw content to prevent UnicodeDecodeError.
 
         Raises:
             FileNotFoundError: if the file does not exist.
@@ -58,10 +72,56 @@ class FileOperations:
         resolved = self._resolve(file_path)
         if not os.path.isfile(resolved):
             raise FileNotFoundError(f"File not found: {resolved}")
-        with open(resolved, "r", encoding="utf-8") as f:
-            content = f.read()
+
+        if self._is_binary_file(resolved):
+            return self._read_binary_summary(resolved)
+
+        try:
+            with open(resolved, "r", encoding="utf-8") as f:
+                content = f.read()
+        except UnicodeDecodeError:
+            return self._read_binary_summary(resolved)
+
         self._tracker.record_read(resolved)
         return content
+
+    @classmethod
+    def _is_binary_file(cls, path: str) -> bool:
+        """Detect binary files by extension or content inspection."""
+        _, ext = os.path.splitext(path)
+        if ext.lower() in cls._BINARY_EXTENSIONS:
+            return True
+        if ext == "" and os.path.basename(path) in ("benchmark", "a.out", "core"):
+            return True
+        try:
+            with open(path, "rb") as f:
+                chunk = f.read(8192)
+            if b"\x00" in chunk:
+                return True
+        except OSError:
+            pass
+        return False
+
+    @staticmethod
+    def _read_binary_summary(path: str) -> str:
+        """Return a metadata summary for binary files instead of raw content."""
+        try:
+            stat_info = os.stat(path)
+            size_bytes = stat_info.st_size
+            import time
+            mod_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat_info.st_mtime))
+            executable = bool(stat_info.st_mode & 0o111)
+            exec_flag = "executable" if executable else "not executable"
+            return (
+                f"[Binary file: {os.path.basename(path)}]\n"
+                f"Size: {size_bytes} bytes\n"
+                f"Modified: {mod_time}\n"
+                f"Permissions: {exec_flag}\n"
+                f"Cannot display binary content as text.\n"
+                f"If this is a compiled CUDA binary, use execute_binary to run it."
+            )
+        except OSError as e:
+            return f"[Binary file: {os.path.basename(path)}]\nError reading metadata: {e}"
 
     # ── Write ──────────────────────────────────────────────────────
 

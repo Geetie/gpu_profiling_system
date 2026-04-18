@@ -153,7 +153,15 @@ def _get_fallback_source(size: int) -> str:
 #include <stdio.h>
 #include <cuda_runtime.h>
 
-__global__ void bank_conflict_kernel(int* result_strided, int* result_sequential, int size) {{
+#define CUDA_CHECK(call) do {{ \\
+    cudaError_t err = (call); \\
+    if (err != cudaSuccess) {{ \\
+        printf("CUDA_ERROR: %s at line %d\\n", cudaGetErrorString(err), __LINE__); \\
+        return 1; \\
+    }} \\
+}} while(0)
+
+__global__ void bank_conflict_kernel(long long* result_strided, long long* result_sequential, int size) {{
     extern __shared__ int shmem[];
     
     int tid = threadIdx.x;
@@ -167,11 +175,14 @@ __global__ void bank_conflict_kernel(int* result_strided, int* result_sequential
     __syncthreads();
     
     long long start_strided = clock64();
+    volatile int sink1 = 0;
+    #pragma unroll 1
     for (int iter = 0; iter < 1000; iter++) {{
         int idx = (tid * stride) % size;
-        int val = shmem[idx];
-        shmem[idx] = val + 1;
+        sink1 = shmem[idx];
+        shmem[idx] = sink1 + 1;
     }}
+    asm volatile("" : "+r"(sink1) : : "memory");
     long long end_strided = clock64();
     __syncthreads();
     
@@ -183,16 +194,19 @@ __global__ void bank_conflict_kernel(int* result_strided, int* result_sequential
     __syncthreads();
     
     long long start_sequential = clock64();
+    volatile int sink2 = 0;
+    #pragma unroll 1
     for (int iter = 0; iter < 1000; iter++) {{
         int idx = tid;
-        int val = shmem[idx];
-        shmem[idx] = val + 1;
+        sink2 = shmem[idx];
+        shmem[idx] = sink2 + 1;
     }}
+    asm volatile("" : "+r"(sink2) : : "memory");
     long long end_sequential = clock64();
     
     if (tid == 0) {{
-        result_strided[0] = (int)(end_strided - start_strided);
-        result_sequential[0] = (int)(end_sequential - start_sequential);
+        result_strided[0] = end_strided - start_strided;
+        result_sequential[0] = end_sequential - start_sequential;
     }}
 }}
 
@@ -201,21 +215,41 @@ int main() {{
     int threads = 256;
     int shmem_bytes = size * sizeof(int);
     
-    int *d_strided, *d_sequential;
-    cudaMalloc(&d_strided, sizeof(int));
-    cudaMalloc(&d_sequential, sizeof(int));
+    int device_count = 0;
+    CUDA_CHECK(cudaGetDeviceCount(&device_count));
+    if (device_count == 0) {{
+        printf("CUDA_ERROR: No CUDA devices\\n");
+        return 1;
+    }}
+    
+    long long *d_strided, *d_sequential;
+    CUDA_CHECK(cudaMalloc(&d_strided, sizeof(long long)));
+    CUDA_CHECK(cudaMalloc(&d_sequential, sizeof(long long)));
+    
+    long long zero = 0;
+    CUDA_CHECK(cudaMemcpy(d_strided, &zero, sizeof(long long), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_sequential, &zero, sizeof(long long), cudaMemcpyHostToDevice));
     
     bank_conflict_kernel<<<1, threads, shmem_bytes>>>(d_strided, d_sequential, size);
-    cudaDeviceSynchronize();
+    cudaError_t err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {{
+        printf("CUDA_ERROR: Kernel failed: %s\\n", cudaGetErrorString(err));
+        return 1;
+    }}
     
-    int h_strided, h_sequential;
-    cudaMemcpy(&h_strided, d_strided, sizeof(int), cudaMemcpyDeviceToHost);
-    cudaMemcpy(&h_sequential, d_sequential, sizeof(int), cudaMemcpyDeviceToHost);
+    long long h_strided = 0, h_sequential = 0;
+    CUDA_CHECK(cudaMemcpy(&h_strided, d_strided, sizeof(long long), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(&h_sequential, d_sequential, sizeof(long long), cudaMemcpyDeviceToHost));
+    
+    if (h_sequential <= 0 || h_strided <= 0) {{
+        printf("CUDA_ERROR: Invalid cycles strided=%lld sequential=%lld\\n", h_strided, h_sequential);
+        return 1;
+    }}
     
     float ratio = (float)h_strided / (float)h_sequential;
     
-    printf("strided_cycles: %d\\n", h_strided);
-    printf("sequential_cycles: %d\\n", h_sequential);
+    printf("strided_cycles: %lld\\n", h_strided);
+    printf("sequential_cycles: %lld\\n", h_sequential);
     printf("bank_conflict_ratio: %.2f\\n", ratio);
     printf("stride: 32\\n");
     

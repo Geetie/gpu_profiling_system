@@ -46,6 +46,13 @@ def make_read_file_handler(file_ops: FileOperations) -> Callable[[dict[str, Any]
                 "content": "",
                 "lines": 0,
             }
+        except UnicodeDecodeError as e:
+            return {
+                "content": f"[Cannot read file as text: {e}]\n"
+                           f"This file appears to be a binary file. "
+                           f"If it is a compiled CUDA binary, use execute_binary to run it instead of read_file.",
+                "lines": 0,
+            }
 
     return handler
 

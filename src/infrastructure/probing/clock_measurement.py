@@ -168,26 +168,32 @@ def _get_fallback_source(loop_iterations: int) -> str:
 #include <stdio.h>
 #include <cuda_runtime.h>
 
+#define CUDA_CHECK(call) do {{ \\
+    cudaError_t err = (call); \\
+    if (err != cudaSuccess) {{ \\
+        printf("CUDA_ERROR: %s at line %d\\n", cudaGetErrorString(err), __LINE__); \\
+        printf("total_cycles: 0\\n"); \\
+        printf("iterations: %d\\n", iterations); \\
+        printf("cycles_per_iter: 0.00\\n"); \\
+        return 1; \\
+    }} \\
+}} while(0)
+
 __global__ void clock_calibrate_kernel(long long* cycles, int iterations) {{
     long long start = clock64();
     
-    // Use asm volatile to prevent compiler optimization of the loop
-    // This is the most reliable way to ensure the loop executes
     volatile long long sink = 0;
     #pragma unroll 1
     for (int i = 0; i < iterations; i++) {{
         sink += (long long)i * i + (sink & 1);
     }}
-    // Write sink to global memory through asm to prevent elimination
-    // The compiler cannot prove sink < 0 is always false with volatile
+    asm volatile("" : "+l"(sink) : : "memory");
     if (sink < 0) {{
         cycles[0] = -1;
         return;
     }}
     
     long long end = clock64();
-    
-    // Use a memory fence to ensure cycle count is correct
     __threadfence();
     
     if (threadIdx.x == 0) {{
@@ -198,47 +204,57 @@ __global__ void clock_calibrate_kernel(long long* cycles, int iterations) {{
 int main() {{
     int iterations = {loop_iterations};
     
-    long long* d_cycles;
-    cudaError_t err = cudaMalloc(&d_cycles, sizeof(long long));
-    if (err != cudaSuccess) {{
+    int device_count = 0;
+    cudaError_t err = cudaGetDeviceCount(&device_count);
+    if (err != cudaSuccess || device_count == 0) {{
+        printf("CUDA_ERROR: No CUDA devices available (err=%d, count=%d)\\n", err, device_count);
         printf("total_cycles: 0\\n");
         printf("iterations: %d\\n", iterations);
         printf("cycles_per_iter: 0.00\\n");
         return 1;
     }}
     
-    // Initialize device memory to zero
-    long long zero = 0;
-    cudaMemcpy(d_cycles, &zero, sizeof(long long), cudaMemcpyHostToDevice);
+    cudaDeviceProp prop;
+    CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
+    printf("diag_gpu_name: %s\\n", prop.name);
+    printf("diag_compute_capability: %d.%d\\n", prop.major, prop.minor);
+    printf("diag_sm_count: %d\\n", prop.multiProcessorCount);
     
-    // Warmup - important for GPU frequency stabilization
+    long long* d_cycles;
+    CUDA_CHECK(cudaMalloc(&d_cycles, sizeof(long long)));
+    
+    long long zero = 0;
+    CUDA_CHECK(cudaMemcpy(d_cycles, &zero, sizeof(long long), cudaMemcpyHostToDevice));
+    
     clock_calibrate_kernel<<<1, 1>>>(d_cycles, iterations / 10);
     err = cudaDeviceSynchronize();
     if (err != cudaSuccess) {{
+        printf("CUDA_ERROR: Warmup kernel failed: %s\\n", cudaGetErrorString(err));
         printf("total_cycles: 0\\n");
         printf("iterations: %d\\n", iterations);
         printf("cycles_per_iter: 0.00\\n");
+        cudaFree(d_cycles);
         return 1;
     }}
     
-    // Reset before measurement
-    cudaMemcpy(d_cycles, &zero, sizeof(long long), cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMemcpy(d_cycles, &zero, sizeof(long long), cudaMemcpyHostToDevice));
     
-    // Measurement run
     clock_calibrate_kernel<<<1, 1>>>(d_cycles, iterations);
     err = cudaDeviceSynchronize();
     if (err != cudaSuccess) {{
+        printf("CUDA_ERROR: Measurement kernel failed: %s\\n", cudaGetErrorString(err));
         printf("total_cycles: 0\\n");
         printf("iterations: %d\\n", iterations);
         printf("cycles_per_iter: 0.00\\n");
+        cudaFree(d_cycles);
         return 1;
     }}
     
     long long h_cycles = 0;
-    cudaMemcpy(&h_cycles, d_cycles, sizeof(long long), cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(&h_cycles, d_cycles, sizeof(long long), cudaMemcpyDeviceToHost));
     
-    // Sanity check: if cycles is still 0 or negative, something went wrong
     if (h_cycles <= 0) {{
+        printf("CUDA_ERROR: Measured cycles is %lld (expected > 0)\\n", h_cycles);
         printf("total_cycles: 0\\n");
         printf("iterations: %d\\n", iterations);
         printf("cycles_per_iter: 0.00\\n");
