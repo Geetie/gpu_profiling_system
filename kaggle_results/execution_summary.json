@@ -1,0 +1,26 @@
+{
+  "probe_ok": true,
+  "pipeline_ok": false,
+  "api_configured": true,
+  "results_ok": false,
+  "results_found": false,
+  "errors": [
+    "Pipeline failed",
+    "Results analysis failed"
+  ],
+  "project_root": "/kaggle/working/gpu_profiling_system",
+  "working_dir": "/kaggle/working",
+  "log_files": [
+    ".cmd_878fa646.log",
+    ".cmd_98ce8700.log",
+    ".cmd_21c52f2a.log",
+    ".cmd_88fc5b85.log",
+    ".cmd_1437415f.log",
+    "execution.log",
+    ".cmd_cc923f8b.log",
+    ".cmd_e1240bb5.log"
+  ],
+  "agent_logs": [
+    "agent_logs/pipeline_log.jsonl"
+  ]
+}

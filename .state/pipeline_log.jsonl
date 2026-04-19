@@ -1,0 +1,164 @@
+{"action": "pipeline_start", "details": {"target_spec": {"targets": ["dram_latency_cycles", "sm_count"]}}, "timestamp": "2026-04-13T19:32:36.890094+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "plan", "retry_limit": 0}, "timestamp": "2026-04-13T19:32:36.891941+00:00"}
+{"action": "stage_result", "details": {"stage": "plan", "status": "success", "tool_calls": 0}, "timestamp": "2026-04-13T19:32:36.899784+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "code_gen", "retry_limit": 0}, "timestamp": "2026-04-13T19:32:36.899784+00:00"}
+{"action": "stage_result", "details": {"stage": "code_gen", "status": "failed", "tool_calls": 0}, "timestamp": "2026-04-13T19:32:36.901289+00:00"}
+{"action": "pipeline_attempt_failed", "details": {"stage": "code_gen", "attempt": 1, "error": null}, "timestamp": "2026-04-13T19:32:36.901289+00:00"}
+{"action": "pipeline_stage_failed", "details": {"stage": "code_gen", "error": null}, "timestamp": "2026-04-13T19:32:36.901804+00:00"}
+{"action": "stage_result", "details": {"stage": "code_gen", "status": "failed", "tool_calls": 0}, "timestamp": "2026-04-13T19:34:51.319616+00:00"}
+{"action": "pipeline_start", "details": {"target_spec": {"targets": ["dram_latency_cycles", "sm_count"]}}, "timestamp": "2026-04-13T19:37:15.544380+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "plan", "retry_limit": 0}, "timestamp": "2026-04-13T19:37:15.545378+00:00"}
+{"action": "stage_result", "details": {"stage": "plan", "status": "failed", "tool_calls": 0, "output_length": 0}, "timestamp": "2026-04-13T19:37:15.555311+00:00"}
+{"action": "pipeline_attempt_failed", "details": {"stage": "plan", "attempt": 1, "error": null}, "timestamp": "2026-04-13T19:37:15.555311+00:00"}
+{"action": "pipeline_stage_failed", "details": {"stage": "plan", "error": null}, "timestamp": "2026-04-13T19:37:15.555311+00:00"}
+{"action": "pipeline_start", "details": {"target_spec": {"targets": ["dram_latency_cycles", "sm_count"]}}, "timestamp": "2026-04-13T19:38:13.916840+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "plan", "retry_limit": 0}, "timestamp": "2026-04-13T19:38:13.916840+00:00"}
+{"action": "stage_result", "details": {"stage": "plan", "status": "failed", "tool_calls": 0, "output_length": 0}, "timestamp": "2026-04-13T19:38:13.928629+00:00"}
+{"action": "pipeline_attempt_failed", "details": {"stage": "plan", "attempt": 1, "error": null}, "timestamp": "2026-04-13T19:38:13.928629+00:00"}
+{"action": "pipeline_stage_failed", "details": {"stage": "plan", "error": null}, "timestamp": "2026-04-13T19:38:13.928629+00:00"}
+{"action": "pipeline_start", "details": {"target_spec": {"targets": ["dram_latency_cycles", "l2_cache_size_mb", "actual_boost_clock_mhz"]}}, "timestamp": "2026-04-15T09:21:55.349011+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "plan", "retry_limit": 0}, "timestamp": "2026-04-15T09:21:55.352562+00:00"}
+{"action": "stage_result", "details": {"stage": "plan", "status": "success", "tool_calls": 0, "output_length": 43}, "timestamp": "2026-04-15T09:21:55.369732+00:00"}
+{"action": "handoff_validation", "details": {"from": "plan", "to": "code_gen", "is_valid": false, "errors": 1, "warnings": 0}, "timestamp": "2026-04-15T09:21:55.374068+00:00"}
+{"action": "handoff_error", "details": {"stage": "PLAN", "field": "data.tasks", "message": "Planner did not produce 'tasks' key in data"}, "timestamp": "2026-04-15T09:21:55.377069+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "code_gen", "retry_limit": 0}, "timestamp": "2026-04-15T09:21:55.380570+00:00"}
+{"action": "stage_result", "details": {"stage": "code_gen", "status": "failed", "tool_calls": 0, "output_length": 43}, "timestamp": "2026-04-15T09:21:55.398458+00:00"}
+{"action": "pipeline_attempt_failed", "details": {"stage": "code_gen", "attempt": 1, "error": "CodeGen output was text-only (no tool calls). Model must call compile_cuda to generate benchmarks. Output preview: [Empty model output - will retry next turn]"}, "timestamp": "2026-04-15T09:21:55.401989+00:00"}
+{"action": "pipeline_stage_failed", "details": {"stage": "code_gen", "error": "CodeGen output was text-only (no tool calls). Model must call compile_cuda to generate benchmarks. Output preview: [Empty model output - will retry next turn]", "duration_seconds": 0.05}, "timestamp": "2026-04-15T09:21:55.404561+00:00"}
+{"action": "pipeline_stage_partial", "details": {"stage": "code_gen", "message": "Continuing with partial results"}, "timestamp": "2026-04-15T09:21:55.407937+00:00"}
+{"action": "handoff_validation", "details": {"from": "code_gen", "to": "metric_analysis", "is_valid": false, "errors": 1, "warnings": 1}, "timestamp": "2026-04-15T09:21:55.408955+00:00"}
+{"action": "handoff_error", "details": {"stage": "CODE_GEN", "field": "measurements", "message": "CodeGen produced no measurements or compiled binaries"}, "timestamp": "2026-04-15T09:21:55.409953+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "metric_analysis", "retry_limit": 0}, "timestamp": "2026-04-15T09:21:55.413018+00:00"}
+{"action": "stage_result", "details": {"stage": "metric_analysis", "status": "success", "tool_calls": 0, "output_length": 43}, "timestamp": "2026-04-15T09:21:55.424302+00:00"}
+{"action": "p7_audit", "details": {"generation_fingerprint": "5f17641e9ccc5dc0", "verification_context_tokens": 0, "status": "clean"}, "timestamp": "2026-04-15T09:21:55.426410+00:00"}
+{"action": "handoff_validation", "details": {"from": "metric_analysis", "to": "verification", "is_valid": true, "errors": 0, "warnings": 2}, "timestamp": "2026-04-15T09:21:55.427410+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "verification", "retry_limit": 0}, "timestamp": "2026-04-15T09:21:55.428411+00:00"}
+{"action": "stage_result", "details": {"stage": "verification", "status": "success", "tool_calls": 0, "output_length": 43}, "timestamp": "2026-04-15T09:21:55.443640+00:00"}
+{"action": "pipeline_complete", "details": {"agent_role": "verification", "status": "success", "data": {"tool_results": [], "final_output": "[Empty model output - will retry next turn]", "num_tool_calls": 0, "review_text": "[Empty model output - will retry next turn]"}, "artifacts": [], "error": null, "context_fingerprint": "f6ebb7ae4ba0ae85", "metadata": {}}, "timestamp": "2026-04-15T09:21:55.445736+00:00"}
+{"action": "pipeline_start", "details": {"target_spec": {"targets": ["dram_latency_cycles", "l2_cache_size_mb", "actual_boost_clock_mhz"]}}, "timestamp": "2026-04-15T09:27:19.173907+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "plan", "retry_limit": 0}, "timestamp": "2026-04-15T09:27:19.174990+00:00"}
+{"action": "stage_result", "details": {"stage": "plan", "status": "success", "tool_calls": 0, "output_length": 1913}, "timestamp": "2026-04-15T09:28:36.261671+00:00"}
+{"action": "handoff_validation", "details": {"from": "plan", "to": "code_gen", "is_valid": false, "errors": 1, "warnings": 0}, "timestamp": "2026-04-15T09:28:36.262684+00:00"}
+{"action": "handoff_error", "details": {"stage": "PLAN", "field": "data.tasks", "message": "Planner did not produce 'tasks' key in data"}, "timestamp": "2026-04-15T09:28:36.263187+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "code_gen", "retry_limit": 0}, "timestamp": "2026-04-15T09:28:36.263187+00:00"}
+{"action": "pipeline_start", "details": {"target_spec": {"targets": ["dram_latency_cycles", "l2_cache_size_mb", "actual_boost_clock_mhz"]}}, "timestamp": "2026-04-15T09:34:53.224214+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "plan", "retry_limit": 0}, "timestamp": "2026-04-15T09:34:53.225217+00:00"}
+{"action": "stage_result", "details": {"stage": "plan", "status": "success", "tool_calls": 0, "output_length": 660}, "timestamp": "2026-04-15T09:36:18.540574+00:00"}
+{"action": "handoff_validation", "details": {"from": "plan", "to": "code_gen", "is_valid": false, "errors": 1, "warnings": 0}, "timestamp": "2026-04-15T09:36:18.542633+00:00"}
+{"action": "handoff_error", "details": {"stage": "PLAN", "field": "data.tasks", "message": "Planner did not produce 'tasks' key in data"}, "timestamp": "2026-04-15T09:36:18.542633+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "code_gen", "retry_limit": 0}, "timestamp": "2026-04-15T09:36:18.543637+00:00"}
+{"action": "stage_result", "details": {"stage": "code_gen", "status": "success", "tool_calls": 4, "output_length": 23}, "timestamp": "2026-04-15T09:38:06.184151+00:00"}
+{"action": "handoff_validation", "details": {"from": "code_gen", "to": "metric_analysis", "is_valid": false, "errors": 1, "warnings": 1}, "timestamp": "2026-04-15T09:38:06.188977+00:00"}
+{"action": "handoff_error", "details": {"stage": "CODE_GEN", "field": "measurements", "message": "CodeGen produced no measurements or compiled binaries"}, "timestamp": "2026-04-15T09:38:06.190171+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "metric_analysis", "retry_limit": 0}, "timestamp": "2026-04-15T09:38:06.191171+00:00"}
+{"action": "stage_result", "details": {"stage": "metric_analysis", "status": "success", "tool_calls": 0, "output_length": 948}, "timestamp": "2026-04-15T09:39:10.524448+00:00"}
+{"action": "p7_audit", "details": {"generation_fingerprint": "06099d25038c1f2f", "verification_context_tokens": 0, "status": "clean"}, "timestamp": "2026-04-15T09:39:10.524448+00:00"}
+{"action": "handoff_validation", "details": {"from": "metric_analysis", "to": "verification", "is_valid": true, "errors": 0, "warnings": 2}, "timestamp": "2026-04-15T09:39:10.525452+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "verification", "retry_limit": 0}, "timestamp": "2026-04-15T09:39:10.525452+00:00"}
+{"action": "stage_result", "details": {"stage": "verification", "status": "success", "tool_calls": 0, "output_length": 27}, "timestamp": "2026-04-15T09:40:05.973331+00:00"}
+{"action": "pipeline_complete", "details": {"agent_role": "verification", "status": "success", "data": {"tool_results": [{"status": "error", "success": false, "output": "", "errors": "nvcc not found in PATH", "binary_path": ""}, {"status": "error", "stdout": "", "stderr": "Binary not found: /tmp/unknown_benchmark", "return_code": -1}, {"status": "error", "success": false, "output": "", "errors": "nvcc not found in PATH", "binary_path": ""}, {"status": "error", "stdout": "bash: line 1: /tmp/unknown_benchmark: No such file or directory\n", "stderr": "", "return_code": -1}], "final_output": "{\"content\": \"\", \"lines\": 0}", "num_tool_calls": 0, "review_text": "{\"content\": \"\", \"lines\": 0}", "analysis_method": "{\"bytes_written\": 2342}", "code_gen_output": "{\"bytes_written\": 2342}"}, "artifacts": [], "error": null, "context_fingerprint": "6bbe348407e2fc84", "metadata": {}}, "timestamp": "2026-04-15T09:40:05.974331+00:00"}
+{"action": "pipeline_start", "details": {"target_spec": {"targets": ["dram_latency_cycles", "l2_cache_size_mb", "actual_boost_clock_mhz"]}}, "timestamp": "2026-04-15T12:03:45.624801+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "plan", "retry_limit": 0}, "timestamp": "2026-04-15T12:03:45.625806+00:00"}
+{"action": "stage_result", "details": {"stage": "plan", "status": "success", "tool_calls": 0, "output_length": 74}, "timestamp": "2026-04-15T12:04:38.041481+00:00"}
+{"action": "handoff_validation", "details": {"from": "plan", "to": "code_gen", "is_valid": false, "errors": 1, "warnings": 0}, "timestamp": "2026-04-15T12:04:38.042999+00:00"}
+{"action": "handoff_error", "details": {"stage": "PLAN", "field": "data.tasks", "message": "Planner did not produce 'tasks' key in data"}, "timestamp": "2026-04-15T12:04:38.042999+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "code_gen", "retry_limit": 0}, "timestamp": "2026-04-15T12:04:38.042999+00:00"}
+{"action": "stage_result", "details": {"stage": "code_gen", "status": "failed", "tool_calls": 5, "output_length": 2466}, "timestamp": "2026-04-15T12:05:30.822513+00:00"}
+{"action": "pipeline_attempt_failed", "details": {"stage": "code_gen", "attempt": 1, "error": "CodeGen compilation failed — check tool call results for errors"}, "timestamp": "2026-04-15T12:05:30.822513+00:00"}
+{"action": "pipeline_stage_failed", "details": {"stage": "code_gen", "error": "CodeGen compilation failed — check tool call results for errors", "duration_seconds": 52.77}, "timestamp": "2026-04-15T12:05:30.823517+00:00"}
+{"action": "pipeline_stage_partial", "details": {"stage": "code_gen", "message": "Continuing with partial results"}, "timestamp": "2026-04-15T12:05:30.823517+00:00"}
+{"action": "handoff_validation", "details": {"from": "code_gen", "to": "metric_analysis", "is_valid": false, "errors": 1, "warnings": 1}, "timestamp": "2026-04-15T12:05:30.824522+00:00"}
+{"action": "handoff_error", "details": {"stage": "CODE_GEN", "field": "measurements", "message": "CodeGen produced no measurements or compiled binaries"}, "timestamp": "2026-04-15T12:05:30.824522+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "metric_analysis", "retry_limit": 0}, "timestamp": "2026-04-15T12:05:30.824522+00:00"}
+{"action": "stage_result", "details": {"stage": "metric_analysis", "status": "success", "tool_calls": 0, "output_length": 765}, "timestamp": "2026-04-15T12:06:03.997215+00:00"}
+{"action": "p7_audit", "details": {"generation_fingerprint": "481dac06c6f02b31", "verification_context_tokens": 0, "status": "clean"}, "timestamp": "2026-04-15T12:06:03.999761+00:00"}
+{"action": "handoff_validation", "details": {"from": "metric_analysis", "to": "verification", "is_valid": true, "errors": 0, "warnings": 2}, "timestamp": "2026-04-15T12:06:03.999761+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "verification", "retry_limit": 0}, "timestamp": "2026-04-15T12:06:04.000772+00:00"}
+{"action": "stage_result", "details": {"stage": "verification", "status": "success", "tool_calls": 0, "output_length": 27}, "timestamp": "2026-04-15T12:06:40.653744+00:00"}
+{"action": "pipeline_complete", "details": {"agent_role": "verification", "status": "success", "data": {"tool_results": [], "final_output": "{\"content\": \"\", \"lines\": 0}", "num_tool_calls": 0, "review_text": "{\"content\": \"\", \"lines\": 0}"}, "artifacts": [], "error": null, "context_fingerprint": "fedd0736048a961a", "metadata": {}}, "timestamp": "2026-04-15T12:06:40.655383+00:00"}
+{"action": "pipeline_start", "details": {"target_spec": {"targets": ["dram_latency_cycles", "l2_cache_size_mb", "actual_boost_clock_mhz"]}}, "timestamp": "2026-04-17T04:38:35.663422+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "plan", "retry_limit": 0}, "timestamp": "2026-04-17T04:38:35.663422+00:00"}
+{"action": "stage_result", "details": {"stage": "plan", "status": "success", "tool_calls": 0, "output_length": 523}, "timestamp": "2026-04-17T04:38:54.049182+00:00"}
+{"action": "handoff_validation", "details": {"from": "plan", "to": "code_gen", "is_valid": false, "errors": 1, "warnings": 0}, "timestamp": "2026-04-17T04:38:54.049182+00:00"}
+{"action": "handoff_error", "details": {"stage": "PLAN", "field": "data.tasks", "message": "Planner did not produce 'tasks' key in data", "severity": "error"}, "timestamp": "2026-04-17T04:38:54.050713+00:00"}
+{"action": "pipeline_start", "details": {"target_spec": {"targets": ["dram_latency_cycles", "l2_cache_size_mb", "actual_boost_clock_mhz"]}}, "timestamp": "2026-04-17T04:41:08.828328+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "plan", "retry_limit": 0}, "timestamp": "2026-04-17T04:41:08.828328+00:00"}
+{"action": "stage_result", "details": {"stage": "plan", "status": "success", "tool_calls": 0, "output_length": 1947}, "timestamp": "2026-04-17T04:41:25.054166+00:00"}
+{"action": "handoff_validation", "details": {"from": "plan", "to": "code_gen", "is_valid": true, "errors": 0, "warnings": 0}, "timestamp": "2026-04-17T04:41:25.055182+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "code_gen", "retry_limit": 0}, "timestamp": "2026-04-17T04:41:25.055182+00:00"}
+{"action": "stage_result", "details": {"stage": "code_gen", "status": "failed", "tool_calls": 9, "output_length": 27}, "timestamp": "2026-04-17T04:47:18.140132+00:00"}
+{"action": "pipeline_attempt_failed", "details": {"stage": "code_gen", "attempt": 1, "error": "CodeGen compilation failed — check tool call results for errors"}, "timestamp": "2026-04-17T04:47:18.141806+00:00"}
+{"action": "pipeline_stage_failed", "details": {"stage": "code_gen", "error": "CodeGen compilation failed — check tool call results for errors", "duration_seconds": 353.09}, "timestamp": "2026-04-17T04:47:18.143320+00:00"}
+{"action": "pipeline_start", "details": {"target_spec": {"targets": ["dram_latency_cycles", "l2_cache_size_mb", "actual_boost_clock_mhz"]}}, "timestamp": "2026-04-17T04:47:35.040380+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "plan", "retry_limit": 0}, "timestamp": "2026-04-17T04:47:35.040380+00:00"}
+{"action": "stage_result", "details": {"stage": "plan", "status": "success", "tool_calls": 0, "output_length": 1841}, "timestamp": "2026-04-17T04:48:03.579619+00:00"}
+{"action": "handoff_validation", "details": {"from": "plan", "to": "code_gen", "is_valid": true, "errors": 0, "warnings": 0}, "timestamp": "2026-04-17T04:48:03.580757+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "code_gen", "retry_limit": 0}, "timestamp": "2026-04-17T04:48:03.582268+00:00"}
+{"action": "stage_result", "details": {"stage": "code_gen", "status": "failed", "tool_calls": 8, "output_length": 108}, "timestamp": "2026-04-17T04:51:52.549903+00:00"}
+{"action": "pipeline_attempt_failed", "details": {"stage": "code_gen", "attempt": 1, "error": "CodeGen compilation failed — check tool call results for errors"}, "timestamp": "2026-04-17T04:51:52.551175+00:00"}
+{"action": "pipeline_stage_failed", "details": {"stage": "code_gen", "error": "CodeGen compilation failed — check tool call results for errors", "duration_seconds": 228.97}, "timestamp": "2026-04-17T04:51:52.553105+00:00"}
+{"action": "pipeline_start", "details": {"target_spec": {"targets": ["dram_latency_cycles", "l2_cache_size_mb", "actual_boost_clock_mhz"]}}, "timestamp": "2026-04-17T04:52:11.906838+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "plan", "retry_limit": 0}, "timestamp": "2026-04-17T04:52:11.906838+00:00"}
+{"action": "stage_result", "details": {"stage": "plan", "status": "success", "tool_calls": 0, "output_length": 1726}, "timestamp": "2026-04-17T04:52:39.114462+00:00"}
+{"action": "handoff_validation", "details": {"from": "plan", "to": "code_gen", "is_valid": true, "errors": 0, "warnings": 0}, "timestamp": "2026-04-17T04:52:39.115455+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "code_gen", "retry_limit": 0}, "timestamp": "2026-04-17T04:52:39.116969+00:00"}
+{"action": "stage_result", "details": {"stage": "code_gen", "status": "failed", "tool_calls": 7, "output_length": 9565}, "timestamp": "2026-04-17T04:55:06.201062+00:00"}
+{"action": "pipeline_attempt_failed", "details": {"stage": "code_gen", "attempt": 1, "error": "CodeGen compilation failed — check tool call results for errors"}, "timestamp": "2026-04-17T04:55:06.203574+00:00"}
+{"action": "pipeline_stage_failed", "details": {"stage": "code_gen", "error": "CodeGen compilation failed — check tool call results for errors", "duration_seconds": 147.09}, "timestamp": "2026-04-17T04:55:06.204588+00:00"}
+{"action": "pipeline_start", "details": {"target_spec": {"targets": ["dram_latency_cycles", "l2_cache_size_mb", "actual_boost_clock_mhz"]}}, "timestamp": "2026-04-17T04:56:23.431190+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "plan", "retry_limit": 0}, "timestamp": "2026-04-17T04:56:23.431190+00:00"}
+{"action": "stage_result", "details": {"stage": "plan", "status": "success", "tool_calls": 0, "output_length": 2167}, "timestamp": "2026-04-17T04:56:48.267243+00:00"}
+{"action": "handoff_validation", "details": {"from": "plan", "to": "code_gen", "is_valid": true, "errors": 0, "warnings": 0}, "timestamp": "2026-04-17T04:56:48.267243+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "code_gen", "retry_limit": 0}, "timestamp": "2026-04-17T04:56:48.268254+00:00"}
+{"action": "stage_result", "details": {"stage": "code_gen", "status": "failed", "tool_calls": 10, "output_length": 29}, "timestamp": "2026-04-17T04:58:50.221992+00:00"}
+{"action": "pipeline_attempt_failed", "details": {"stage": "code_gen", "attempt": 1, "error": "CodeGen compilation failed — check tool call results for errors"}, "timestamp": "2026-04-17T04:58:50.223013+00:00"}
+{"action": "pipeline_stage_failed", "details": {"stage": "code_gen", "error": "CodeGen compilation failed — check tool call results for errors", "duration_seconds": 121.95}, "timestamp": "2026-04-17T04:58:50.224113+00:00"}
+{"action": "pipeline_start", "details": {"target_spec": {"targets": ["dram_latency_cycles", "l2_cache_size_mb", "actual_boost_clock_mhz"]}}, "timestamp": "2026-04-17T05:27:25.529541+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "plan", "retry_limit": 0}, "timestamp": "2026-04-17T05:27:25.532408+00:00"}
+{"action": "stage_result", "details": {"stage": "plan", "status": "success", "tool_calls": 0, "output_length": 2590}, "timestamp": "2026-04-17T05:27:57.968610+00:00"}
+{"action": "handoff_validation", "details": {"from": "plan", "to": "code_gen", "is_valid": true, "errors": 0, "warnings": 0}, "timestamp": "2026-04-17T05:27:57.969658+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "code_gen", "retry_limit": 0}, "timestamp": "2026-04-17T05:27:57.969658+00:00"}
+{"action": "stage_result", "details": {"stage": "code_gen", "status": "success", "tool_calls": 8, "output_length": 27}, "timestamp": "2026-04-17T05:31:02.588889+00:00"}
+{"action": "handoff_validation", "details": {"from": "code_gen", "to": "metric_analysis", "is_valid": true, "errors": 0, "warnings": 1}, "timestamp": "2026-04-17T05:31:02.590567+00:00"}
+{"action": "handoff_warning", "details": {"stage": "CODE_GEN", "field": "measurements", "message": "CodeGen compiled binaries but produced no measurement output"}, "timestamp": "2026-04-17T05:31:02.590567+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "metric_analysis", "retry_limit": 0}, "timestamp": "2026-04-17T05:31:02.592382+00:00"}
+{"action": "stage_result", "details": {"stage": "metric_analysis", "status": "success", "tool_calls": 0, "output_length": 1293}, "timestamp": "2026-04-17T05:31:38.014263+00:00"}
+{"action": "p7_audit", "details": {"generation_fingerprint": "481ae720ba97109d", "verification_context_tokens": 0, "status": "clean"}, "timestamp": "2026-04-17T05:31:38.017888+00:00"}
+{"action": "handoff_validation", "details": {"from": "metric_analysis", "to": "verification", "is_valid": true, "errors": 0, "warnings": 2}, "timestamp": "2026-04-17T05:31:38.018899+00:00"}
+{"action": "handoff_warning", "details": {"stage": "METRIC_ANALYSIS", "field": "data", "message": "MetricAnalysis produced no bottleneck classification or metrics"}, "timestamp": "2026-04-17T05:31:38.018899+00:00"}
+{"action": "handoff_warning", "details": {"stage": "METRIC_ANALYSIS", "field": "structured_output", "message": "MetricAnalysis output is unstructured — Verification may struggle"}, "timestamp": "2026-04-17T05:31:38.018899+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "verification", "retry_limit": 0}, "timestamp": "2026-04-17T05:31:38.018899+00:00"}
+{"action": "stage_result", "details": {"stage": "verification", "status": "rejected", "tool_calls": 0, "output_length": 1269}, "timestamp": "2026-04-17T05:31:44.879508+00:00"}
+{"action": "pipeline_stage_failed", "details": {"stage": "verification", "error": "Verification rejected: I need to analyze the benchmark results for the target \"unknown\", but I can see from the conversation history that no actual benchmark data has been generated yet. The system attempted to create and run CUDA micro-benchmarks for the specified targets (dram_latency_cycles, l2_cache_size_mb, actual_bo", "duration_seconds": 6.86}, "timestamp": "2026-04-17T05:31:44.879508+00:00"}
+{"action": "pipeline_start", "details": {"target_spec": {"targets": ["dram_latency_cycles", "l2_cache_size_mb", "actual_boost_clock_mhz"]}}, "timestamp": "2026-04-17T05:32:04.600729+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "plan", "retry_limit": 0}, "timestamp": "2026-04-17T05:32:04.602984+00:00"}
+{"action": "stage_result", "details": {"stage": "plan", "status": "success", "tool_calls": 0, "output_length": 2010}, "timestamp": "2026-04-17T05:32:27.718999+00:00"}
+{"action": "handoff_validation", "details": {"from": "plan", "to": "code_gen", "is_valid": true, "errors": 0, "warnings": 0}, "timestamp": "2026-04-17T05:32:27.720565+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "code_gen", "retry_limit": 0}, "timestamp": "2026-04-17T05:32:27.721104+00:00"}
+{"action": "stage_result", "details": {"stage": "code_gen", "status": "failed", "tool_calls": 5, "output_length": 27}, "timestamp": "2026-04-17T05:35:45.423550+00:00"}
+{"action": "pipeline_attempt_failed", "details": {"stage": "code_gen", "attempt": 1, "error": "CodeGen compilation failed — check tool call results for errors"}, "timestamp": "2026-04-17T05:35:45.425070+00:00"}
+{"action": "pipeline_stage_failed", "details": {"stage": "code_gen", "error": "CodeGen compilation failed — check tool call results for errors", "duration_seconds": 197.7}, "timestamp": "2026-04-17T05:35:45.425530+00:00"}
+{"action": "pipeline_start", "details": {"target_spec": {"targets": ["dram_latency_cycles", "l2_cache_size_mb", "actual_boost_clock_mhz"]}}, "timestamp": "2026-04-17T05:36:02.233127+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "plan", "retry_limit": 0}, "timestamp": "2026-04-17T05:36:02.235441+00:00"}
+{"action": "stage_result", "details": {"stage": "plan", "status": "success", "tool_calls": 0, "output_length": 1601}, "timestamp": "2026-04-17T05:36:21.562766+00:00"}
+{"action": "handoff_validation", "details": {"from": "plan", "to": "code_gen", "is_valid": true, "errors": 0, "warnings": 0}, "timestamp": "2026-04-17T05:36:21.564162+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "code_gen", "retry_limit": 0}, "timestamp": "2026-04-17T05:36:21.564835+00:00"}
+{"action": "stage_result", "details": {"stage": "code_gen", "status": "failed", "tool_calls": 5, "output_length": 27}, "timestamp": "2026-04-17T05:39:48.926213+00:00"}
+{"action": "pipeline_attempt_failed", "details": {"stage": "code_gen", "attempt": 1, "error": "CodeGen compilation failed — check tool call results for errors"}, "timestamp": "2026-04-17T05:39:48.932054+00:00"}
+{"action": "pipeline_stage_failed", "details": {"stage": "code_gen", "error": "CodeGen compilation failed — check tool call results for errors", "duration_seconds": 207.36}, "timestamp": "2026-04-17T05:39:48.932054+00:00"}
+{"action": "pipeline_start", "details": {"target_spec": {"targets": ["dram_latency_cycles", "l2_cache_size_mb", "actual_boost_clock_mhz"]}}, "timestamp": "2026-04-17T06:14:03.681465+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "plan", "retry_limit": 0}, "timestamp": "2026-04-17T06:14:03.681465+00:00"}
+{"action": "stage_result", "details": {"stage": "plan", "status": "success", "tool_calls": 0, "output_length": 2296}, "timestamp": "2026-04-17T06:14:34.835076+00:00"}
+{"action": "handoff_validation", "details": {"from": "plan", "to": "code_gen", "is_valid": true, "errors": 0, "warnings": 0}, "timestamp": "2026-04-17T06:14:34.835076+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "code_gen", "retry_limit": 0}, "timestamp": "2026-04-17T06:14:34.837864+00:00"}
+{"action": "stage_result", "details": {"stage": "code_gen", "status": "failed", "tool_calls": 3, "output_length": 13508}, "timestamp": "2026-04-17T06:19:59.528503+00:00"}
+{"action": "pipeline_attempt_failed", "details": {"stage": "code_gen", "attempt": 1, "error": "CodeGen compilation failed — check tool call results for errors"}, "timestamp": "2026-04-17T06:19:59.528503+00:00"}
+{"action": "pipeline_stage_failed", "details": {"stage": "code_gen", "error": "CodeGen compilation failed — check tool call results for errors", "duration_seconds": 324.7}, "timestamp": "2026-04-17T06:19:59.530537+00:00"}
+{"action": "pipeline_start", "details": {"target_spec": {"targets": ["dram_latency_cycles", "l2_cache_size_mb", "actual_boost_clock_mhz"]}}, "timestamp": "2026-04-17T06:27:09.867703+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "plan", "retry_limit": 0}, "timestamp": "2026-04-17T06:27:09.867703+00:00"}
+{"action": "stage_result", "details": {"stage": "plan", "status": "success", "tool_calls": 0, "output_length": 1827}, "timestamp": "2026-04-17T06:27:37.680342+00:00"}
+{"action": "handoff_validation", "details": {"from": "plan", "to": "code_gen", "is_valid": true, "errors": 0, "warnings": 0}, "timestamp": "2026-04-17T06:27:37.682236+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "code_gen", "retry_limit": 0}, "timestamp": "2026-04-17T06:27:37.682921+00:00"}
+{"action": "stage_result", "details": {"stage": "code_gen", "status": "failed", "tool_calls": 6, "output_length": 27}, "timestamp": "2026-04-17T06:32:16.820505+00:00"}
+{"action": "pipeline_attempt_failed", "details": {"stage": "code_gen", "attempt": 1, "error": "CodeGen compilation failed — check tool call results for errors"}, "timestamp": "2026-04-17T06:32:16.820505+00:00"}
+{"action": "pipeline_stage_failed", "details": {"stage": "code_gen", "error": "CodeGen compilation failed — check tool call results for errors", "duration_seconds": 279.14}, "timestamp": "2026-04-17T06:32:16.820505+00:00"}

@@ -1,0 +1,13 @@
+{
+  "report_type": "pipeline_audit",
+  "generated_at": "2026-04-17T05:31:44.922802+00:00",
+  "start_time": "2026-04-17T05:27:25.529541+00:00",
+  "end_time": "2026-04-17T05:31:44.883383+00:00",
+  "stages": [],
+  "handoffs": [],
+  "circuit_breaker": null,
+  "p7_audit": {},
+  "tool_executions": [],
+  "errors": [],
+  "final_status": "rejected"
+}

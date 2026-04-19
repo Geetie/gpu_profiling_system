@@ -1,0 +1,10 @@
+{
+  "session_id": "sess_ad40d900",
+  "goal": "dram_latency_cycles l2_cache_size_mb actual_boost_clock_mhz",
+  "step_count": 0,
+  "is_complete": false,
+  "error": "CodeGen compilation failed — check tool call results for errors",
+  "created_at": "2026-04-17T04:56:23.252190+00:00",
+  "updated_at": "2026-04-17T04:58:50.224113+00:00",
+  "context_snapshot": {}
+}

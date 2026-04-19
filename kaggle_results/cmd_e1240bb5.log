@@ -1,0 +1,39 @@
+Command: /usr/bin/python3 -m src.main Profile GPU hardware parameters for the given targets --pipeline --target-spec /kaggle/working/gpu_profiling_system/config/target_spec.json --output-dir /kaggle/working --state-dir /kaggle/working/.state --no-docker --mode high_autonomy --max-turns 50 --max-tokens 16000
+CWD: /kaggle/working/gpu_profiling_system
+Exit code: 1
+
+STDOUT:
+[session] Created session: sess_af4ee40b
+[sandbox] Using LocalSandbox (dev mode)
+[Sandbox] Kaggle environment detected (KAGGLE_KERNEL_RUN_TYPE=Interactive)
+[Sandbox] Using isolated sandbox: /kaggle/working/gpu_profiling_system/.kaggle_sandbox
+15:25:11 [INFO] src.application.subagents.planner: [Planner] Tool isolation active: 0 tools registered. Planner outputs pure JSON text only, no tool calls.
+OK 加载供应商配置: Anthropic Claude
+OK 加载供应商配置: 阿里云百炼
+OK 加载供应商配置: 美团 LongCat API
+[llm] Provider manager loaded: ['anthropic', 'aliyun_bailian', 'longcat']
+[llm] Selected provider: longcat (model: LongCat-Flash-Chat)
+[llm] Models: main=LongCat-Flash-Chat, code=LongCat-Flash-Chat, reasoning=LongCat-Flash-Chat
+[model_caller] Using provider: longcat
+[llm] PlannerAgent -> LongCat-Flash-Chat (Provider: longcat)
+[model_caller] Using provider: longcat
+[llm] CodeGenAgent -> LongCat-Flash-Chat (Provider: longcat)
+[model_caller] Using provider: longcat
+[llm] MetricAnalysisAgent -> LongCat-Flash-Chat (Provider: longcat)
+[model_caller] Using provider: longcat
+[llm] VerificationAgent -> LongCat-Flash-Chat (Provider: longcat)
+[32mPipeline mode — Session sess_af4ee40b[0m
+[model_caller] Using provider: longcat
+[llm] Model caller configured from config/api_config.json
+[Pipeline] Starting pipeline with targets: ['dram_latency_cycles', 'l2_cache_size_mb', 'actual_boost_clock_mhz']
+[Pipeline] Executing stage: plan
+15:25:11 [INFO] src.domain.stage_executor: [StageExecutor] Starting stage plan with 0 retries
+
+[31m[FAIL][0m  (460.0s)
+
+[31m[pipeline] ERROR[0m
+  [36mmessage[0m: ApprovalQueue.__init__() missing 1 required positional argument: 'state_dir'
+
+
+
+STDERR:

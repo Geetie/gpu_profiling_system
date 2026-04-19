@@ -322,7 +322,7 @@ class StageExecutor:
         if self._sandbox and self._tool_handlers:
             handlers = dict(self._tool_handlers)
             registry = agent.tool_registry
-            approval_queue = ApprovalQueue()
+            approval_queue = ApprovalQueue(state_dir=self._state_dir)
             permission_checker = PermissionChecker(mode=agent.permission_mode)
             persister = self._persister or StatePersister(state_dir=self._state_dir)
             validator = SchemaValidator()

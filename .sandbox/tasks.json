@@ -1,0 +1,17 @@
+[
+  {
+    "target": "dram_latency_cycles",
+    "category": "latency_measurement",
+    "method": "Use CUDA memory access patterns with increasing stride lengths to measure DRAM access latency. Implement a pointer-chasing benchmark that forces serialized memory accesses, measuring the time difference between cache hits and DRAM accesses. Use cudaEventRecord for high-precision timing and calculate latency in GPU clock cycles by dividing elapsed time by GPU clock period."
+  },
+  {
+    "target": "l2_cache_size_mb",
+    "category": "capacity_measurement",
+    "method": "Implement a cache capacity test using progressively larger memory working sets. Allocate buffers of increasing sizes and measure access latency. The L2 cache size is determined by finding the point where access latency significantly increases, indicating cache capacity limits. Use CUDA streams and events for precise timing measurements across different buffer sizes."
+  },
+  {
+    "target": "actual_boost_clock_mhz",
+    "category": "clock_measurement",
+    "method": "Measure the actual GPU boost clock frequency under load by running a compute-intensive kernel for an extended period. Use cudaEventRecord to measure execution time of a known number of compute operations, then calculate the effective clock frequency. Compare with nvidia-smi reported clocks and account for thermal throttling effects during sustained workloads."
+  }
+]

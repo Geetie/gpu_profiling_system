@@ -1,0 +1,19 @@
+{
+  "tasks": [
+    {
+      "target": "dram_latency_cycles",
+      "category": "latency_measurement",
+      "method": "Write a CUDA kernel that measures DRAM access latency by performing pointer-chasing through a large array that exceeds L2 cache size. Use a linked list structure in global memory where each element points to another random location. Measure the time for multiple iterations using CUDA events, ensuring memory accesses cannot be optimized away. Calculate average cycles per access by dividing elapsed time by number of accesses and GPU clock frequency."
+    },
+    {
+      "target": "l2_cache_size_mb",
+      "category": "capacity_measurement",
+      "method": "Implement a cache size detection algorithm using progressively larger working sets. Create CUDA kernels that access arrays of varying sizes and measure access times. Start with small arrays that fit in L2 cache and gradually increase size until access time significantly increases, indicating cache capacity exceeded. Use binary search to pinpoint the exact capacity threshold. Convert from bytes to MB for final result."
+    },
+    {
+      "target": "actual_boost_clock_mhz",
+      "category": "clock_measurement",
+      "method": "Create a CUDA kernel that performs a large number of simple arithmetic operations in a tight loop with known iteration count. Measure execution time using CUDA events with high precision. Calculate actual clock frequency by dividing total operations by measured time, accounting for operations per cycle. Compare with theoretical maximum to determine boost behavior. Run multiple times to account for thermal throttling and power management."
+    }
+  ]
+}

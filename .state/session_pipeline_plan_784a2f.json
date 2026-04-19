@@ -1,0 +1,10 @@
+{
+  "session_id": "pipeline_plan_784a2f",
+  "goal": "Pipeline stage: plan",
+  "step_count": 2,
+  "is_complete": false,
+  "error": null,
+  "created_at": "2026-04-17T04:56:23.432195+00:00",
+  "updated_at": "2026-04-17T04:56:30.977922+00:00",
+  "context_snapshot": {}
+}

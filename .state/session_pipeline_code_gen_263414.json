@@ -1,0 +1,10 @@
+{
+  "session_id": "pipeline_code_gen_263414",
+  "goal": "Pipeline stage: code_gen",
+  "step_count": 7,
+  "is_complete": false,
+  "error": null,
+  "created_at": "2026-04-15T12:04:38.042999+00:00",
+  "updated_at": "2026-04-15T12:05:20.738041+00:00",
+  "context_snapshot": {}
+}

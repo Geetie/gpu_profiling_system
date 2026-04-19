@@ -1,0 +1,7 @@
+{"timestamp": "2026-04-19T15:25:10", "step": "environment", "status": "pass", "details": {}}
+{"timestamp": "2026-04-19T15:25:11", "step": "api_config", "status": "configured", "details": {}}
+{"timestamp": "2026-04-19T15:25:11", "step": "target_spec", "status": "created", "details": {}}
+{"timestamp": "2026-04-19T15:25:11", "step": "probes", "status": "skipped", "details": {}}
+{"timestamp": "2026-04-19T15:25:11", "step": "pipeline", "status": "fail", "details": {}}
+{"timestamp": "2026-04-19T15:25:11", "step": "results", "status": "fail", "details": {}}
+{"timestamp": "2026-04-19T15:25:11", "step": "artifacts", "status": "collected", "details": {}}

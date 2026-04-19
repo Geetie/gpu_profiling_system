@@ -1,0 +1,2 @@
+{"action": "pipeline_start", "details": {"target_spec": {"targets": ["dram_latency_cycles", "l2_cache_size_mb", "actual_boost_clock_mhz"]}}, "timestamp": "2026-04-19T15:25:11.757024+00:00"}
+{"action": "pipeline_stage_start", "details": {"stage": "plan", "retry_limit": 0}, "timestamp": "2026-04-19T15:25:11.757207+00:00"}
