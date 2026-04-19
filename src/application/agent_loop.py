@@ -365,8 +365,8 @@ class AgentLoop:
                         return
                 else:
                     print(f"[AgentLoop] Using LLM-provided binary_path: {bp_arg}")
-                        self._persist_state()
-                        return
+                    self._persist_state()
+                    return
             print(f"[AgentLoop] Tool call: {tool_call.name}({list(tool_call.arguments.keys())})")
             self._emit(EventKind.TOOL_CALL, {
                 "tool": tool_call.name,
