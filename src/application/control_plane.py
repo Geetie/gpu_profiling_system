@@ -119,7 +119,7 @@ class ControlPlane:
 
     Before each inference, the control plane:
     1. Takes a fresh snapshot of the system
-    2. Assembles read-only context (env, rules, memory)
+    2. Assembles read-only context (env, rules, memory, progress)
     3. Injects it as a system-level prompt prefix
 
     The model has zero write access to any injected data.
@@ -132,6 +132,7 @@ class ControlPlane:
     ) -> None:
         self._rule_dir = rule_dir
         self._memory_entries = memory_entries or []
+        self._progress: dict[str, Any] = {}
 
     def take_snapshot(self) -> SystemSnapshot:
         """Capture a fresh, independent system snapshot."""
@@ -140,12 +141,33 @@ class ControlPlane:
     def inject(self) -> InjectedContext:
         """Build a read-only injected context from the current snapshot."""
         snapshot = self.take_snapshot()
+        memory = list(self._memory_entries)
+        if self._progress:
+            measured = self._progress.get("measured_targets", [])
+            remaining = self._progress.get("remaining_targets", [])
+            compile_count = self._progress.get("compile_count", 0)
+            exec_count = self._progress.get("exec_count", 0)
+            memory.append(
+                f"Progress: {len(measured)}/{len(measured)+len(remaining)} targets measured. "
+                f"Compiles: {compile_count}, Executions: {exec_count}. "
+                f"Remaining: {', '.join(remaining) if remaining else 'none'}"
+            )
         return InjectedContext(
             working_dir=snapshot.working_dir,
             env_vars=snapshot.env_vars,
             rules=snapshot.rule_files,
-            memory_summary=list(self._memory_entries),
+            memory_summary=memory,
         )
+
+    def update_progress(self, measured_targets: list[str], remaining_targets: list[str],
+                        compile_count: int = 0, exec_count: int = 0) -> None:
+        """Update the progress tracking state for CodeGen workflow."""
+        self._progress = {
+            "measured_targets": measured_targets,
+            "remaining_targets": remaining_targets,
+            "compile_count": compile_count,
+            "exec_count": exec_count,
+        }
 
     def build_system_prompt(self) -> str:
         """Build the full system prompt with injected context."""

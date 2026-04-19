@@ -101,9 +101,18 @@ def execute_binary_handler(
             "return_code": result.return_code,
         }
 
+    stdout = result.stdout
+    if len(stdout) > 4000:
+        measurement_lines = [l for l in stdout.splitlines()
+                             if l.strip() and ":" in l and not l.strip().startswith("//")]
+        if measurement_lines:
+            stdout = "\n".join(measurement_lines) + f"\n...[{len(result.stdout.splitlines()) - len(measurement_lines)} other lines truncated]"
+        else:
+            stdout = stdout[:4000] + f"\n...[truncated, {len(result.stdout)} total chars]"
+
     return {
         "status": "success" if result.return_code == 0 else "error",
-        "stdout": result.stdout,
-        "stderr": result.stderr,
+        "stdout": stdout,
+        "stderr": result.stderr[:2000] if len(result.stderr) > 2000 else result.stderr,
         "return_code": result.return_code,
     }

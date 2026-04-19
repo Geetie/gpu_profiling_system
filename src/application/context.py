@@ -45,10 +45,10 @@ def _classify_priority(role: Role, content: str) -> Priority:
 
     Priority levels:
     - PERMANENT: Architecture info, user instructions, P7 constraints
-    - HIGH: Successful tool outputs (compile/execute results)
+    - HIGH: Successful tool outputs (compile/execute results), measurements
     - MEDIUM: Error messages, LLM natural language responses
-    - LOW: Control Plane snapshots, repetitive guidance
-    - DISPOSABLE: Old anti-loop guidance, duplicate entries
+    - LOW: Control Plane snapshots, repetitive guidance, design principles
+    - DISPOSABLE: Old anti-loop guidance, duplicate entries, short responses
     """
     if role == Role.SYSTEM:
         # Architecture detection info — always preserve
@@ -57,6 +57,15 @@ def _classify_priority(role: Role, content: str) -> Priority:
         # Control Plane — can be replaced each turn
         if "[ControlPlane]" in content:
             return Priority.LOW
+        # Design principle injections — LOW (can be truncated)
+        if "DESIGN PRINCIPLES" in content or "design principle" in content.lower():
+            return Priority.LOW
+        # Next target guidance — HIGH (critical for workflow)
+        if "NEXT TARGET" in content or "NEXT: Write CUDA code" in content:
+            return Priority.HIGH
+        # Compilation success + execute hint — HIGH
+        if "Compilation #" in content and "IMMEDIATELY call execute_binary" in content:
+            return Priority.HIGH
         # Error guidance — medium importance
         if "⚠️" in content or "ERROR" in content:
             return Priority.MEDIUM
@@ -80,6 +89,8 @@ def _classify_priority(role: Role, content: str) -> Priority:
                 if status == "error":
                     return Priority.MEDIUM
                 if "binary_path" in data and data.get("binary_path"):
+                    return Priority.HIGH
+                if "stdout" in data and data.get("stdout"):
                     return Priority.HIGH
         except (json.JSONDecodeError, TypeError):
             pass
@@ -123,9 +134,10 @@ def _summarize_entry(entry: ContextEntry) -> ContextEntry:
     """Summarize a context entry to reduce token usage.
 
     Preserves key information while reducing verbosity:
-    - Tool results: keep status, binary_path, key measurements
-    - Error messages: keep error type and hint
+    - Tool results: keep status, binary_path, key measurements from stdout
+    - Error messages: keep error type and hint, truncate stderr
     - Natural language: truncate to first sentence
+    - Design principles: keep first 200 chars only
     """
     if entry.role == Role.ASSISTANT:
         try:
@@ -138,12 +150,29 @@ def _summarize_entry(entry: ContextEntry) -> ContextEntry:
                     summary_parts.append(f"success={data['success']}")
                 if "binary_path" in data and data["binary_path"]:
                     summary_parts.append(f"binary_path={data['binary_path']}")
+                if "tool" in data:
+                    summary_parts.append(f"tool={data['tool']}")
+                if "stdout" in data and data["stdout"]:
+                    stdout = str(data["stdout"])
+                    measurement_lines = [l for l in stdout.splitlines()
+                                         if l.strip() and ":" in l and not l.strip().startswith("//")]
+                    if measurement_lines:
+                        summary_parts.append(f"measurements=[{'; '.join(measurement_lines[:10])}]")
+                    else:
+                        summary_parts.append(f"stdout={stdout[:150]}")
                 if "output" in data and data["output"]:
-                    output = str(data["output"])[:200]
+                    output = str(data["output"])[:150]
                     summary_parts.append(f"output={output}")
                 if "errors" in data and data["errors"]:
-                    errors = str(data["errors"])[:200]
-                    summary_parts.append(f"errors={errors}")
+                    errors = str(data["errors"])
+                    error_lines = errors.splitlines()
+                    if len(error_lines) > 3:
+                        summary_parts.append(f"errors=[{'; '.join(error_lines[:3])}; ...{len(error_lines)-3} more]")
+                    else:
+                        summary_parts.append(f"errors={errors[:200]}")
+                if "stderr" in data and data["stderr"]:
+                    stderr = str(data["stderr"])[:200]
+                    summary_parts.append(f"stderr={stderr}")
                 if "next_action" in data:
                     summary_parts.append(f"next_action={data['next_action']}")
                 if "parsed_metrics" in data and data["parsed_metrics"]:
@@ -151,6 +180,8 @@ def _summarize_entry(entry: ContextEntry) -> ContextEntry:
                     summary_parts.append(f"metrics={metrics}")
                 if "has_warning" in data:
                     summary_parts.append(f"has_warning={data['has_warning']}")
+                if "return_code" in data:
+                    summary_parts.append(f"return_code={data['return_code']}")
                 if summary_parts:
                     summary = "[SUMMARY] " + ", ".join(summary_parts)
                     return ContextEntry(
@@ -165,6 +196,23 @@ def _summarize_entry(entry: ContextEntry) -> ContextEntry:
             return ContextEntry(
                 role=entry.role,
                 content=entry.content[:200] + "...[truncated]",
+                priority=entry.priority,
+            )
+
+    if entry.role == Role.SYSTEM:
+        # Truncate long design principle injections
+        if "DESIGN PRINCIPLES" in entry.content or "design principle" in entry.content.lower():
+            if len(entry.content) > 500:
+                return ContextEntry(
+                    role=entry.role,
+                    content=entry.content[:500] + "\n...[principle truncated]",
+                    priority=entry.priority,
+                )
+        # Truncate long error guidance
+        if "⚠️" in entry.content and len(entry.content) > 400:
+            return ContextEntry(
+                role=entry.role,
+                content=entry.content[:400] + "\n...[guidance truncated]",
                 priority=entry.priority,
             )
 

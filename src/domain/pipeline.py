@@ -163,8 +163,12 @@ class Pipeline:
                     code_gen_idx = self._find_stage_index(PipelineStage.CODE_GEN)
                     if code_gen_idx is not None:
                         stage_idx = code_gen_idx
+                        planner_result = ctx.get_stage_result(PipelineStage.PLAN)
                         ctx.prev_result = None
                         ctx.prev_stage = None
+                        if planner_result is not None:
+                            ctx.prev_result = planner_result
+                            ctx.prev_stage = PipelineStage.PLAN
                         continue
                 else:
                     print(
@@ -198,8 +202,9 @@ class Pipeline:
                             "bottleneck_type": bottleneck_type,
                             "bottleneck_sub_type": bottleneck_sub_type,
                             "fixes_count": len(suggested_fixes),
-                            "recommendations_count": len(recommendations),
                         })
+            elif step.stage == PipelineStage.VERIFICATION:
+                ctx.bubble_codegen_data(result)
 
             stage_idx += 1
 

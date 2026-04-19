@@ -52,16 +52,21 @@ class StagePromptBuilder:
     def _plan_system() -> str:
         return (
             "You are a GPU profiling expert. Your task is to create a detailed "
-            "plan for measuring a specific GPU hardware characteristic.\n\n"
-            "You must use the available tools to research and plan. "
-            "Do NOT write CUDA code — that is the CodeGen agent's job.\n\n"
+            "plan for measuring specific GPU hardware characteristics.\n\n"
+            "You do NOT have any tools available. Your ONLY output should be a JSON array "
+            "of task objects.\n\n"
+            "DO NOT attempt to call any tools (write_file, compile_cuda, etc.) — "
+            "you have NO tools. Just output your plan as JSON text.\n\n"
             "Your plan should include:\n"
             "1. Which GPU micro-architectural feature to measure\n"
             "2. What measurement technique to use (pointer-chasing, sweep, etc.)\n"
             "3. What anti-cheat strategies are needed\n"
             "4. Expected result ranges for validation\n\n"
-            "IMPORTANT: You MUST call tools during your turn. "
-            "A text-only response without tool calls is a failure."
+            "OUTPUT FORMAT: A JSON array of task objects, each with:\n"
+            '  "target": the measurement target name\n'
+            '  "category": one of latency_measurement, capacity_measurement, '
+            'clock_measurement, bandwidth_measurement, or unknown\n'
+            '  "method": detailed description of the measurement approach\n'
         )
 
     @staticmethod

@@ -40,6 +40,7 @@ class PipelineContext:
     max_iterations: int = 3
     rejection_history: list[dict[str, Any]] = field(default_factory=list)
     metric_feedback: list[dict[str, Any]] = field(default_factory=list)
+    _stage_results: dict[str, SubAgentResult] = field(default_factory=dict)
 
     # L0: Permanent memory — never compressed
     architecture_info: dict[str, Any] = field(default_factory=dict)
@@ -58,12 +59,12 @@ class PipelineContext:
         - L1: Key measurements and binary paths from CodeGen
         - L2: Stage summaries and error patterns from all stages
         """
-        if stage == PipelineStage.CODE_GEN and result.is_success():
+        if stage == PipelineStage.CODE_GEN:
             self.code_gen_data = dict(result.data)
-            # L1: Extract key measurements and binary paths
-            if "measurements" in result.data and isinstance(result.data["measurements"], dict):
-                for k, v in result.data["measurements"].items():
-                    self.key_measurements[k] = v
+            if result.is_success():
+                if "measurements" in result.data and isinstance(result.data["measurements"], dict):
+                    for k, v in result.data["measurements"].items():
+                        self.key_measurements[k] = v
             if "binary_path" in result.data:
                 bp = result.data["binary_path"]
                 if isinstance(bp, str) and bp not in self.binary_paths:
@@ -91,10 +92,18 @@ class PipelineContext:
 
         self.prev_result = result
         self.prev_stage = stage
+        self._stage_results[stage.value] = result
 
     def append_history(self, role: str, content: str) -> None:
         """Append a conversation entry for cross-Stage context inheritance."""
         self.conversation_history.append({"role": role, "content": content})
+
+    def get_stage_result(self, stage: PipelineStage) -> SubAgentResult | None:
+        """Retrieve the result from a specific pipeline stage.
+
+        Returns None if the stage has not yet completed.
+        """
+        return self._stage_results.get(stage.value)
 
     def get_history(self, limit: int = 20) -> list[dict[str, str]]:
         """Return the most recent conversation history entries."""

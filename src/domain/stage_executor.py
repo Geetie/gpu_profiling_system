@@ -18,7 +18,12 @@ from src.application.agent_loop import AgentLoop
 from src.application.context import Role
 from src.application.control_plane import ControlPlane
 from src.application.session import SessionState
-from src.domain.permission import PermissionMode
+from src.application.tool_runner import ToolRunner
+from src.application.approval_queue import ApprovalQueue, ApprovalStatus
+from src.domain.permission import PermissionMode, PermissionChecker
+from src.domain.schema_validator import SchemaValidator
+from src.domain.tool_contract import ToolRegistry
+from src.infrastructure.state_persist import StatePersister
 from src.domain.pipeline_context import PipelineContext
 from src.domain.prompt_builder import StagePromptBuilder
 from src.domain.subagent import (
@@ -316,7 +321,20 @@ class StageExecutor:
 
         if self._sandbox and self._tool_handlers:
             handlers = dict(self._tool_handlers)
-            loop.set_tool_executor(lambda tool_name, args: handlers[tool_name](args))
+            registry = agent.tool_registry
+            approval_queue = ApprovalQueue()
+            permission_checker = PermissionChecker(mode=agent.permission_mode)
+            persister = self._persister or StatePersister(state_dir=self._state_dir)
+            validator = SchemaValidator()
+            tool_runner = ToolRunner(
+                registry=registry,
+                tool_handlers=handlers,
+                approval_queue=approval_queue,
+                permission_checker=permission_checker,
+                persister=persister,
+                validator=validator,
+            )
+            loop.set_tool_executor(tool_runner.execute)
             loop.set_available_tools(self._build_tool_schemas(handlers, agent.tool_registry))
 
         if agent.permission_mode == PermissionMode.HIGH_AUTONOMY:

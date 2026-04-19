@@ -270,12 +270,12 @@ class CodeGenAgent(BaseSubAgent):
         Automatically detects GPU architecture and passes -arch=sm_XX to nvcc.
         This fixes the compilation error on Tesla P100 (sm_60) and other GPUs.
 
-        Uses target-specific binary name to prevent multi-target conflicts.
-        Compiles to a subdirectory to avoid polluting sandbox root.
+        Uses fixed 'benchmark' as binary name to match compile_cuda_handler output.
+        This ensures _already_executed_binary position checking works correctly
+        across both Pipeline and non-Pipeline modes.
         """
         arch = self._detect_gpu_arch()
-        safe_target = target.replace(" ", "_").replace("-", "_").replace(".", "_")
-        binary_name = f"benchmark_{safe_target}"
+        binary_name = "benchmark"
 
         import os
         source_dir = os.path.join(self._sandbox.sandbox_root, "src")
@@ -290,6 +290,7 @@ class CodeGenAgent(BaseSubAgent):
                 "command": "nvcc",
                 "arch": arch,
                 "binary_name": binary_name,
+                "target": target,
                 "source_dir": source_dir,
                 "binary_dir": binary_dir,
             },

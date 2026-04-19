@@ -280,22 +280,75 @@ class AgentLoop:
                     self._persist_state()
                     return
 
-            # P2 Harness: auto-inject binary_path when LLM omits it
-            # But only if this binary hasn't already been executed (prevent re-exec loop)
-            if tool_call.name == "execute_binary" and not tool_call.arguments.get("binary_path"):
-                last_bp = self._find_last_binary_path()
-                if last_bp and not self._already_executed_binary(last_bp):
-                    tool_call.arguments["binary_path"] = last_bp
-                    print(f"[AgentLoop] P2 auto-inject: binary_path={last_bp}")
-                elif last_bp:
-                    print(f"[AgentLoop] P2 auto-inject SKIPPED: {last_bp} already executed, LLM should compile new code")
-                    self.context_manager.add_entry(
-                        Role.SYSTEM,
-                        f"⚠️ You already executed {last_bp}. Do NOT execute the same binary again.\n"
-                        f"If you need to measure a DIFFERENT target, write NEW CUDA code and call compile_cuda first.\n"
-                        f"If you have measured all targets, output your final results as: target_name: value",
-                        token_count=50,
-                    )
+            if tool_call.name == "execute_binary":
+                bp_arg = tool_call.arguments.get("binary_path", "")
+                if not bp_arg or (isinstance(bp_arg, str) and not bp_arg.strip()):
+                    last_bp = self._find_last_binary_path()
+                    last_tool_was_compile = self._last_tool_was_compile()
+                    already_ran = self._already_executed_binary(last_bp) if last_bp else False
+
+                    if last_bp and (not already_ran or last_tool_was_compile):
+                        tool_call.arguments["binary_path"] = last_bp
+                        reason = "latest compile not yet executed" if last_tool_was_compile else "compile_count > exec_count"
+                        print(f"[AgentLoop] P2 auto-inject: binary_path={last_bp} (reason: {reason})")
+                    elif last_bp and already_ran and not last_tool_was_compile:
+                        print(f"[AgentLoop] P2 auto-inject SKIPPED: {last_bp} already executed after latest compile")
+                        unmeasured = self._find_unmeasured_targets()
+                        if unmeasured:
+                            from src.domain.design_principles import get_design_principle
+                            next_target = unmeasured[0]
+                            next_principle = get_design_principle(next_target)
+                            next_brief = next_principle[:300] if len(next_principle) > 300 else next_principle
+                            guidance = (
+                                f"⚠️ You already executed {last_bp} after its latest compilation.\n"
+                                f"But you have NOT measured all targets! Remaining: {unmeasured}\n\n"
+                                f"👉 NEXT TARGET: '{next_target}'\n"
+                                f"You MUST write NEW CUDA code for '{next_target}' and call compile_cuda.\n\n"
+                                f"Design principle for '{next_target}':\n{next_brief}\n\n"
+                                f"WORKFLOW:\n"
+                                f'  1. compile_cuda(source="...full .cu source for {next_target}...", flags=["-O3"])\n'
+                                f"  2. execute_binary(binary_path='<from compile>')\n\n"
+                                f"Do NOT call execute_binary again with the old binary."
+                            )
+                        else:
+                            guidance = (
+                                f"⚠️ You already executed {last_bp} after its latest compilation.\n"
+                                f"All targets have been measured. Output your final results as: target_name: value"
+                            )
+                        self.context_manager.add_entry(
+                            Role.SYSTEM,
+                            guidance,
+                            token_count=60,
+                        )
+                        already_ran_pattern = "execute_binary_already_ran"
+                        self._failure_tracker.record_failure(already_ran_pattern)
+                        if self._failure_tracker.should_terminate(already_ran_pattern):
+                            self._emit(EventKind.STOP, {
+                                "reason": "M4_repeated_already_ran",
+                                "pattern": already_ran_pattern,
+                            })
+                            self.stop()
+                            return
+                        self._persist_state()
+                        return
+                    else:
+                        self.context_manager.add_entry(
+                            Role.SYSTEM,
+                            "⚠️ execute_binary requires a 'binary_path' parameter, but no compiled binary exists.\n"
+                            "You MUST call compile_cuda FIRST to compile your CUDA code, then execute_binary.",
+                            token_count=40,
+                        )
+                        empty_exec_pattern = "execute_binary_no_path"
+                        self._failure_tracker.record_failure(empty_exec_pattern)
+                        if self._failure_tracker.should_terminate(empty_exec_pattern):
+                            self._emit(EventKind.STOP, {
+                                "reason": "M4_repeated_empty_exec",
+                                "pattern": empty_exec_pattern,
+                            })
+                            self.stop()
+                            return
+                        self._persist_state()
+                        return
             print(f"[AgentLoop] Tool call: {tool_call.name}({list(tool_call.arguments.keys())})")
             self._emit(EventKind.TOOL_CALL, {
                 "tool": tool_call.name,
@@ -336,6 +389,9 @@ class AgentLoop:
                     result_str,
                     token_count=estimated_tokens,
                 )
+                # Update Control Plane progress after each tool call
+                if isinstance(result, dict):
+                    self._update_control_plane_progress(result)
                 # When tool returns error status, add system guidance to help LLM learn
                 if isinstance(result, dict) and result.get("status") == "error":
                     error_msg = result.get("errors", result.get("error", ""))
@@ -406,15 +462,20 @@ class AgentLoop:
                     # Auto-inject binary_path hint after compile_cuda success
                     if tool_call.name == "compile_cuda" and result.get("binary_path"):
                         bp = result["binary_path"]
+                        compile_count = sum(1 for e in self.context_manager.get_entries()
+                                            if e.role.value == "assistant"
+                                            and _safe_get_tool(e) == "compile_cuda"
+                                            and _safe_get_success(e))
                         auto_hint = (
-                            f"✅ Compilation succeeded! Binary saved to: {bp}\n"
-                            f"👉 To run it, call: "
-                            f'{{"tool": "execute_binary", "args": {{"binary_path": "{bp}"}}}}'
+                            f"✅ Compilation #{compile_count} succeeded! Binary saved to: {bp}\n"
+                            f"👉 IMMEDIATELY call execute_binary to run this binary:\n"
+                            f'{{"tool": "execute_binary", "args": {{"binary_path": "{bp}"}}}}\n\n'
+                            f"⚠️ Do NOT output text. Do NOT write more code. CALL execute_binary NOW."
                         )
                         self.context_manager.add_entry(
                             Role.SYSTEM,
                             auto_hint,
-                            token_count=40,
+                            token_count=50,
                         )
                     # Detect implausible measurements (all zeros) after execute_binary
                     if tool_call.name == "execute_binary":
@@ -485,147 +546,220 @@ class AgentLoop:
                 "turn": self.loop_state.turn_count,
                 "output": self._model_output[:200],
             })
+            has_tools = len(self.tool_registry.list_tools()) > 0
             if self._completion_detector.is_completion(self._model_output):
-                unmeasured = self._find_unmeasured_targets()
-                if unmeasured:
-                    from src.domain.design_principles import get_design_principle
-                    next_target = unmeasured[0]
-                    next_principle = get_design_principle(next_target)
-                    next_brief = next_principle[:400] if len(next_principle) > 400 else next_principle
-                    self.context_manager.add_entry(
-                        Role.SYSTEM,
-                        f"⚠️ STOP — You said you're done, but NOT all targets are measured!\n"
-                        f"Missing targets: {unmeasured}\n\n"
-                        f"👉 You MUST measure '{next_target}' next.\n"
-                        f"Design principle for '{next_target}':\n{next_brief}\n\n"
-                        f"Call compile_cuda with NEW source code for '{next_target}'.\n"
-                        f"Do NOT output text — CALL the tool NOW.",
-                        token_count=80,
-                    )
-                    no_tool_pattern = "no_tool_call"
-                    self._failure_tracker.record_failure(no_tool_pattern)
-                    if self._failure_tracker.should_terminate(no_tool_pattern):
-                        self._emit(EventKind.STOP, {
-                            "reason": "M4_no_tool_repeat",
-                            "pattern": no_tool_pattern,
-                        })
+                if has_tools:
+                    unmeasured = self._find_unmeasured_targets()
+                    if unmeasured:
+                        from src.domain.design_principles import get_design_principle
+                        next_target = unmeasured[0]
+                        next_principle = get_design_principle(next_target)
+                        next_brief = next_principle[:400] if len(next_principle) > 400 else next_principle
+                        self.context_manager.add_entry(
+                            Role.SYSTEM,
+                            f"⚠️ STOP — You said you're done, but NOT all targets are measured!\n"
+                            f"Missing targets: {unmeasured}\n\n"
+                            f"👉 You MUST measure '{next_target}' next.\n"
+                            f"Design principle for '{next_target}':\n{next_brief}\n\n"
+                            f"Call compile_cuda with NEW source code for '{next_target}'.\n"
+                            f"Do NOT output text — CALL the tool NOW.",
+                            token_count=80,
+                        )
+                        no_tool_pattern = "no_tool_call"
+                        self._failure_tracker.record_failure(no_tool_pattern)
+                        if self._failure_tracker.should_terminate(no_tool_pattern):
+                            self._emit(EventKind.STOP, {
+                                "reason": "M4_no_tool_repeat",
+                                "pattern": no_tool_pattern,
+                            })
+                            self.stop()
+                            return
+                    else:
+                        self._emit(EventKind.STOP, {"reason": "completion_signal"})
                         self.stop()
                         return
                 else:
                     self._emit(EventKind.STOP, {"reason": "completion_signal"})
                     self.stop()
                     return
-            no_tool_pattern = "no_tool_call"
-            self._failure_tracker.record_failure(no_tool_pattern)
-            
-            # Dynamic system feedback based on context - guide LLM to the right next tool
-            # Check what tools have been called so far
-            context_entries = self.context_manager.get_entries()
-            has_compiled = False
-            has_executed = False
-            binary_path = ""
-            for entry in context_entries:
-                if entry.role.value == "assistant":
-                    try:
-                        d = json.loads(entry.content)
-                        if isinstance(d, dict):
-                            if d.get("tool") == "compile_cuda" and d.get("success"):
-                                has_compiled = True
-                                binary_path = d.get("binary_path", "")
-                            if d.get("tool") == "execute_binary":
-                                has_executed = True
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-            
-            if has_compiled and not has_executed and binary_path:
-                guidance = (
-                    f"⚠️ ERROR: You compiled the code but did NOT execute the binary!\n"
-                    f"You MUST now call execute_binary with the compiled binary:\n"
-                    f'{{"tool": "execute_binary", "args": {{"binary_path": "{binary_path}"}}}}\n'
-                    f"Do NOT output natural language — CALL the tool now."
-                )
-            elif has_compiled and has_executed:
-                unmeasured = self._find_unmeasured_targets()
-                if unmeasured:
-                    next_target = unmeasured[0]
-                    from src.domain.design_principles import get_design_principle
-                    principle_hint = get_design_principle(next_target)
-                    principle_brief = principle_hint[:500] if len(principle_hint) > 500 else principle_hint
+            if has_tools:
+                no_tool_pattern = "no_tool_call"
+                self._failure_tracker.record_failure(no_tool_pattern)
+                
+                context_entries = self.context_manager.get_entries()
+                has_compiled = False
+                has_executed = False
+                binary_path = ""
+                for entry in context_entries:
+                    if entry.role.value == "assistant":
+                        try:
+                            d = json.loads(entry.content)
+                            if isinstance(d, dict):
+                                if d.get("tool") == "compile_cuda" and d.get("success"):
+                                    has_compiled = True
+                                    binary_path = d.get("binary_path", "")
+                                if d.get("tool") == "execute_binary":
+                                    has_executed = True
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                
+                if has_compiled and not has_executed and binary_path:
                     guidance = (
-                        f"⚠️ CRITICAL: You have NOT measured all targets yet!\n"
-                        f"✅ Measured targets are done. Remaining: {unmeasured}\n\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"👉 NEXT TARGET: '{next_target}'\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"You MUST write NEW CUDA code for '{next_target}' and compile it.\n"
-                        f"Do NOT output text — CALL compile_cuda NOW.\n\n"
-                        f"Design principle for '{next_target}':\n{principle_brief}\n\n"
-                        f"MANDATORY WORKFLOW:\n"
-                        f'  1. compile_cuda(source="...full .cu source for {next_target}...", flags=["-O3"])\n'
-                        f"  2. execute_binary(binary_path='<from compile>')\n"
-                        f"  3. Record the measured value\n\n"
-                        f"⚠️ Do NOT skip '{next_target}'. The pipeline will FAIL if any target is missing."
+                        f"⚠️ ERROR: You compiled the code but did NOT execute the binary!\n"
+                        f"You MUST now call execute_binary with the compiled binary:\n"
+                        f'{{"tool": "execute_binary", "args": {{"binary_path": "{binary_path}"}}}}\n'
+                        f"Do NOT output natural language — CALL the tool now."
                     )
+                elif has_compiled and has_executed:
+                    unmeasured = self._find_unmeasured_targets()
+                    if unmeasured:
+                        next_target = unmeasured[0]
+                        from src.domain.design_principles import get_design_principle
+                        principle_hint = get_design_principle(next_target)
+                        principle_brief = principle_hint[:500] if len(principle_hint) > 500 else principle_hint
+                        guidance = (
+                            f"⚠️ CRITICAL: You have NOT measured all targets yet!\n"
+                            f"✅ Measured targets are done. Remaining: {unmeasured}\n\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"👉 NEXT TARGET: '{next_target}'\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                            f"You MUST write NEW CUDA code for '{next_target}' and compile it.\n"
+                            f"Do NOT output text — CALL compile_cuda NOW.\n\n"
+                            f"Design principle for '{next_target}':\n{principle_brief}\n\n"
+                            f"MANDATORY WORKFLOW:\n"
+                            f'  1. compile_cuda(source="...full .cu source for {next_target}...", flags=["-O3"])\n'
+                            f"  2. execute_binary(binary_path='<from compile>')\n"
+                            f"  3. Record the measured value\n\n"
+                            f"⚠️ Do NOT skip '{next_target}'. The pipeline will FAIL if any target is missing."
+                        )
+                    else:
+                        guidance = (
+                            f"⚠️ ERROR: You did not call any tool in this turn.\n"
+                            f"If you have measurements, output them as: target_name: value\n"
+                            f"If not, call the appropriate tool to get more data."
+                        )
                 else:
                     guidance = (
-                        f"⚠️ ERROR: You did not call any tool in this turn.\n"
-                        f"If you have measurements, output them as: target_name: value\n"
-                        f"If not, call the appropriate tool to get more data."
+                        f"⚠️ ERROR: You did not call any tool in this turn. "
+                        f"You MUST output a JSON tool call like: "
+                        f'{{\"tool\": \"compile_cuda\", \"args\": {{\"source\": \"...\", \"flags\": [\"-O3\"]}}}}\n'
+                        f"Do NOT output natural language — ACTUALLY CALL the tools."
                     )
-            else:
-                guidance = (
-                    f"⚠️ ERROR: You did not call any tool in this turn. "
-                    f"You MUST output a JSON tool call like: "
-                    f'{{\"tool\": \"compile_cuda\", \"args\": {{\"source\": \"...\", \"flags\": [\"-O3\"]}}}}\n'
-                    f"Do NOT output natural language — ACTUALLY CALL the tools."
+                
+                self.context_manager.add_entry(
+                    Role.SYSTEM,
+                    guidance,
+                    token_count=60,
                 )
-            
-            self.context_manager.add_entry(
-                Role.SYSTEM,
-                guidance,
-                token_count=60,
-            )
-            
-            if self._failure_tracker.should_terminate(no_tool_pattern):
-                self._emit(EventKind.STOP, {
-                    "reason": "M4_no_tool_repeat",
-                    "pattern": no_tool_pattern,
-                })
-                self.stop()
-                return
+                
+                if self._failure_tracker.should_terminate(no_tool_pattern):
+                    self._emit(EventKind.STOP, {
+                        "reason": "M4_no_tool_repeat",
+                        "pattern": no_tool_pattern,
+                    })
+                    self.stop()
+                    return
 
         self._persist_state()
 
     def _find_last_binary_path(self) -> str:
-        """P2 Harness: find last binary_path from compile_cuda results in context."""
+        """P2 Harness: find last binary_path from successful compile_cuda results.
+
+        Only searches compile_cuda tool results (not execute_binary or others)
+        to ensure we always get the path from the most recent compilation.
+        This prevents edge cases where execute_binary results might
+        contain a stale binary_path from an earlier compilation.
+        """
         entries = self.context_manager.get_entries()
         for entry in reversed(entries):
             if entry.role.value == "assistant":
                 try:
                     data = json.loads(entry.content)
-                    if isinstance(data, dict) and data.get("binary_path"):
-                        bp = data["binary_path"]
-                        if isinstance(bp, str) and bp.strip():
+                    if isinstance(data, dict) and data.get("tool") == "compile_cuda":
+                        bp = data.get("binary_path", "")
+                        success_val = data.get("success")
+                        is_success = success_val is True or (isinstance(success_val, str) and success_val.lower() == "true")
+                        if isinstance(bp, str) and bp.strip() and is_success:
                             return bp.strip()
                 except (json.JSONDecodeError, TypeError):
                     pass
         return ""
 
     def _already_executed_binary(self, binary_path: str) -> bool:
-        """Check if a binary has already been executed in this session."""
+        """Check if a binary has already been executed AFTER its most recent compilation.
+
+        Uses POSITIONAL CHECKING instead of global counting:
+        1. Find the index of the last successful compile_cuda in entries
+        2. Check if any execute_binary with the same binary_path appears AFTER that index
+        3. If yes → the latest compilation has been executed (return True)
+        4. If no → the latest compilation has NOT been executed (return False)
+
+        This is more precise than global counting because it correctly handles
+        cases where LLM skips an execution and later re-executes an old binary.
+        """
         entries = self.context_manager.get_entries()
-        exec_count = 0
-        for entry in entries:
+        last_compile_idx = -1
+
+        for idx, entry in enumerate(entries):
             if entry.role.value == "assistant":
                 try:
                     data = json.loads(entry.content)
-                    if isinstance(data, dict) and data.get("tool") == "execute_binary":
-                        bp = data.get("binary_path", data.get("args", {}).get("binary_path", ""))
-                        if bp == binary_path:
-                            exec_count += 1
+                    if isinstance(data, dict):
+                        tool = data.get("tool", "")
+                        success_val = data.get("success")
+                        is_success = success_val is True or (isinstance(success_val, str) and success_val.lower() == "true")
+                        if tool == "compile_cuda" and is_success:
+                            last_compile_idx = idx
                 except (json.JSONDecodeError, TypeError):
                     pass
-        return exec_count >= 1
+
+        if last_compile_idx < 0:
+            print(f"[AgentLoop] _already_executed_binary: path={binary_path}, "
+                  f"no successful compile found, result=False")
+            return False
+
+        for idx in range(last_compile_idx + 1, len(entries)):
+            entry = entries[idx]
+            if entry.role.value == "assistant":
+                try:
+                    data = json.loads(entry.content)
+                    if isinstance(data, dict):
+                        tool = data.get("tool", "")
+                        bp = data.get("binary_path", "")
+                        if tool == "execute_binary" and bp == binary_path:
+                            print(f"[AgentLoop] _already_executed_binary: path={binary_path}, "
+                                  f"last_compile_idx={last_compile_idx}, exec_at={idx}, result=True")
+                            return True
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        print(f"[AgentLoop] _already_executed_binary: path={binary_path}, "
+              f"last_compile_idx={last_compile_idx}, no exec after, result=False")
+        return False
+
+    def _last_tool_was_compile(self) -> bool:
+        """Check if the most recent successful tool call was compile_cuda.
+
+        This is a safety net: even if _already_executed_binary returns True
+        due to edge cases, if the last tool was compile_cuda, we should
+        still auto-inject the binary_path for execution.
+        """
+        entries = self.context_manager.get_entries()
+        for entry in reversed(entries):
+            if entry.role.value == "assistant":
+                try:
+                    data = json.loads(entry.content)
+                    if isinstance(data, dict) and "tool" in data:
+                        tool = data["tool"]
+                        success_val = data.get("success")
+                        is_success = success_val is True or (isinstance(success_val, str) and success_val.lower() == "true")
+                        if tool == "compile_cuda" and is_success:
+                            return True
+                        if tool == "execute_binary":
+                            return False
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return False
 
     def _find_unmeasured_targets(self) -> list[str]:
         """Find targets that have not yet been measured in this session."""
@@ -653,6 +787,43 @@ class AgentLoop:
                     except (json.JSONDecodeError, TypeError):
                         pass
         return [t for t in all_targets if t not in measured]
+
+    def _update_control_plane_progress(self, result: dict) -> None:
+        """Update Control Plane with current CodeGen progress after each tool call."""
+        try:
+            entries = self.context_manager.get_entries()
+            compile_count = sum(1 for e in entries
+                                if e.role.value == "assistant"
+                                and _safe_get_tool(e) == "compile_cuda"
+                                and _safe_get_success(e))
+            exec_count = sum(1 for e in entries
+                             if e.role.value == "assistant"
+                             and _safe_get_tool(e) == "execute_binary")
+            measured = []
+            remaining = []
+            all_targets = []
+            for entry in entries:
+                if entry.role.value == "system" and "targets" in entry.content:
+                    m = re.search(r'"targets"\s*:\s*\[([^\]]+)\]', entry.content)
+                    if m:
+                        all_targets = re.findall(r'"([^"]+)"', m.group(1))
+            measured_set = set()
+            for entry in entries:
+                if entry.role.value == "assistant":
+                    try:
+                        data = json.loads(entry.content)
+                        if isinstance(data, dict) and "stdout" in data:
+                            for line in data["stdout"].splitlines():
+                                m2 = re.match(r'\s*([\w_]+)\s*[:=]\s*[\d.]+', line)
+                                if m2:
+                                    measured_set.add(m2.group(1))
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+            measured = [t for t in all_targets if t in measured_set]
+            remaining = [t for t in all_targets if t not in measured_set]
+            self.control_plane.update_progress(measured, remaining, compile_count, exec_count)
+        except Exception:
+            pass
 
     @staticmethod
     def _build_compile_error_guidance(errors: str) -> str:
@@ -899,3 +1070,30 @@ class AgentLoop:
         })
 
         return result
+
+
+def _safe_get_tool(entry) -> str:
+    try:
+        data = json.loads(entry.content)
+        if isinstance(data, dict):
+            return data.get("tool", "")
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return ""
+
+
+def _safe_get_success(entry) -> bool:
+    """Check if a tool execution was successful.
+
+    Handles both Python bool (True) and string ("true") success values
+    for consistency with _already_executed_binary and _find_last_binary_path.
+    """
+    try:
+        data = json.loads(entry.content)
+        if isinstance(data, dict):
+            success_val = data.get("success")
+            return success_val is True or (isinstance(success_val, str) and success_val.lower() == "true")
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return False
+
