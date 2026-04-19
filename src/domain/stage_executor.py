@@ -233,6 +233,24 @@ class StageExecutor:
                 "status": "rejected_retry",
                 "data": ctx.code_gen_data,
             }
+
+        zero_targets = ctx.code_gen_data.get("_zero_measurement_targets", []) if ctx.code_gen_data else []
+        if zero_targets:
+            feedback_parts.append("")
+            feedback_parts.append("🛡️ ZERO MEASUREMENT FIX (CRITICAL):")
+            feedback_parts.append(
+                f"The following targets returned 0 because the compiler optimized away the measurement loop: "
+                f"{', '.join(zero_targets)}"
+            )
+            feedback_parts.append(
+                "You MUST use these anti-optimization techniques in your CUDA kernel:\n"
+                "  1. volatile uint64_t start = clock64(); / volatile uint64_t end = clock64();\n"
+                "  2. asm volatile(\"\" : : : \"memory\"); before and after timing\n"
+                "  3. #pragma unroll 1 before ALL measurement loops\n"
+                "  4. volatile uint32_t sink = idx; asm volatile(\"\" : \"+l\"(sink) : : \"memory\");\n"
+                "  5. Pass arrays as 'volatile type*' to prevent register caching"
+            )
+
         payload["rejection_feedback"] = "\n".join(feedback_parts)
         payload["metric_recommendations"] = metric_recommendations
         payload["metric_suggested_fixes"] = metric_suggested_fixes
@@ -573,14 +591,18 @@ class StageExecutor:
                 "2. Numeric sanity — are values in plausible GPU hardware ranges?\n"
                 "3. Latency hierarchy — L1 < L2 < DRAM (when both measured)\n"
                 "4. Cross-validation — do CodeGen and MetricAnalysis agree?\n"
-                "5. Methodology soundness — were correct techniques used?\n\n"
+                "5. Methodology soundness — were correct techniques used?\n"
+                "6. Zero value detection — any measurement = 0 indicates broken code\n\n"
                 "⚠️ CRITICAL: You MUST output a clear verdict.\n"
-                "State your verdict as: Verdict: ACCEPT or Verdict: REJECT\n\n"
+                "If you do NOT output 'Verdict: ACCEPT' or 'Verdict: REJECT',\n"
+                "the pipeline will DEFAULT TO REJECTED (fail-closed per P2).\n\n"
                 "MANDATORY OUTPUT FORMAT:\n"
                 "Verdict: ACCEPT or REJECT\n"
                 "Findings: [list of issues found]\n"
                 "Concerns: [list of concerns]\n"
-                "If REJECT, provide suggested fixes.\n"
+                "If REJECT, provide suggested fixes.\n\n"
+                "⚠️ If ANY target has a zero measurement, you MUST output 'Verdict: REJECT'.\n"
+                "⚠️ If ANY requested target is missing from measurements, you MUST output 'Verdict: REJECT'.\n"
             )
             return guidance
         return ""
@@ -685,6 +707,9 @@ class StageExecutor:
                                "HandoffValidator will likely reject this")
 
         status = self._determine_status(stage, effective_text, tool_results, data)
+
+        if stage == PipelineStage.VERIFICATION:
+            self._extract_verification_structured_data(effective_text, assistant_outputs, data)
 
         error_msg = self._build_error_message(stage, status, data, effective_text, tool_results)
 
@@ -1055,6 +1080,19 @@ class StageExecutor:
 
         if measurements:
             data["measurements"] = measurements
+
+        zero_measurements = {k: v for k, v in measurements.items()
+                            if isinstance(v, (int, float)) and v == 0
+                            and k not in ("exit_code", "binary_count")}
+        if zero_measurements and status == SubAgentStatus.SUCCESS:
+            status = SubAgentStatus.FAILED
+            data["error_detail"] = (
+                f"CodeGen produced zero measurements for: {', '.join(sorted(zero_measurements.keys()))}. "
+                f"This indicates the measurement code was optimized away by the compiler. "
+                f"The kernel MUST use volatile qualifiers, asm volatile barriers, "
+                f"#pragma unroll 1, and a sink variable to prevent dead-code elimination."
+            )
+            data["_zero_measurement_targets"] = sorted(zero_measurements.keys())
         if final_text:
             methodology_parts.append(final_text[:1000])
         if methodology_parts:
@@ -1063,8 +1101,72 @@ class StageExecutor:
         return status
 
     @staticmethod
+    def _extract_verification_structured_data(
+        final_text: str,
+        assistant_outputs: list[str],
+        data: dict[str, Any],
+    ) -> None:
+        """Extract structured review data from Verification LLM output.
+
+        The LLM may output JSON with findings/concerns/accepted/status,
+        or it may output natural language. This method tries to parse
+        structured data from ALL assistant outputs (not just the final one)
+        and injects it into the data dict for _verification_status to use.
+        """
+        all_outputs = list(assistant_outputs)
+        if final_text and final_text not in all_outputs:
+            all_outputs.append(final_text)
+
+        for output in all_outputs:
+            if not output or not output.strip():
+                continue
+            try:
+                start = output.find("{")
+                end = output.rfind("}") + 1
+                if start >= 0 and end > start:
+                    parsed = _json.loads(output[start:end])
+                    if isinstance(parsed, dict):
+                        if "concerns" in parsed and isinstance(parsed["concerns"], list):
+                            data["concerns"] = parsed["concerns"]
+                        if "findings" in parsed and isinstance(parsed["findings"], list):
+                            data["findings"] = parsed["findings"]
+                        if "accepted" in parsed:
+                            data["accepted"] = bool(parsed["accepted"])
+                        if "suggested_fixes" in parsed and isinstance(parsed["suggested_fixes"], list):
+                            data["suggested_fixes"] = parsed["suggested_fixes"]
+                        if any(k in data for k in ("concerns", "accepted")):
+                            return
+            except (_json.JSONDecodeError, TypeError):
+                continue
+
+        if "concerns" not in data:
+            concerns = []
+            for line in final_text.splitlines():
+                line_lower = line.strip().lower()
+                if any(kw in line_lower for kw in (
+                    "missing", "zero", "invalid", "incorrect",
+                    "failed", "error", "concern", "problem",
+                    "not valid", "cannot accept", "reject",
+                )):
+                    concerns.append(line.strip())
+            if concerns:
+                data["concerns"] = concerns
+
+    @staticmethod
     def _verification_status(final_text: str, data: dict[str, Any]) -> SubAgentStatus:
-        """Determine Verification-specific status from verdict text."""
+        """Determine Verification-specific status from verdict text.
+
+        P2 (Fail-Closed Safety Defaults): When no clear verdict is found,
+        the default is REJECTED, not SUCCESS. This prevents false positives
+        where the LLM outputs irrelevant text and the pipeline reports SUCCESS.
+
+        Evaluation hierarchy:
+        1. Explicit verdict keywords (Verdict: ACCEPT/REJECT)
+        2. Structural review data (concerns, accepted field)
+        3. Data completeness check (missing targets = REJECT)
+        4. Numeric sanity check (zero measurements = REJECT)
+        5. Default: REJECTED (fail-closed per P2)
+        """
         data["review_text"] = final_text[:2000]
         lower = final_text.lower()
 
@@ -1075,11 +1177,67 @@ class StageExecutor:
         verdict_accept = bool(re.search(r'\bverdict\s*:\s*accept\b', lower))
         verdict_reject = bool(re.search(r'\bverdict\s*:\s*reject\b', lower))
 
-        if verdict_reject or has_reject_word or has_not_valid or has_cannot_accept:
+        if verdict_reject:
             return SubAgentStatus.REJECTED
-        if verdict_accept or has_accept_word:
+        if verdict_accept:
             return SubAgentStatus.SUCCESS
-        return SubAgentStatus.SUCCESS
+
+        if has_reject_word or has_not_valid or has_cannot_accept:
+            return SubAgentStatus.REJECTED
+        if has_accept_word:
+            return SubAgentStatus.SUCCESS
+
+        # --- Structural review checks (when LLM verdict is ambiguous) ---
+
+        # Check 1: If structured review data exists, use it
+        accepted = data.get("accepted")
+        if accepted is False:
+            data.setdefault("error_detail",
+                "Verification review marked result as not accepted")
+            return SubAgentStatus.REJECTED
+        if accepted is True:
+            concerns = data.get("concerns", [])
+            if not concerns:
+                return SubAgentStatus.SUCCESS
+
+        # Check 2: Concerns list from structured review
+        concerns = data.get("concerns", [])
+        if concerns and isinstance(concerns, list):
+            critical_concerns = [c for c in concerns
+                if isinstance(c, str) and any(kw in c.lower()
+                    for kw in ("zero measurement", "missing target",
+                               "no data", "fundamentally broken",
+                               "measurement failure"))]
+            if critical_concerns:
+                data.setdefault("error_detail",
+                    f"Critical concerns found: {'; '.join(critical_concerns[:3])}")
+                return SubAgentStatus.REJECTED
+
+        # Check 3: Data completeness — missing targets = REJECT
+        measurements = data.get("measurements", {})
+        if isinstance(measurements, dict):
+            zero_keys = [k for k, v in measurements.items()
+                         if isinstance(v, (int, float)) and v == 0
+                         and k not in ("exit_code", "binary_count")]
+            if zero_keys:
+                data.setdefault("error_detail",
+                    f"Zero measurements detected: {', '.join(zero_keys[:5])}. "
+                    f"Measurement code is likely broken (optimized away).")
+                return SubAgentStatus.REJECTED
+
+        # Check 4: Empty or meaningless output = REJECT
+        if not final_text or len(final_text.strip()) < 20:
+            data.setdefault("error_detail",
+                "Verification produced no meaningful output — "
+                "defaulting to REJECTED per P2 (fail-closed)")
+            return SubAgentStatus.REJECTED
+
+        # P2 DEFAULT: No clear verdict → REJECTED (fail-closed)
+        data.setdefault("error_detail",
+            "Verification output contained no clear ACCEPT/REJECT verdict. "
+            "Per P2 (fail-closed safety defaults), defaulting to REJECTED. "
+            "LLM must output an explicit verdict.")
+        return SubAgentStatus.REJECTED
 
     @staticmethod
     def _build_error_message(

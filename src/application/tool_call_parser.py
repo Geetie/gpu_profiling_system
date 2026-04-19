@@ -182,6 +182,25 @@ def _extract_tool_call(data: dict) -> ToolCall | None:
     if not isinstance(arguments, dict):
         arguments = {}
 
+    if tool_name == "compile_cuda":
+        source = arguments.get("source")
+        if source is None or (isinstance(source, str) and not source.strip()):
+            return ToolCall(
+                name=tool_name,
+                arguments={
+                    "source": "",
+                    "_validation_error": "compile_cuda requires a non-empty 'source' parameter with full CUDA code",
+                },
+            )
+        if isinstance(source, list) and len(source) == 0:
+            return ToolCall(
+                name=tool_name,
+                arguments={
+                    "source": "",
+                    "_validation_error": "compile_cuda 'source' parameter was an empty array [] — must be a string with full CUDA code",
+                },
+            )
+
     return ToolCall(name=tool_name, arguments=arguments)
 
 

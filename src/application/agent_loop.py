@@ -235,6 +235,51 @@ class AgentLoop:
 
         if tool_call is not None:
             self._failure_pattern = None
+
+            if tool_call.name == "compile_cuda":
+                source = tool_call.arguments.get("source", "")
+                validation_error = tool_call.arguments.get("_validation_error", "")
+                if not source or (isinstance(source, str) and not source.strip()):
+                    error_msg = validation_error or (
+                        "compile_cuda REQUIRES a non-empty 'source' parameter with FULL CUDA code. "
+                        "You provided an empty source."
+                    )
+                    self.context_manager.add_entry(
+                        Role.ASSISTANT,
+                        json.dumps({
+                            "tool": "compile_cuda",
+                            "status": "error",
+                            "errors": error_msg,
+                            "success": False,
+                        }),
+                        token_count=30,
+                    )
+                    self.context_manager.add_entry(
+                        Role.SYSTEM,
+                        "⛔ compile_cuda was called with EMPTY source code. This is a CRITICAL error.\n"
+                        "You MUST provide the COMPLETE CUDA source code as a string in the 'source' parameter.\n\n"
+                        "CORRECT FORMAT:\n"
+                        '{"tool": "compile_cuda", "args": {"source": "#include <cuda_runtime.h>\\n'
+                        '#include <cstdio>\\n#include <cstdint>\\n...your full kernel code...", '
+                        '"flags": ["-O3"]}}\n\n'
+                        "❌ WRONG: compile_cuda with source=[] (empty array)\n"
+                        "❌ WRONG: compile_cuda with source=\"\" (empty string)\n"
+                        "❌ WRONG: compile_cuda without source parameter\n\n"
+                        "Do NOT call compile_cuda again until you have written the FULL CUDA source code.",
+                        token_count=80,
+                    )
+                    empty_compile_pattern = "compile_cuda_empty_source"
+                    self._failure_tracker.record_failure(empty_compile_pattern)
+                    if self._failure_tracker.should_terminate(empty_compile_pattern):
+                        self._emit(EventKind.STOP, {
+                            "reason": "M4_repeated_empty_compile",
+                            "pattern": empty_compile_pattern,
+                        })
+                        self.stop()
+                        return
+                    self._persist_state()
+                    return
+
             # P2 Harness: auto-inject binary_path when LLM omits it
             # But only if this binary hasn't already been executed (prevent re-exec loop)
             if tool_call.name == "execute_binary" and not tool_call.arguments.get("binary_path"):
@@ -379,16 +424,19 @@ class AgentLoop:
                         if stdout and ": 0" in stdout:
                             zero_lines = [l for l in stdout.splitlines()
                                           if l.strip() and ": 0" in l and not l.strip().startswith("//")]
-                            if len(zero_lines) > 3:
+                            if len(zero_lines) >= 1:
                                 self.context_manager.add_entry(
                                     Role.SYSTEM,
-                                    "⚠️ MEASUREMENT WARNING: Many output values are 0. "
+                                    "⚠️ MEASUREMENT WARNING: Output contains zero value(s). "
                                     "This usually means the compiler optimized away the measurement loop.\n"
                                     "FIX: Add 'volatile' qualifiers and asm volatile barriers:\n"
                                     "  volatile long long sink = 0;\n"
                                     "  asm volatile(\"\" : \"+l\"(sink) : : \"memory\");\n"
-                                    "Also add #pragma unroll 1 before loops to prevent unrolling.",
-                                    token_count=60,
+                                    "Also add #pragma unroll 1 before loops to prevent unrolling.\n"
+                                    "Pass arrays as 'volatile type*' to prevent register caching.\n"
+                                    "If this measurement is already zero, you MUST rewrite the kernel "
+                                    "with these anti-optimization techniques before compiling again.",
+                                    token_count=80,
                                 )
             except Exception as e:
                 self.loop_state.last_error = str(e)

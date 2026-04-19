@@ -126,6 +126,28 @@ class Pipeline:
             if result.status == SubAgentStatus.REJECTED and step.stage == PipelineStage.VERIFICATION:
                 concerns = result.data.get("concerns", [])
                 suggested_fixes = result.data.get("suggested_fixes", [])
+
+                if not concerns:
+                    review_text = result.data.get("review_text", "")
+                    if review_text:
+                        concerns = [line.strip() for line in review_text.splitlines()
+                                    if line.strip() and any(kw in line.lower()
+                                        for kw in ("missing", "zero", "invalid", "incorrect",
+                                                   "failed", "error", "concern", "problem",
+                                                   "not valid", "cannot accept", "reject"))]
+
+                if not concerns:
+                    error_detail = result.data.get("error_detail", "")
+                    if error_detail:
+                        concerns = [error_detail]
+
+                if not suggested_fixes:
+                    suggested_fixes = result.data.get("suggested_fixes", [])
+                    if not suggested_fixes:
+                        findings = result.data.get("findings", [])
+                        if findings:
+                            suggested_fixes = [str(f) for f in findings]
+
                 ctx.add_rejection(step.stage.value, concerns, suggested_fixes)
 
                 if ctx.can_retry():
