@@ -282,14 +282,30 @@ class AgentLoop:
 
             if tool_call.name == "execute_binary":
                 bp_arg = tool_call.arguments.get("binary_path", "")
+                
+                DEFAULT_BINARY_PATHS = {
+                    "bin/benchmark", "./benchmark", "benchmark",
+                    "/bin/benchmark", "./bin/benchmark", "output/benchmark"
+                }
+                
+                should_inject = False
+                inject_reason = ""
+                
                 if not bp_arg or (isinstance(bp_arg, str) and not bp_arg.strip()):
+                    should_inject = True
+                    inject_reason = "empty path"
+                elif isinstance(bp_arg, str) and bp_arg.strip() in DEFAULT_BINARY_PATHS:
+                    should_inject = True
+                    inject_reason = f"default value '{bp_arg}' detected (will be replaced)"
+                
+                if should_inject:
                     last_bp = self._find_last_binary_path()
                     last_tool_was_compile = self._last_tool_was_compile()
                     already_ran = self._already_executed_binary(last_bp) if last_bp else False
 
                     if last_bp and (not already_ran or last_tool_was_compile):
                         tool_call.arguments["binary_path"] = last_bp
-                        reason = "latest compile not yet executed" if last_tool_was_compile else "compile_count > exec_count"
+                        reason = ("latest compile not yet executed" if last_tool_was_compile else f"replaced {inject_reason}")
                         print(f"[AgentLoop] P2 auto-inject: binary_path={last_bp} (reason: {reason})")
                     elif last_bp and already_ran and not last_tool_was_compile:
                         print(f"[AgentLoop] P2 auto-inject SKIPPED: {last_bp} already executed after latest compile")
@@ -346,7 +362,9 @@ class AgentLoop:
                                 "pattern": empty_exec_pattern,
                             })
                             self.stop()
-                            return
+                        return
+                else:
+                    print(f"[AgentLoop] Using LLM-provided binary_path: {bp_arg}")
                         self._persist_state()
                         return
             print(f"[AgentLoop] Tool call: {tool_call.name}({list(tool_call.arguments.keys())})")
@@ -669,20 +687,55 @@ class AgentLoop:
         to ensure we always get the path from the most recent compilation.
         This prevents edge cases where execute_binary results might
         contain a stale binary_path from an earlier compilation.
+
+        Enhanced to handle multiple result formats for robustness:
+        - Standard format: {"tool": "compile_cuda", "binary_path": "...", ...}
+        - Alternative format: {"name": "compile_cuda", "output": {"binary_path": "..."}}
+        - Artifacts format: {"artifacts": {"binary": "..."}}
         """
         entries = self.context_manager.get_entries()
         for entry in reversed(entries):
-            if entry.role.value == "assistant":
-                try:
-                    data = json.loads(entry.content)
-                    if isinstance(data, dict) and data.get("tool") == "compile_cuda":
-                        bp = data.get("binary_path", "")
-                        success_val = data.get("success")
-                        is_success = success_val is True or (isinstance(success_val, str) and success_val.lower() == "true")
-                        if isinstance(bp, str) and bp.strip() and is_success:
-                            return bp.strip()
-                except (json.JSONDecodeError, TypeError):
-                    pass
+            if entry.role.value != "assistant":
+                continue
+
+            try:
+                data = json.loads(entry.content)
+                if not isinstance(data, dict):
+                    continue
+
+                bp = ""
+
+                if data.get("tool") == "compile_cuda" or data.get("name") == "compile_cuda":
+                    bp = data.get("binary_path", "")
+                    if not bp and isinstance(data.get("output"), dict):
+                        bp = data["output"].get("binary_path", "")
+
+                if not bp and isinstance(data.get("artifacts"), dict):
+                    bp = data["artifacts"].get("binary", "")
+                    if not bp:
+                        artifacts_list = data["artifacts"]
+                        if isinstance(artifacts_list, list) and len(artifacts_list) > 0:
+                            for artifact in artifacts_list:
+                                if isinstance(artifact, str) and ("benchmark" in artifact or "bin/" in artifact):
+                                    bp = artifact
+                                    break
+
+                if not bp:
+                    continue
+
+                success_val = data.get("success")
+                is_success = (
+                    success_val is True or
+                    (isinstance(success_val, str) and success_val.lower() == "true") or
+                    (data.get("status", "") in ["success", "success_with_warning"])
+                )
+
+                if isinstance(bp, str) and bp.strip() and (is_success or success_val is None):
+                    return bp.strip()
+
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                pass
+
         return ""
 
     def _already_executed_binary(self, binary_path: str) -> bool:
