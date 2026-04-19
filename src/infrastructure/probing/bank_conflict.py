@@ -164,48 +164,48 @@ def _get_fallback_source(size: int) -> str:
 __global__ void bank_conflict_kernel(long long* result_strided, long long* result_sequential, int size) {{
     extern __shared__ int shmem[];
     
-    int tid = threadIdx.x;
-    
-    for (int i = tid; i < size; i += blockDim.x) {{
+    // Initialize shared memory
+    for (int i = threadIdx.x; i < size; i += blockDim.x) {{
         shmem[i] = i;
     }}
     __syncthreads();
     
+    // Only thread 0 does the measurement to avoid multi-thread write conflicts
     long long start_strided = 0, end_strided = 0;
-    if (tid < 32) {{
+    long long start_sequential = 0, end_sequential = 0;
+    
+    if (threadIdx.x == 0) {{
+        // --- Strided access (bank-conflicting) ---
         start_strided = clock64();
-        volatile long long sink1 = 0;
+        long long sink1 = 0;
         #pragma unroll 1
-        for (int iter = 0; iter < 1000; iter++) {{
-            int idx = (tid * 32) % size;
-            sink1 = shmem[idx];
+        for (int iter = 0; iter < 2000; iter++) {{
+            int idx = (iter * 32) % size;
+            sink1 += shmem[idx];
             shmem[idx] = (int)sink1 + 1;
         }}
         asm volatile("" : "+l"(sink1) : : "memory");
         end_strided = clock64();
-    }}
-    __syncthreads();
-    
-    for (int i = tid; i < size; i += blockDim.x) {{
-        shmem[i] = i;
-    }}
-    __syncthreads();
-    
-    long long start_sequential = 0, end_sequential = 0;
-    if (tid < 32) {{
+        
+        // Re-initialize
+        for (int i = 0; i < size; i++) {{
+            shmem[i] = i;
+        }}
+        
+        // --- Sequential access (conflict-free) ---
         start_sequential = clock64();
-        volatile long long sink2 = 0;
+        long long sink2 = 0;
         #pragma unroll 1
-        for (int iter = 0; iter < 1000; iter++) {{
-            int idx = tid;
-            sink2 = shmem[idx];
+        for (int iter = 0; iter < 2000; iter++) {{
+            int idx = iter % size;
+            sink2 += shmem[idx];
             shmem[idx] = (int)sink2 + 1;
         }}
         asm volatile("" : "+l"(sink2) : : "memory");
         end_sequential = clock64();
     }}
     
-    if (tid == 0) {{
+    if (threadIdx.x == 0) {{
         result_strided[0] = end_strided - start_strided;
         result_sequential[0] = end_sequential - start_sequential;
     }}

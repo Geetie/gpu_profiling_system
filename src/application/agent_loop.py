@@ -333,11 +333,23 @@ class AgentLoop:
                                     self.stop()
                                     return
                     elif tool_call.name == "compile_cuda":
-                        guidance += (
-                            "\n💡 Common fixes: Check source code for syntax errors. "
-                            "Ensure flags include the correct -arch=sm_XX for this GPU. "
-                            "Do NOT use '-arch=0' or '-arch=sm_0'."
-                        )
+                        errors = result.get("errors", result.get("error", ""))
+                        if "No source code provided" in str(errors) or "source" not in tool_call.arguments:
+                            guidance = (
+                                "⚠️ compile_cuda REQUIRES a 'source' parameter with FULL CUDA code.\n"
+                                "You MUST provide the complete .cu source code as a string.\n\n"
+                                "CORRECT FORMAT:\n"
+                                '{"tool": "compile_cuda", "args": {"source": "#include <cuda_runtime.h>\\n#include <cstdio>\\n#include <cstdint>\\n...your full kernel code...", "flags": ["-O3"]}}\n\n'
+                                "❌ WRONG: compile_cuda with empty source or no source parameter\n"
+                                "❌ WRONG: compile_cuda with just a file path\n"
+                                "The 'source' parameter must contain the ENTIRE CUDA source code as a string."
+                            )
+                        else:
+                            guidance += (
+                                "\n💡 Common fixes: Check source code for syntax errors. "
+                                "Ensure flags include the correct -arch=sm_XX for this GPU. "
+                                "Do NOT use '-arch=0' or '-arch=sm_0'."
+                            )
                     self.context_manager.add_entry(
                         Role.SYSTEM,
                         guidance,
@@ -361,6 +373,23 @@ class AgentLoop:
                             auto_hint,
                             token_count=40,
                         )
+                    # Detect implausible measurements (all zeros) after execute_binary
+                    if tool_call.name == "execute_binary":
+                        stdout = result.get("stdout", "")
+                        if stdout and ": 0" in stdout:
+                            zero_lines = [l for l in stdout.splitlines()
+                                          if l.strip() and ": 0" in l and not l.strip().startswith("//")]
+                            if len(zero_lines) > 3:
+                                self.context_manager.add_entry(
+                                    Role.SYSTEM,
+                                    "⚠️ MEASUREMENT WARNING: Many output values are 0. "
+                                    "This usually means the compiler optimized away the measurement loop.\n"
+                                    "FIX: Add 'volatile' qualifiers and asm volatile barriers:\n"
+                                    "  volatile long long sink = 0;\n"
+                                    "  asm volatile(\"\" : \"+l\"(sink) : : \"memory\");\n"
+                                    "Also add #pragma unroll 1 before loops to prevent unrolling.",
+                                    token_count=60,
+                                )
             except Exception as e:
                 self.loop_state.last_error = str(e)
                 self._failure_pattern = f"tool_error:{tool_call.name}"
@@ -526,6 +555,14 @@ class AgentLoop:
 
     def _execute_tool_call(self, tool_call: ToolCall) -> dict[str, Any]:
         contract = self.tool_registry.get(tool_call.name)
+
+        if contract is None:
+            return {
+                "tool": tool_call.name,
+                "status": "error",
+                "error": f"Tool '{tool_call.name}' is not available for your role. "
+                         f"Use only the tools listed in your system prompt.",
+            }
 
         for perm in contract.permissions:
             if not self._permission_checker.is_allowed(perm):

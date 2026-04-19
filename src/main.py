@@ -569,7 +569,13 @@ def _assemble_final_results(output_dir, hardware_results, pipeline_data, target_
             if pipeline_method and len(pipeline_method) > 50:
                 output["methodology"] = pipeline_method
             elif hardware_results and "methodology" in hardware_results:
-                output["methodology"] = hardware_results["methodology"]
+                hw_method = hardware_results["methodology"]
+                if isinstance(hw_method, str) and len(hw_method) > 50:
+                    output["methodology"] = hw_method
+                elif isinstance(hw_method, dict):
+                    output["methodology"] = str(hw_method)
+                else:
+                    output["methodology"] = str(hw_method) if hw_method else "pipeline_analysis"
             else:
                 output["methodology"] = "pipeline_analysis"
 
