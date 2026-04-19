@@ -654,7 +654,20 @@ def _assemble_final_results(output_dir, hardware_results, pipeline_data, target_
                 print(f"  ⚠️ {issue}")
         
         if not quality_ok:
+            cleaned_output["_quality_ok"] = False
             print("[pipeline] Results FAILED quality check — writing with _quality_ok: false flag")
+            
+            missing_targets = cleaned_output.get("_missing_targets", [])
+            if not missing_targets:
+                requested = set(target_spec.get("targets", []))
+                measured = {k for k, v in cleaned_output.items() if isinstance(v, (int, float)) and not k.startswith("_")}
+                missing_targets = sorted(requested - measured)
+            
+            if missing_targets:
+                print(f"[pipeline] Missing targets: {', '.join(missing_targets)}")
+                print("[pipeline] These targets will be filled by Hardware Probes if available")
+        else:
+            cleaned_output["_quality_ok"] = True
         
         with open(results_path, "w") as f:
             json.dump(cleaned_output, f, indent=2)

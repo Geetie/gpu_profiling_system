@@ -141,17 +141,17 @@ class InvariantTracker:
         """M4: terminate if the same failure pattern repeats.
         
         Thresholds:
-        - no_tool_call: 2 retries (reduce empty turns aggressively)
-        - tool_error:compile_cuda: 4 retries (allow more compilation attempts)
+        - no_tool_call: 3 retries (allow recovery with enhanced guidance)
+        - tool_error:compile_cuda: 5 retries (allow more compilation attempts with specific error guidance)
         - tool_error:run_ncu: 2 retries (ncu errors are usually environment issues)
         - tool_error:run_ncu:invalid_metric: 2 retries (same invalid metric repeated)
         - other patterns: 3 retries
         """
         count = self._failure_counts.get(pattern, 0)
         if pattern == "no_tool_call":
-            return count >= 2
+            return count >= 3
         if pattern == "tool_error:compile_cuda":
-            return count >= 4
+            return count >= 5
         if pattern.startswith("tool_error:run_ncu"):
             return count >= 2
         return count >= 3

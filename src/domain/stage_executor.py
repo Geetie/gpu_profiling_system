@@ -247,8 +247,10 @@ class StageExecutor:
                 "  1. volatile uint64_t start = clock64(); / volatile uint64_t end = clock64();\n"
                 "  2. asm volatile(\"\" : : : \"memory\"); before and after timing\n"
                 "  3. #pragma unroll 1 before ALL measurement loops\n"
-                "  4. volatile uint32_t sink = idx; asm volatile(\"\" : \"+l\"(sink) : : \"memory\");\n"
-                "  5. Pass arrays as 'volatile type*' to prevent register caching"
+                "  4. volatile uint64_t sink64 = (uint64_t)idx; asm volatile(\"\" : \"+l\"(sink64) : : \"memory\");\n"
+                "     ⚠️ +l constraint requires 64-bit! Do NOT use +l with uint32_t/int (4 bytes)!\n"
+                "  5. Pass arrays as 'volatile type*' to prevent register caching\n"
+                "  6. #include <algorithm> if you use std::sort"
             )
 
         payload["rejection_feedback"] = "\n".join(feedback_parts)
@@ -337,7 +339,7 @@ class StageExecutor:
 
         self._save_conversation_history(agent, ctx)
 
-        return self._extract_result(agent, step.stage, loop)
+        return self._extract_result(agent, step.stage, loop, ctx)
 
     @staticmethod
     def _save_conversation_history(agent: BaseSubAgent, ctx: PipelineContext) -> None:
@@ -460,12 +462,25 @@ class StageExecutor:
                 "❌ WRONG: /kaggle/working/gpu_profiling_system/benchmark.cu (path escape)\n"
                 "❌ WRONG: benchmark.cu (missing .sandbox prefix)\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "📦 MANDATORY #include BLOCK (COPY INTO EVERY .cu FILE)\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "  #include <cuda_runtime.h>\n"
+                "  #include <cstdio>\n"
+                "  #include <cstdint>\n"
+                "  #include <cstddef>\n"
+                "  #include <cstdlib>\n"
+                "  #include <algorithm>    // for std::sort (median calculation)\n"
+                "  #include <cstring>      // for memset\n\n"
+                "⚠️ Missing #include <algorithm> causes: 'namespace std has no member sort'\n"
+                "⚠️ This is a COMMON error — ALWAYS include <algorithm>!\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 "📋 MANDATORY WORKFLOW — Process EACH Target Separately\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
                 "For each target:\n"
                 '  1. compile_cuda(source="...full .cu source...", flags=["-O3"])\n'
                 '  2. execute_binary(binary_path="<path from compile_cuda>")\n'
-                "  3. Record the measured value from stdout\n\n"
+                "  3. Record the measured value from stdout\n"
+                "  4. Move to NEXT target — write NEW code, compile, execute\n\n"
                 "⚠️  CRITICAL: compile_cuda OVERWRITES the previous binary each time.\n"
                 "So you MUST execute_binary IMMEDIATELY after each compile_cuda.\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -478,15 +493,22 @@ class StageExecutor:
                 "After each tool call, you will see the result. Then call the next tool.\n"
                 "❌ DO NOT just describe what you would do — ACTUALLY CALL the tools.\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "🔄 ERROR RECOVERY\n"
+                "🔄 ERROR RECOVERY — NEVER GIVE UP\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "- Compilation error → fix source code → retry compile_cuda\n"
+                "- Compilation error → READ the error message → FIX the code → retry compile_cuda\n"
+                "- 'namespace std has no member sort' → Add #include <algorithm>\n"
+                "- 'asm operand type size(4) does not match constraint l' →\n"
+                "  Cast 32-bit variable to uint64_t: volatile uint64_t sink64 = (uint64_t)idx;\n"
+                "  Then: asm volatile(\"\" : \"+l\"(sink64) : : \"memory\");\n"
                 "- Execution error → fix binary path or code → recompile → retry\n"
                 "- Implausible output (0, negative, NaN) → fix measurement logic → retry\n\n"
                 "⚠️  CRITICAL: 'success_with_warning' means compilation SUCCEEDED.\n"
                 "If compile_cuda returns status='success_with_warning', the binary IS valid.\n"
                 "You MUST still call execute_binary — warnings do NOT prevent execution.\n"
                 "Only status='error' means compilation failed and you need to fix the code.\n\n"
+                "⚠️  PERSISTENCE RULE: After a successful measurement, you MUST continue\n"
+                "to the next unmeasured target. Do NOT stop and output text.\n"
+                "The system will tell you which targets remain. Keep going until ALL are done.\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 "✅ MANDATORY REQUIREMENT\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -659,6 +681,7 @@ class StageExecutor:
         agent: BaseSubAgent,
         stage: PipelineStage,
         loop: AgentLoop,
+        ctx: PipelineContext | None = None,
     ) -> SubAgentResult:
         """Extract a SubAgentResult from the AgentLoop's final context."""
         entries = agent.context_manager.get_entries()
@@ -706,7 +729,8 @@ class StageExecutor:
                 logger.warning("[StageExecutor] Failed to extract tasks from Planner output, "
                                "HandoffValidator will likely reject this")
 
-        status = self._determine_status(stage, effective_text, tool_results, data)
+        target_spec = ctx.target_spec if ctx else None
+        status = self._determine_status(stage, effective_text, tool_results, data, target_spec=target_spec)
 
         if stage == PipelineStage.VERIFICATION:
             self._extract_verification_structured_data(effective_text, assistant_outputs, data)
@@ -958,6 +982,7 @@ class StageExecutor:
         final_text: str,
         tool_results: list[dict],
         data: dict[str, Any],
+        target_spec: dict[str, Any] | None = None,
     ) -> SubAgentStatus:
         """Determine the SubAgentStatus for a stage result."""
         if stage == PipelineStage.PLAN:
@@ -973,7 +998,7 @@ class StageExecutor:
             return SubAgentStatus.FAILED
 
         if stage == PipelineStage.CODE_GEN:
-            return StageExecutor._codegen_status(final_text, tool_results, data)
+            return StageExecutor._codegen_status(final_text, tool_results, data, target_spec)
 
         if stage == PipelineStage.METRIC_ANALYSIS:
             data["analysis_output"] = final_text[:2000]
@@ -1010,8 +1035,13 @@ class StageExecutor:
     @staticmethod
     def _codegen_status(
         final_text: str, tool_results: list[dict], data: dict[str, Any],
+        target_spec: dict[str, Any] | None = None,
     ) -> SubAgentStatus:
-        """Determine CodeGen-specific status and extract measurements."""
+        """Determine CodeGen-specific status and extract measurements.
+
+        Checks both individual measurement quality AND target completeness.
+        Returns FAILED if any requested target is missing from measurements.
+        """
         data["code_gen_output"] = final_text[:2000]
 
         has_compile = any(
@@ -1093,6 +1123,22 @@ class StageExecutor:
                 f"#pragma unroll 1, and a sink variable to prevent dead-code elimination."
             )
             data["_zero_measurement_targets"] = sorted(zero_measurements.keys())
+
+        if target_spec and status == SubAgentStatus.SUCCESS:
+            requested_targets = set(target_spec.get("targets", []))
+            if requested_targets:
+                measured_keys = set(measurements.keys())
+                missing = requested_targets - measured_keys
+                if missing:
+                    status = SubAgentStatus.FAILED
+                    data["error_detail"] = (
+                        f"CodeGen did NOT measure all requested targets. "
+                        f"Missing: {', '.join(sorted(missing))}. "
+                        f"Measured: {', '.join(sorted(measured_keys))}. "
+                        f"The LLM must write and compile SEPARATE CUDA code for EACH target."
+                    )
+                    data["_missing_targets"] = sorted(missing)
+
         if final_text:
             methodology_parts.append(final_text[:1000])
         if methodology_parts:

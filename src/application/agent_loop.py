@@ -313,6 +313,10 @@ class AgentLoop:
                 # Track which tool was called (for _already_executed_binary detection)
                 if isinstance(result, dict) and "tool" not in result:
                     result["tool"] = tool_call.name
+                if tool_call.name == "execute_binary" and isinstance(result, dict):
+                    bp = tool_call.arguments.get("binary_path", "")
+                    if bp:
+                        result["binary_path"] = bp
                 result_str = json.dumps(result, ensure_ascii=False)
                 # Truncate large tool outputs to prevent context bloat
                 MAX_TOOL_RESULT_CHARS = 3000
@@ -363,7 +367,6 @@ class AgentLoop:
                                 })
                                 self.stop()
                                 return
-                        # Track specific invalid metric patterns for stronger anti-loop
                         metrics_arg = tool_call.arguments.get("metrics", [])
                         if isinstance(metrics_arg, list):
                             invalid_metrics = [m for m in metrics_arg if not isinstance(m, str) or m.strip() in ("", ".")]
@@ -390,17 +393,12 @@ class AgentLoop:
                                 "The 'source' parameter must contain the ENTIRE CUDA source code as a string."
                             )
                         else:
-                            guidance += (
-                                "\n💡 Common fixes: Check source code for syntax errors. "
-                                "Ensure flags include the correct -arch=sm_XX for this GPU. "
-                                "Do NOT use '-arch=0' or '-arch=sm_0'."
-                            )
+                            guidance += self._build_compile_error_guidance(str(errors))
                     self.context_manager.add_entry(
                         Role.SYSTEM,
                         guidance,
                         token_count=60,
                     )
-                    # Track failure for anti-loop
                     self._failure_pattern = f"tool_error:{tool_call.name}"
                     self._failure_tracker.record_failure(self._failure_pattern)
                 elif isinstance(result, dict) and result.get("success") is True:
@@ -430,14 +428,31 @@ class AgentLoop:
                                     "⚠️ MEASUREMENT WARNING: Output contains zero value(s). "
                                     "This usually means the compiler optimized away the measurement loop.\n"
                                     "FIX: Add 'volatile' qualifiers and asm volatile barriers:\n"
-                                    "  volatile long long sink = 0;\n"
-                                    "  asm volatile(\"\" : \"+l\"(sink) : : \"memory\");\n"
+                                    "  volatile uint64_t sink64 = (uint64_t)idx;\n"
+                                    "  asm volatile(\"\" : \"+l\"(sink64) : : \"memory\");\n"
                                     "Also add #pragma unroll 1 before loops to prevent unrolling.\n"
                                     "Pass arrays as 'volatile type*' to prevent register caching.\n"
                                     "If this measurement is already zero, you MUST rewrite the kernel "
                                     "with these anti-optimization techniques before compiling again.",
                                     token_count=80,
                                 )
+
+                        # After successful execution, prompt for next unmeasured target
+                        unmeasured = self._find_unmeasured_targets()
+                        if unmeasured and result.get("return_code", -1) == 0:
+                            next_target = unmeasured[0]
+                            from src.domain.design_principles import get_design_principle
+                            next_principle = get_design_principle(next_target)
+                            next_brief = next_principle[:400] if len(next_principle) > 400 else next_principle
+                            self.context_manager.add_entry(
+                                Role.SYSTEM,
+                                f"✅ Measurement successful! Now measure the NEXT target.\n\n"
+                                f"Remaining unmeasured targets: {unmeasured}\n\n"
+                                f"👉 NEXT: Write CUDA code for '{next_target}' and call compile_cuda.\n"
+                                f"Design principle for '{next_target}':\n{next_brief}\n\n"
+                                f"Do NOT output text — CALL compile_cuda NOW with new source code for '{next_target}'.",
+                                token_count=80,
+                            )
             except Exception as e:
                 self.loop_state.last_error = str(e)
                 self._failure_pattern = f"tool_error:{tool_call.name}"
@@ -471,9 +486,35 @@ class AgentLoop:
                 "output": self._model_output[:200],
             })
             if self._completion_detector.is_completion(self._model_output):
-                self._emit(EventKind.STOP, {"reason": "completion_signal"})
-                self.stop()
-                return
+                unmeasured = self._find_unmeasured_targets()
+                if unmeasured:
+                    from src.domain.design_principles import get_design_principle
+                    next_target = unmeasured[0]
+                    next_principle = get_design_principle(next_target)
+                    next_brief = next_principle[:400] if len(next_principle) > 400 else next_principle
+                    self.context_manager.add_entry(
+                        Role.SYSTEM,
+                        f"⚠️ STOP — You said you're done, but NOT all targets are measured!\n"
+                        f"Missing targets: {unmeasured}\n\n"
+                        f"👉 You MUST measure '{next_target}' next.\n"
+                        f"Design principle for '{next_target}':\n{next_brief}\n\n"
+                        f"Call compile_cuda with NEW source code for '{next_target}'.\n"
+                        f"Do NOT output text — CALL the tool NOW.",
+                        token_count=80,
+                    )
+                    no_tool_pattern = "no_tool_call"
+                    self._failure_tracker.record_failure(no_tool_pattern)
+                    if self._failure_tracker.should_terminate(no_tool_pattern):
+                        self._emit(EventKind.STOP, {
+                            "reason": "M4_no_tool_repeat",
+                            "pattern": no_tool_pattern,
+                        })
+                        self.stop()
+                        return
+                else:
+                    self._emit(EventKind.STOP, {"reason": "completion_signal"})
+                    self.stop()
+                    return
             no_tool_pattern = "no_tool_call"
             self._failure_tracker.record_failure(no_tool_pattern)
             
@@ -507,11 +548,23 @@ class AgentLoop:
                 unmeasured = self._find_unmeasured_targets()
                 if unmeasured:
                     next_target = unmeasured[0]
+                    from src.domain.design_principles import get_design_principle
+                    principle_hint = get_design_principle(next_target)
+                    principle_brief = principle_hint[:500] if len(principle_hint) > 500 else principle_hint
                     guidance = (
-                        f"⚠️ You have NOT measured all targets yet!\n"
-                        f"Remaining targets: {unmeasured}\n"
-                        f"NEXT: Write CUDA code for '{next_target}' and call compile_cuda.\n"
-                        f"Do NOT output text — CALL compile_cuda NOW."
+                        f"⚠️ CRITICAL: You have NOT measured all targets yet!\n"
+                        f"✅ Measured targets are done. Remaining: {unmeasured}\n\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"👉 NEXT TARGET: '{next_target}'\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                        f"You MUST write NEW CUDA code for '{next_target}' and compile it.\n"
+                        f"Do NOT output text — CALL compile_cuda NOW.\n\n"
+                        f"Design principle for '{next_target}':\n{principle_brief}\n\n"
+                        f"MANDATORY WORKFLOW:\n"
+                        f'  1. compile_cuda(source="...full .cu source for {next_target}...", flags=["-O3"])\n'
+                        f"  2. execute_binary(binary_path='<from compile>')\n"
+                        f"  3. Record the measured value\n\n"
+                        f"⚠️ Do NOT skip '{next_target}'. The pipeline will FAIL if any target is missing."
                     )
                 else:
                     guidance = (
@@ -600,6 +653,76 @@ class AgentLoop:
                     except (json.JSONDecodeError, TypeError):
                         pass
         return [t for t in all_targets if t not in measured]
+
+    @staticmethod
+    def _build_compile_error_guidance(errors: str) -> str:
+        """Build specific guidance for common CUDA compilation errors.
+
+        Parses the error output and provides targeted fix suggestions
+        to help the LLM fix the code in a single turn.
+        """
+        guidance_parts = []
+        errors_lower = errors.lower()
+
+        if "std" in errors and "sort" in errors_lower:
+            guidance_parts.append(
+                "\n💡 FIX: Add #include <algorithm> at the top of your .cu file. "
+                "std::sort requires this header."
+            )
+        if "asm operand type size" in errors_lower and "constraint" in errors_lower:
+            guidance_parts.append(
+                "\n💡 FIX: The +l asm constraint requires a 64-bit (8-byte) operand. "
+                "If your variable is uint32_t or int (4 bytes), cast it to uint64_t first:\n"
+                "  volatile uint64_t sink64 = (uint64_t)idx;\n"
+                "  asm volatile(\"\" : \"+l\"(sink64) : : \"memory\");\n"
+                "Or use +r constraint for 32-bit variables:\n"
+                "  asm volatile(\"\" : \"+r\"(idx) : : \"memory\");"
+            )
+        if "undefined reference to clock(" in errors_lower:
+            guidance_parts.append(
+                "\n💡 FIX: Use clock64() instead of clock(). "
+                "clock() returns 0 on Pascal+ GPUs. clock64() returns the actual GPU cycle counter."
+            )
+        if "cannot bind" in errors_lower and "volatile" in errors_lower:
+            guidance_parts.append(
+                "\n💡 FIX: Remove 'volatile' from the loop variable itself. "
+                "Only use 'volatile' for the sink variable and timing variables (start/end). "
+                "The loop variable (idx) should be plain uint32_t, not volatile uint32_t."
+            )
+        if "was set but never used" in errors_lower or "set but not used" in errors_lower:
+            guidance_parts.append(
+                "\n💡 FIX: The compiler sees a variable that is assigned but never read. "
+                "Add a sink variable to consume the result:\n"
+                "  volatile uint64_t sink64 = (uint64_t)result_variable;\n"
+                "  asm volatile(\"\" : \"+l\"(sink64) : : \"memory\");"
+            )
+        if "-arch" in errors_lower or "sm_" in errors_lower:
+            guidance_parts.append(
+                "\n💡 FIX: Remove or fix the -arch flag. Do NOT use -arch=0 or -arch=sm_0. "
+                "Use flags=[\"-O3\"] only, the system will auto-detect the correct architecture."
+            )
+        if "expected a" in errors_lower and (";" in errors or "{" in errors):
+            guidance_parts.append(
+                "\n💡 FIX: Syntax error in your CUDA code. Check for missing semicolons, "
+                "mismatched braces, or incorrect type declarations."
+            )
+
+        if not guidance_parts:
+            guidance_parts.append(
+                "\n💡 Common fixes:\n"
+                "1. Check for missing #include headers (add <algorithm>, <cstring>)\n"
+                "2. Check asm volatile constraint types (+l needs 64-bit, +r for 32-bit)\n"
+                "3. Use clock64() not clock()\n"
+                "4. Ensure all braces and semicolons are matched\n"
+                "5. Do NOT use -arch=0 or -arch=sm_0 in flags"
+            )
+
+        guidance_parts.append(
+            "\n\n⚠️ IMPORTANT: Fix the error and call compile_cuda AGAIN with the corrected source. "
+            "Do NOT give up — compilation errors are normal and fixable!"
+        )
+
+        return "".join(guidance_parts)
 
     def _execute_tool_call(self, tool_call: ToolCall) -> dict[str, Any]:
         contract = self.tool_registry.get(tool_call.name)

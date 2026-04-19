@@ -110,7 +110,8 @@ class StagePromptBuilder:
 
     @staticmethod
     def _plan_task(target_spec: dict[str, Any], prev_result: Any | None) -> str:
-        target = target_spec.get("target", "unknown")
+        targets = target_spec.get("targets", [])
+        target = target_spec.get("target", targets[0] if targets else "unknown")
         return (
             f"Create a detailed plan for measuring GPU characteristic: {target}\n\n"
             f"Target specification: {target_spec}\n\n"
@@ -122,8 +123,8 @@ class StagePromptBuilder:
     def _codegen_task(target_spec: dict[str, Any], prev_result: Any | None) -> str:
         from src.domain.design_principles import get_design_principle
 
-        target = target_spec.get("target", "unknown")
         targets = target_spec.get("targets", [])
+        target = target_spec.get("target", targets[0] if targets else "unknown")
         principle = get_design_principle(target)
 
         parts = [
@@ -134,6 +135,13 @@ class StagePromptBuilder:
 
         if targets and len(targets) > 1:
             target_list_str = "\n".join(f"  {i+1}. {t}" for i, t in enumerate(targets))
+            all_principles = []
+            for t in targets:
+                p = get_design_principle(t)
+                brief = p[:600] if len(p) > 600 else p
+                all_principles.append(f"  --- {t} ---\n{brief}")
+            principles_str = "\n\n".join(all_principles)
+
             parts.append(
                 f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"⚠️  CRITICAL: You MUST measure ALL {len(targets)} targets\n"
@@ -153,7 +161,11 @@ class StagePromptBuilder:
                 f"⚠️  compile_cuda OVERWRITES the previous binary each time.\n"
                 f"  So you MUST execute_binary IMMEDIATELY after each compile_cuda.\n"
                 f"  Do NOT compile all targets first — compile+execute one at a time.\n\n"
-                f"Do NOT skip any target. The pipeline will FAIL if any target is missing.\n"
+                f"Do NOT skip any target. The pipeline will FAIL if any target is missing.\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📐 DESIGN PRINCIPLES FOR EACH TARGET\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"{principles_str}\n"
             )
 
         if prev_result is not None:
@@ -204,7 +216,8 @@ class StagePromptBuilder:
     def _metric_task(target_spec: dict[str, Any], prev_result: Any | None) -> str:
         from src.domain.design_principles import get_design_principle
 
-        target = target_spec.get("target", "unknown")
+        targets = target_spec.get("targets", [])
+        target = target_spec.get("target", targets[0] if targets else "unknown")
         principle = get_design_principle(target)
 
         parts = [
@@ -243,8 +256,8 @@ class StagePromptBuilder:
 
     @staticmethod
     def _verification_task(target_spec: dict[str, Any], prev_result: Any | None) -> str:
-        target = target_spec.get("target", "unknown")
         targets = target_spec.get("targets", [])
+        target = target_spec.get("target", targets[0] if targets else "unknown")
         parts = [
             f"Verify the benchmark results for: {target}",
             f"\nRequested targets: {targets}",
