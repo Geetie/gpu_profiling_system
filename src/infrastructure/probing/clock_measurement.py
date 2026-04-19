@@ -22,6 +22,7 @@ import shutil
 import time
 from typing import Any, Callable
 
+from src.infrastructure.probing.fallback_config import check_fallback_usage, mark_result_as_fallback
 from src.infrastructure.probing.kernel_templates import get_clock_calibration_design_spec
 from src.infrastructure.probing.probe_helpers import (
     compile_and_run,
@@ -64,9 +65,14 @@ def probe_actual_clock_frequency(
     if code_generator is not None:
         source = code_generator(_build_generation_prompt(spec, loop_iterations))
         print("[clock] Using LLM-generated CUDA source")
+        used_fallback = False
     else:
+        if not check_fallback_usage("clock_measurement"):
+            print("[clock] Fallback blocked - returning None to force LLM generation")
+            return None
         source = _get_fallback_source(loop_iterations)
-        print("[clock] Using fallback CUDA source (no LLM available)")
+        print("[clock] Using fallback CUDA source (DEBUG MODE - will be marked as non-compliant)")
+        used_fallback = True
     
     print(f"[clock] Kernel source length: {len(source)} chars")
     result = compile_and_run(source, sandbox=sandbox)
@@ -108,6 +114,8 @@ def probe_actual_clock_frequency(
         }
         if ncu_raw:
             result_dict["_ncu_raw_output"] = ncu_raw
+        if used_fallback:
+            result_dict = mark_result_as_fallback(result_dict, "clock_measurement")
         return result_dict
 
     print(f"[clock] Host timing returned invalid freq={freq_mhz} MHz (< 100 MHz threshold)")
@@ -116,13 +124,16 @@ def probe_actual_clock_frequency(
     freq_mhz = _measure_with_cuda_events(source, sandbox)
     print(f"[clock] _measure_with_cuda_events returned: freq_mhz={freq_mhz}")
     if freq_mhz and freq_mhz > 100:
-        return {
+        result_dict = {
             "actual_boost_clock_mhz": round(freq_mhz, 2),
             "total_sm_cycles": int(total_cycles),
             "cycles_per_iteration": parsed.get("cycles_per_iter", 0),
             "_confidence": _assess_clock_confidence(freq_mhz) * 0.8,
             "method": "sm_clock_cycles_vs_cuda_event_timing",
         }
+        if used_fallback:
+            result_dict = mark_result_as_fallback(result_dict, "clock_measurement")
+        return result_dict
 
     print("[clock] All timing methods failed, returning None")
     return None

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from src.infrastructure.probing.fallback_config import check_fallback_usage, mark_result_as_fallback
 from src.infrastructure.probing.kernel_templates import get_working_set_sweep_design_spec
 from src.infrastructure.probing.probe_helpers import (
     compile_and_run,
@@ -69,10 +70,15 @@ def probe_l2_cache_capacity(
         if code_generator is not None:
             source = code_generator(_build_generation_prompt(spec, size_elem))
             print(f"[cache_capacity] Using LLM-generated CUDA source for {size_elem}")
+            used_fallback = False
         else:
+            if not check_fallback_usage("cache_capacity"):
+                print(f"[cache_capacity] Fallback blocked - returning None")
+                return None
             source = _get_fallback_source(size_elem)
-            print(f"[cache_capacity] Using fallback CUDA source for {size_elem}")
-        
+            print(f"[cache_capacity] Using fallback CUDA source for {size_elem} (DEBUG MODE)")
+            used_fallback = True
+
         result = compile_and_run(source, sandbox=sandbox)
         if result and result.success:
             parsed = parse_nvcc_output(result.stdout)
@@ -122,6 +128,9 @@ def probe_l2_cache_capacity(
     if l2_size_bytes > 0:
         results["l2_cache_size_mb"] = round(l2_size_bytes / (1024 * 1024), 4)
         results["l2_cache_size_kb"] = round(l2_size_bytes / 1024, 2)
+
+    if used_fallback:
+        results = mark_result_as_fallback(results, "cache_capacity")
 
     return results
 

@@ -18,6 +18,7 @@ import os
 import shutil
 from typing import Any, Callable
 
+from src.infrastructure.probing.fallback_config import check_fallback_usage, mark_result_as_fallback
 from src.infrastructure.probing.probe_helpers import (
     compile_and_run,
     parse_ncu_gpu_time,
@@ -61,9 +62,14 @@ def probe_shmem_bandwidth(
     if code_generator is not None:
         source = code_generator(_build_generation_prompt(spec, block_threads))
         print("[shmem_bandwidth] Using LLM-generated CUDA source")
+        used_fallback = False
     else:
+        if not check_fallback_usage("shmem_bandwidth"):
+            print("[shmem_bandwidth] Fallback blocked - returning None to force LLM generation")
+            return None
         source = _get_fallback_source(block_threads)
-        print("[shmem_bandwidth] Using fallback CUDA source (no LLM available)")
+        print("[shmem_bandwidth] Using fallback CUDA source (DEBUG MODE - will be marked as non-compliant)")
+        used_fallback = True
     
     result = compile_and_run(source, sandbox=sandbox)
     if not result or not result.success:
@@ -102,7 +108,7 @@ def probe_shmem_bandwidth(
             if min_gpu_time_ns and min_gpu_time_ns > 0:
                 total_bytes_int = int(total_bytes)
                 bandwidth_gbps = total_bytes_int / min_gpu_time_ns * 1e9 / 1e9
-                return {
+                result_dict = {
                     "shmem_bandwidth_gbps": round(bandwidth_gbps, 2),
                     "total_bytes": total_bytes_int,
                     "gpu_time_ns": min_gpu_time_ns,
@@ -110,6 +116,9 @@ def probe_shmem_bandwidth(
                     "_confidence": _assess_confidence(bandwidth_gbps, 100, 20000),
                     "_ncu_raw": best_ncu_raw[:1000] if best_ncu_raw else None,
                 }
+                if used_fallback:
+                    result_dict = mark_result_as_fallback(result_dict, "shmem_bandwidth")
+                return result_dict
         except Exception as e:
             print(f"[shmem_bandwidth] ncu profiling failed: {e}")
 

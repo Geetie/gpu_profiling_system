@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from src.infrastructure.probing.fallback_config import check_fallback_usage, mark_result_as_fallback
 from src.infrastructure.probing.kernel_templates import get_pointer_chase_design_spec
 from src.infrastructure.probing.probe_helpers import (
     compile_and_run,
@@ -67,9 +68,14 @@ def probe_dram_latency_cycles(
         if code_generator is not None:
             source = code_generator(_build_generation_prompt(spec, size, iters))
             print(f"[dram_latency] Using LLM-generated CUDA source for {level}")
+            used_fallback = False
         else:
+            if not check_fallback_usage("dram_latency"):
+                print(f"[dram_latency] Fallback blocked for {level} - returning None")
+                return None
             source = _get_fallback_source(size, iters)
-            print(f"[dram_latency] Using fallback CUDA source for {level}")
+            print(f"[dram_latency] Using fallback CUDA source for {level} (DEBUG MODE)")
+            used_fallback = True
         
         result = compile_and_run(source, sandbox=sandbox)
         if result and result.success:
@@ -130,7 +136,13 @@ def probe_dram_latency_cycles(
     if dram_contaminated:
         results["_confidence"] = min(results["_confidence"], 0.4)
 
-    return results if results.get("dram_latency_cycles") else None
+    if not results.get("dram_latency_cycles"):
+        return None
+
+    if used_fallback:
+        results = mark_result_as_fallback(results, "dram_latency")
+
+    return results
 
 
 def probe_latency_profile(

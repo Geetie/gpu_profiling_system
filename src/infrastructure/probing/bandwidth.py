@@ -16,6 +16,7 @@ import os
 import shutil
 from typing import Any, Callable
 
+from src.infrastructure.probing.fallback_config import check_fallback_usage, mark_result_as_fallback
 from src.infrastructure.probing.kernel_templates import get_stream_copy_design_spec
 from src.infrastructure.probing.probe_helpers import (
     compile_and_run,
@@ -63,10 +64,15 @@ def probe_dram_bandwidth(
     if code_generator is not None:
         source = code_generator(_build_generation_prompt(spec, size_elements))
         print("[bandwidth] Using LLM-generated CUDA source")
+        used_fallback = False
     else:
+        if not check_fallback_usage("bandwidth"):
+            print("[bandwidth] Fallback blocked - returning None to force LLM generation")
+            return None
         source = _get_fallback_source(size_elements)
-        print("[bandwidth] Using fallback CUDA source (no LLM available)")
-    
+        print("[bandwidth] Using fallback CUDA source (DEBUG MODE - will be marked as non-compliant)")
+        used_fallback = True
+
     result = compile_and_run(source, sandbox=sandbox)
     if not result or not result.success:
         return None
@@ -110,6 +116,8 @@ def probe_dram_bandwidth(
             result = _build_result(elements, bytes_copied, parsed, min_gpu_time_ns)
             if result and best_ncu_raw:
                 result["_ncu_raw_output"] = best_ncu_raw
+            if used_fallback:
+                result = mark_result_as_fallback(result, "bandwidth")
             return result
     except Exception:
         pass
