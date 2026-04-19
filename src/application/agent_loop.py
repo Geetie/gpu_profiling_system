@@ -282,8 +282,18 @@ class AgentLoop:
                 current_target = self.loop_state.current_target
                 all_targets_list = self._get_all_targets()
 
+                # DEBUG: Log target state machine status
+                print(f"[AgentLoop] [DEBUG] compile_cuda called:")
+                print(f"  - current_target: {current_target}")
+                print(f"  - all_targets_list: {all_targets_list}")
+                print(f"  - target_retry_count: {dict(self.loop_state.target_retry_count)}")
+                print(f"  - completed_targets: {self.loop_state.completed_targets}")
+
                 if current_target and all_targets_list:
                     retry_count = self.loop_state.target_retry_count.get(current_target, 0)
+
+                    print(f"[AgentLoop] [DEBUG] Checking FORCE SWITCH conditions:")
+                    print(f"  - retry_count ({retry_count}) >= MAX_RETRIES_PER_TARGET ({MAX_RETRIES_PER_TARGET}): {retry_count >= MAX_RETRIES_PER_TARGET}")
 
                     # Check if we've exceeded max retries OR too many compile failures
                     should_force_switch = False
@@ -296,6 +306,9 @@ class AgentLoop:
                     # Find next unmeasured target
                     remaining = [t for t in all_targets_list
                                  if t not in self.loop_state.completed_targets and t != current_target]
+
+                    print(f"  - remaining targets: {remaining}")
+                    print(f"  - should_force_switch: {should_force_switch}")
 
                     if should_force_switch and remaining:
                         next_target = remaining[0]
@@ -332,8 +345,10 @@ class AgentLoop:
 
                 # Increment retry count for current target
                 if current_target:
-                    self.loop_state.target_retry_count[current_target] = \
-                        self.loop_state.target_retry_count.get(current_target, 0) + 1
+                    old_count = self.loop_state.target_retry_count.get(current_target, 0)
+                    self.loop_state.target_retry_count[current_target] = old_count + 1
+                    new_count = self.loop_state.target_retry_count[current_target]
+                    print(f"[AgentLoop] [DEBUG] Incremented retry_count for '{current_target}': {old_count} -> {new_count}")
 
                 source = tool_call.arguments.get("source", "")
                 validation_error = tool_call.arguments.get("_validation_error", "")
@@ -611,6 +626,17 @@ class AgentLoop:
                     # Detect implausible measurements (all zeros) after execute_binary
                     if tool_call.name == "execute_binary":
                         stdout = result.get("stdout", "")
+                        stderr = result.get("stderr", "")
+                        return_code = result.get("return_code", -1)
+
+                        # DEBUG: Log execute_binary result details
+                        print(f"[AgentLoop] execute_binary result: return_code={return_code}, "
+                              f"stdout_len={len(stdout) if stdout else 0}, "
+                              f"stderr_len={len(stderr) if stderr else 0}")
+                        if stdout:
+                            print(f"[AgentLoop] execute_binary STDOUT (first 500 chars): {stdout[:500]}")
+                        if stderr:
+                            print(f"[AgentLoop] execute_binary STDERR (first 200 chars): {stderr[:200]}")
 
                         # Step 7: Auto-parse execute_binary output and record measurements
                         if stdout:
@@ -628,6 +654,8 @@ class AgentLoop:
                                         measurements[key] = val
                                     except ValueError:
                                         pass
+
+                            print(f"[AgentLoop] Parsed {len(measurements)} measurements from stdout: {list(measurements.keys())}")
 
                             if measurements:
                                 # Record to completed_targets in state machine
