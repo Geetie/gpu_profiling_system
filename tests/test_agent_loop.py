@@ -13,7 +13,7 @@ from src.application.agent_loop import (
 )
 from src.application.tool_call_parser import ToolCall
 from src.application.control_plane import ControlPlane
-from src.application.context import ContextManager
+from src.application.context import ContextManager, Role
 from src.application.session import SessionState
 from src.domain.tool_contract import ToolContract, ToolRegistry
 
@@ -213,3 +213,240 @@ class TestAgentLoop:
         )
         assert loop2.session.step_count == 1
         assert loop2.session.session_id == "chk"
+
+
+# ── Target State Machine Tests ──────────────────────────────────────
+
+
+class TestTargetStateMachine:
+    """Tests for target state machine (current_target, completed_targets, target_retry_count)."""
+
+    def test_init_target_state(self):
+        """Test _init_target_state() initializes all fields correctly."""
+        state = LoopState(session_id="test_session")
+        assert state.current_target is None
+        assert state.completed_targets == []
+        assert state.target_retry_count == {}
+
+    def test_target_state_serialization(self):
+        """Test LoopState.to_dict() and from_dict() preserve target fields."""
+        original = LoopState(
+            session_id="test",
+            current_target="dram_latency_cycles",
+            completed_targets=["l2_cache_size_mb"],
+            target_retry_count={"dram_latency_cycles": 2, "l2_cache_size_mb": 0},
+        )
+        data = original.to_dict()
+        restored = LoopState.from_dict(data)
+
+        assert restored.current_target == original.current_target
+        assert restored.completed_targets == original.completed_targets
+        assert restored.target_retry_count == original.target_retry_count
+
+    def test_find_unmeasured_targets_basic(self):
+        """Test _find_unmeasured_targets() with simple key:value format."""
+        ctx = ContextManager()
+
+        # Add system message with targets
+        ctx.add_entry(
+            role=Role.SYSTEM,
+            content='{"targets": ["dram_latency_cycles", "l2_cache_size_mb", "actual_boost_clock_mhz"]}',
+            token_count=50,
+        )
+
+        # Add assistant message with one measured target
+        ctx.add_entry(
+            role=Role.ASSISTANT,
+            content=json.dumps({
+                "tool": "execute_binary",
+                "stdout": "dram_latency_cycles: 450.5\nsm_count: 56",
+                "return_code": 0,
+            }),
+            token_count=30,
+        )
+
+        # Create AgentLoop instance (minimal setup)
+        control = ControlPlane()
+        registry = _make_registry()
+        session = SessionState(session_id="test_find", goal="test goal")
+        loop = AgentLoop(
+            session=session,
+            context_manager=ctx,
+            control_plane=control,
+            tool_registry=registry,
+            max_turns=10,
+        )
+
+        unmeasured = loop._find_unmeasured_targets()
+
+        # Should find 2 unmeasured targets (l2_cache_size_mb, actual_boost_clock_mhz)
+        assert "dram_latency_cycles" not in unmeasured
+        assert "l2_cache_size_mb" in unmeasured
+        assert "actual_boost_clock_mhz" in unmeasured
+        assert len(unmeasured) == 2
+
+    def test_find_unmeasured_targets_json_stdout(self):
+        """Test _find_unmeasured_targets() parses JSON stdout format."""
+        ctx = ContextManager()
+
+        # Add system message with targets
+        ctx.add_entry(
+            role=Role.SYSTEM,
+            content='{"targets": ["target1", "target2"]}',
+            token_count=50,
+        )
+
+        # Add assistant message with JSON result containing stdout
+        ctx.add_entry(
+            role=Role.ASSISTANT,
+            content=json.dumps({
+                "tool": "execute_binary",
+                "stdout": "target1: 123.45\ntarget2: 678.90",
+                "success": True,
+            }),
+            token_count=30,
+        )
+
+        control = ControlPlane()
+        registry = _make_registry()
+        session = SessionState(session_id="test_json", goal="test goal")
+        loop = AgentLoop(
+            session=session,
+            context_manager=ctx,
+            control_plane=control,
+            tool_registry=registry,
+            max_turns=10,
+        )
+
+        unmeasured = loop._find_unmeasured_targets()
+
+        # Both targets should be marked as measured
+        assert len(unmeasured) == 0
+
+    def test_detect_cuda_syntax_error_asm_volatile(self):
+        """Test _detect_cuda_syntax_error() detects asm volatile missing colon."""
+        control = ControlPlane()
+        registry = _make_registry()
+        session = SessionState(session_id="test_syntax", goal="test goal")
+        ctx = ContextManager()
+        loop = AgentLoop(
+            session=session,
+            context_manager=ctx,
+            control_plane=control,
+            tool_registry=registry,
+            max_turns=10,
+        )
+
+        error_text = 'source.cu(42): error: expected a ";"\nasm volatile("") : "+l"(sink64)'
+        guidance = loop._detect_cuda_syntax_error(error_text)
+
+        assert guidance is not None
+        assert "asm volatile" in guidance
+        assert "SYNTAX ERROR" in guidance
+
+    def test_detect_cuda_syntax_error_missing_include(self):
+        """Test _detect_cuda_syntax_error() detects missing #include."""
+        control = ControlPlane()
+        registry = _make_registry()
+        session = SessionState(session_id="test_include", goal="test goal")
+        ctx = ContextManager()
+        loop = AgentLoop(
+            session=session,
+            context_manager=ctx,
+            control_plane=control,
+            tool_registry=registry,
+            max_turns=10,
+        )
+
+        error_text = 'source.cu(15): error: identifier "printf" is undefined'
+        guidance = loop._detect_cuda_syntax_error(error_text)
+
+        assert guidance is not None
+        assert "#include" in guidance or "printf" in guidance
+
+    def test_force_switch_should_trigger_at_max_retries(self):
+        """Test FORCE SWITCH logic triggers when retry_count >= MAX_RETRIES_PER_TARGET."""
+        MAX_RETRIES = 2
+
+        # Simulate state where retry_count has reached max
+        state = LoopState(
+            session_id="test_force",
+            current_target="dram_latency_cycles",
+            completed_targets=[],
+            target_retry_count={"dram_latency_cycles": 2},  # At max
+        )
+
+        # Check condition
+        retry_count = state.target_retry_count.get(state.current_target, 0)
+        should_switch = retry_count >= MAX_RETRIES
+
+        assert should_switch == True, "FORCE SWITCH should trigger at retry_count=2"
+
+    def test_force_switch_should_not_trigger_below_max(self):
+        """Test FORCE SWITCH logic does NOT trigger when retry_count < MAX."""
+        MAX_RETRIES = 2
+
+        # Simulate state where retry_count is below max
+        state = LoopState(
+            session_id="test_no_force",
+            current_target="dram_latency_cycles",
+            completed_targets=[],
+            target_retry_count={"dram_latency_cycles": 1},  # Below max
+        )
+
+        retry_count = state.target_retry_count.get(state.current_target, 0)
+        should_switch = retry_count >= MAX_RETRIES
+
+        assert should_switch == False, "FORCE SWITCH should NOT trigger at retry_count=1"
+
+    def test_persist_and_restore_target_state(self, tmp_path):
+        """Test that target state persists and restores correctly across turns."""
+        import tempfile
+
+        state_dir = str(tmp_path / "test_state")
+
+        control = ControlPlane()
+        registry = _make_registry()
+        ctx = ContextManager()
+        session = SessionState(session_id="test_persist", goal="test goal")
+
+        loop = AgentLoop(
+            session=session,
+            context_manager=ctx,
+            control_plane=control,
+            tool_registry=registry,
+            max_turns=10,
+            state_dir=state_dir,
+        )
+
+        # Initialize target state
+        loop._init_target_state({
+            "targets": ["dram_latency_cycles", "l2_cache_size_mb", "actual_boost_clock_mhz"]
+        })
+
+        assert loop.loop_state.current_target == "dram_latency_cycles"
+        assert loop.loop_state.target_retry_count == {
+            "dram_latency_cycles": 0,
+            "l2_cache_size_mb": 0,
+            "actual_boost_clock_mhz": 0,
+        }
+
+        # Simulate some retries on first target
+        loop.loop_state.target_retry_count["dram_latency_cycles"] = 2
+
+        # Persist state
+        loop._persist_state()
+
+        # Resume from persisted state
+        loop2 = AgentLoop.from_resume(
+            session_id="test_persist",
+            control_plane=control,
+            context_manager=ctx,
+            tool_registry=registry,
+            state_dir=state_dir,
+        )
+
+        # Verify restored state
+        assert loop2.loop_state.current_target == "dram_latency_cycles"
+        assert loop2.loop_state.target_retry_count["dram_latency_cycles"] == 2
+        print("✅ Target state persistence and restoration works correctly!")

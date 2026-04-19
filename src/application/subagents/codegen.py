@@ -275,7 +275,9 @@ class CodeGenAgent(BaseSubAgent):
         across both Pipeline and non-Pipeline modes.
         """
         arch = self._detect_gpu_arch()
-        binary_name = "benchmark"
+        # P0 FIX: Use target-specific binary name to prevent overwriting
+        safe_target = str(target).replace(" ", "_").replace("-", "_").lower()
+        binary_name = f"benchmark_{safe_target}" if target and target != "unknown" else "benchmark"
 
         import os
         source_dir = os.path.join(self._sandbox.sandbox_root, "src")

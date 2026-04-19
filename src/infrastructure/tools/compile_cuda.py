@@ -185,6 +185,11 @@ def compile_cuda_handler(
     os.makedirs(binary_dir, exist_ok=True)
     
     binary_name = "benchmark"
+    # P0 FIX: Support target-specific binary names to prevent overwriting
+    target_from_args = arguments.get("target", "")
+    if target_from_args and isinstance(target_from_args, str) and target_from_args.strip():
+        safe_target = target_from_args.replace(" ", "_").replace("-", "_").lower()
+        binary_name = f"benchmark_{safe_target}"
     cmd_args = ["-o", os.path.join(binary_dir, binary_name), "source.cu"] + safe_flags + ["-Wno-deprecated-gpu-targets"]
 
     result = runner.run(

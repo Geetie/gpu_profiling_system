@@ -278,24 +278,13 @@ class AgentLoop:
             if tool_call.name == "compile_cuda":
                 # Step 4: Check per-target retry limit to prevent infinite recompilation loops
                 MAX_RETRIES_PER_TARGET = 2  # Reduced from 3 to handle LLM syntax errors faster
-                MAX_COMPILE_FAILURES = 1    # Force switch after 1 compilation failure (syntax errors)
                 current_target = self.loop_state.current_target
                 all_targets_list = self._get_all_targets()
-
-                # DEBUG: Log target state machine status
-                print(f"[AgentLoop] [DEBUG] compile_cuda called:")
-                print(f"  - current_target: {current_target}")
-                print(f"  - all_targets_list: {all_targets_list}")
-                print(f"  - target_retry_count: {dict(self.loop_state.target_retry_count)}")
-                print(f"  - completed_targets: {self.loop_state.completed_targets}")
 
                 if current_target and all_targets_list:
                     retry_count = self.loop_state.target_retry_count.get(current_target, 0)
 
-                    print(f"[AgentLoop] [DEBUG] Checking FORCE SWITCH conditions:")
-                    print(f"  - retry_count ({retry_count}) >= MAX_RETRIES_PER_TARGET ({MAX_RETRIES_PER_TARGET}): {retry_count >= MAX_RETRIES_PER_TARGET}")
-
-                    # Check if we've exceeded max retries OR too many compile failures
+                    # Check if we've exceeded max retries
                     should_force_switch = False
                     force_reason = ""
 
@@ -306,9 +295,6 @@ class AgentLoop:
                     # Find next unmeasured target
                     remaining = [t for t in all_targets_list
                                  if t not in self.loop_state.completed_targets and t != current_target]
-
-                    print(f"  - remaining targets: {remaining}")
-                    print(f"  - should_force_switch: {should_force_switch}")
 
                     if should_force_switch and remaining:
                         next_target = remaining[0]
@@ -345,10 +331,12 @@ class AgentLoop:
 
                 # Increment retry count for current target
                 if current_target:
-                    old_count = self.loop_state.target_retry_count.get(current_target, 0)
-                    self.loop_state.target_retry_count[current_target] = old_count + 1
-                    new_count = self.loop_state.target_retry_count[current_target]
-                    print(f"[AgentLoop] [DEBUG] Incremented retry_count for '{current_target}': {old_count} -> {new_count}")
+                    self.loop_state.target_retry_count[current_target] = \
+                        self.loop_state.target_retry_count.get(current_target, 0) + 1
+
+                # P0 FIX: Inject current_target into compile_cuda arguments for target-specific binary names
+                if tool_call.name == "compile_cuda" and current_target:
+                    tool_call.arguments["target"] = current_target
 
                 source = tool_call.arguments.get("source", "")
                 validation_error = tool_call.arguments.get("_validation_error", "")
@@ -497,6 +485,10 @@ class AgentLoop:
                 # Track which tool was called (for _already_executed_binary detection)
                 if isinstance(result, dict) and "tool" not in result:
                     result["tool"] = tool_call.name
+                # P1 FIX: Add target metadata to tool results for better traceability
+                if (isinstance(result, dict) and self.loop_state.current_target 
+                    and "target" not in result):
+                    result["target"] = self.loop_state.current_target
                 if tool_call.name == "execute_binary" and isinstance(result, dict):
                     bp = tool_call.arguments.get("binary_path", "")
                     if bp:
@@ -626,17 +618,6 @@ class AgentLoop:
                     # Detect implausible measurements (all zeros) after execute_binary
                     if tool_call.name == "execute_binary":
                         stdout = result.get("stdout", "")
-                        stderr = result.get("stderr", "")
-                        return_code = result.get("return_code", -1)
-
-                        # DEBUG: Log execute_binary result details
-                        print(f"[AgentLoop] execute_binary result: return_code={return_code}, "
-                              f"stdout_len={len(stdout) if stdout else 0}, "
-                              f"stderr_len={len(stderr) if stderr else 0}")
-                        if stdout:
-                            print(f"[AgentLoop] execute_binary STDOUT (first 500 chars): {stdout[:500]}")
-                        if stderr:
-                            print(f"[AgentLoop] execute_binary STDERR (first 200 chars): {stderr[:200]}")
 
                         # Step 7: Auto-parse execute_binary output and record measurements
                         if stdout:
@@ -1032,7 +1013,8 @@ class AgentLoop:
     def _find_unmeasured_targets(self) -> list[str]:
         """Find targets that have not yet been measured in this session.
 
-        Enhanced to support multiple output formats:
+        Enhanced with robust JSON parsing for both target extraction and measurement detection.
+        Supports multiple output formats:
         - JSON stdout from execute_binary results
         - Direct text output with 'key: value' format
         - Various numeric formats (int, float, scientific notation)
@@ -1041,12 +1023,22 @@ class AgentLoop:
         measured = set()
         entries = self.context_manager.get_entries()
 
-        # Extract all requested targets from system messages
+        # Extract all requested targets from system messages (enhanced JSON parsing)
         for entry in entries:
             if entry.role.value == "system" and "targets" in entry.content:
-                m = re.search(r'"targets"\s*:\s*\[([^\]]+)\]', entry.content)
-                if m:
-                    all_targets = re.findall(r'"([^"]+)"', m.group(1))
+                # P0 FIX: Use JSON parsing instead of regex for more reliable extraction
+                try:
+                    data = json.loads(entry.content)
+                    if isinstance(data, dict):
+                        targets = data.get("targets", [])
+                        if isinstance(targets, list) and targets:
+                            all_targets = [t for t in targets if isinstance(t, str)]
+                            break  # Found valid targets, stop searching
+                except (json.JSONDecodeError, TypeError):
+                    # Fallback to regex if JSON parsing fails
+                    m = re.search(r'"targets"\s*:\s*\[([^\]]+)\]', entry.content)
+                    if m:
+                        all_targets = re.findall(r'"([^"]+)"', m.group(1))
 
         # Enhanced measurement detection with multiple format support
         for entry in entries:
@@ -1062,32 +1054,56 @@ class AgentLoop:
                     # Check stdout field (most common for execute_binary)
                     stdout = data.get("stdout", "")
                     if isinstance(stdout, str) and stdout:
-                        for line in stdout.splitlines():
-                            m = re.match(r'\s*([\w_]+)\s*[:=]\s*[\d.]+[eE]?[\d]*', line)
-                            if m and not line.strip().startswith("//"):
-                                measured.add(m.group(1))
+                        measurements = self._parse_measurements_from_text(stdout)
+                        measured.update(measurements)
 
                     # Check output field (alternative format)
                     output = data.get("output", "")
                     if isinstance(output, str) and output:
-                        for line in output.splitlines():
-                            m = re.match(r'\s*([\w_]+)\s*[:=]\s*[\d.]+[eE]?[\d]*', line)
-                            if m and not line.strip().startswith("//"):
-                                measured.add(m.group(1))
+                        measurements = self._parse_measurements_from_text(output)
+                        measured.update(measurements)
+
+                    # Check for explicit "measurements" field (P0 enhancement)
+                    measurements_field = data.get("measurements", {})
+                    if isinstance(measurements_dict := measurements_field, dict):
+                        for key, val in measurements_dict.items():
+                            if isinstance(key, str) and isinstance(val, (int, float)):
+                                measured.add(key)
             except (json.JSONDecodeError, TypeError):
                 pass
 
             # Format 2: Plain text with key-value pairs
-            for line in content.splitlines():
-                # Skip comment lines
-                if line.strip().startswith("//") or line.strip().startswith("#"):
-                    continue
-                # Match patterns like "dram_latency_cycles: 450.5" or "sm_count = 56"
-                m = re.match(r'\s*([\w_]+)\s*[:=]\s*[\d.]+[eE]?[\d]*', line)
-                if m:
-                    measured.add(m.group(1))
+            measurements = self._parse_measurements_from_text(content)
+            measured.update(measurements)
 
         return [t for t in all_targets if t not in measured]
+
+    def _parse_measurements_from_text(self, text: str) -> set[str]:
+        """Parse measurement values from text content.
+
+        Args:
+            text: Text content to parse (stdout, output, or plain text)
+
+        Returns:
+            set[str]: Set of measurement keys found
+        """
+        measurements = set()
+        if not text or not isinstance(text, str):
+            return measurements
+
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            # Skip comment lines
+            if line.startswith("//") or line.startswith("#"):
+                continue
+            # Match patterns like "dram_latency_cycles: 450.5" or "sm_count = 56"
+            m = re.match(r'\s*([\w_]+)\s*[:=]\s*[\d.]+[eE]?[\d]*', line)
+            if m:
+                measurements.add(m.group(1))
+
+        return measurements
 
     def _detect_cuda_syntax_error(self, error_text: str) -> str | None:
         """Detect common CUDA compilation errors and provide targeted fix guidance.
@@ -1417,7 +1433,8 @@ class AgentLoop:
     ) -> AgentLoop:
         mgr = SessionManager(state_dir=state_dir)
         session = mgr.resume(session_id, new_goal=new_goal)
-        return cls(
+
+        instance = cls(
             session=session,
             context_manager=context_manager,
             control_plane=control_plane,
@@ -1426,6 +1443,26 @@ class AgentLoop:
             state_dir=state_dir,
             permission_mode=permission_mode,
         )
+
+        # CRITICAL FIX: Restore loop_state from persisted data
+        # This ensures target_retry_count, current_target, completed_targets
+        # are preserved across turns (otherwise FORCE SWITCH never triggers!)
+        try:
+            persister = StatePersister(log_dir=state_dir)
+            last_state_log = persister.get_last_tool_execution("__loop_state__")
+            if last_state_log and isinstance(last_state_log.get("inputs"), dict):
+                restored_state = LoopState.from_dict(last_state_log["inputs"])
+                instance.loop_state.current_target = restored_state.current_target
+                instance.loop_state.completed_targets = restored_state.completed_targets
+                instance.loop_state.target_retry_count = restored_state.target_retry_count
+                print(f"[AgentLoop] Restored target state from persistence: "
+                      f"current={restored_state.current_target}, "
+                      f"completed={restored_state.completed_targets}, "
+                      f"retries={restored_state.target_retry_count}")
+        except Exception as e:
+            print(f"[AgentLoop] WARNING: Could not restore loop_state from persistence: {e}")
+
+        return instance
 
     def set_model_caller(self, caller: ModelCaller) -> None:
         self._model_caller = caller

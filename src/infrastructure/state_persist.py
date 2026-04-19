@@ -58,6 +58,33 @@ class StatePersister:
             "output": output,
         })
 
+    def get_last_tool_execution(self, tool_name: str) -> dict[str, Any] | None:
+        """Get the last execution log for a specific tool.
+
+        Args:
+            tool_name: Name of the tool to search for
+
+        Returns:
+            dict | None: The last log entry for this tool, or None if not found
+        """
+        if not os.path.exists(self._log_path):
+            return None
+
+        last_entry = None
+        with open(self._log_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    if entry.get("tool_name") == tool_name:
+                        last_entry = entry
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        return last_entry
+
     def log_permission_decision(
         self,
         permission: str,
