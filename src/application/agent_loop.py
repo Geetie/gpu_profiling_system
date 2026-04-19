@@ -38,6 +38,11 @@ class LoopState:
     pending_tool_call: ToolCall | None = None
     last_error: str | None = None
 
+    # Target state machine fields (for CodeGen stage)
+    current_target: str | None = None
+    completed_targets: list[str] = field(default_factory=list)
+    target_retry_count: dict[str, int] = field(default_factory=dict)
+
     def to_dict(self) -> dict[str, Any]:
         pt = None
         if self.pending_tool_call:
@@ -51,6 +56,10 @@ class LoopState:
             "turn_count": self.turn_count,
             "pending_tool_call": pt,
             "last_error": self.last_error,
+            # Include target state in serialization
+            "current_target": self.current_target,
+            "completed_targets": self.completed_targets,
+            "target_retry_count": self.target_retry_count,
         }
 
     @classmethod
@@ -68,6 +77,10 @@ class LoopState:
             turn_count=data.get("turn_count", 0),
             pending_tool_call=tc,
             last_error=data.get("last_error"),
+            # Restore target state from dict
+            current_target=data.get("current_target"),
+            completed_targets=data.get("completed_targets", []),
+            target_retry_count=data.get("target_retry_count", {}),
         )
 
 
@@ -121,6 +134,32 @@ class AgentLoop:
 
         self._tool_call_parser = CompositeToolCallParser()
         self._completion_detector = CompletionDetector()
+
+    def _init_target_state(self, target_spec: dict[str, Any] | None = None) -> None:
+        """Initialize the target state machine for CodeGen stage.
+
+        Args:
+            target_spec: Dictionary containing 'targets' list from target_spec.json
+        """
+        if not target_spec:
+            return
+
+        targets = target_spec.get("targets", [])
+        if targets:
+            self.loop_state.current_target = targets[0]
+            self.loop_state.completed_targets = []
+            self.loop_state.target_retry_count = {t: 0 for t in targets}
+            print(f"[AgentLoop] Target state initialized: current={targets[0]}, total={len(targets)}")
+
+    def _get_all_targets(self) -> list[str]:
+        """Get all requested targets from context entries."""
+        entries = self.context_manager.get_entries()
+        for entry in entries:
+            if entry.role.value == "system" and "targets" in entry.content:
+                m = re.search(r'"targets"\s*:\s*\[([^\]]+)\]', entry.content)
+                if m:
+                    return re.findall(r'"([^"]+)"', m.group(1))
+        return []
 
     def on_event(
         self,
@@ -237,6 +276,44 @@ class AgentLoop:
             self._failure_pattern = None
 
             if tool_call.name == "compile_cuda":
+                # Step 4: Check per-target retry limit to prevent infinite recompilation loops
+                MAX_RETRIES_PER_TARGET = 3
+                current_target = self.loop_state.current_target
+                all_targets_list = self._get_all_targets()
+
+                if (current_target and all_targets_list
+                    and self.loop_state.target_retry_count.get(current_target, 0) >= MAX_RETRIES_PER_TARGET):
+                    # Find next unmeasured target
+                    remaining = [t for t in all_targets_list
+                                 if t not in self.loop_state.completed_targets and t != current_target]
+
+                    if remaining:
+                        next_target = remaining[0]
+                        force_guidance = (
+                            f"🚨 MAX RETRIES REACHED FOR '{current_target}' ({MAX_RETRIES_PER_TARGET} attempts)\n\n"
+                            f"You have compiled '{current_target}' {MAX_RETRIES_PER_TARGET} times without success.\n"
+                            f"FORCING switch to next target: **{next_target}**\n\n"
+                            f"Call compile_cuda with NEW CUDA code for '{next_target}' NOW.\n"
+                            f"Do NOT attempt to fix or recompile '{current_target}' again.\n"
+                            f"The pipeline will mark '{current_target}' as failed and continue."
+                        )
+                        self.context_manager.add_entry(Role.SYSTEM, force_guidance, token_count=60)
+
+                        # Update state machine
+                        self.loop_state.current_target = next_target
+                        self.loop_state.target_retry_count[next_target] = 0
+                        print(f"[AgentLoop] FORCE SWITCH: {current_target} -> {next_target} "
+                              f"(max retries reached)")
+
+                        # Block this compile_cuda call by returning early
+                        self._persist_state()
+                        return
+
+                # Increment retry count for current target
+                if current_target:
+                    self.loop_state.target_retry_count[current_target] = \
+                        self.loop_state.target_retry_count.get(current_target, 0) + 1
+
                 source = tool_call.arguments.get("source", "")
                 validation_error = tool_call.arguments.get("_validation_error", "")
                 if not source or (isinstance(source, str) and not source.strip()):
@@ -498,6 +575,54 @@ class AgentLoop:
                     # Detect implausible measurements (all zeros) after execute_binary
                     if tool_call.name == "execute_binary":
                         stdout = result.get("stdout", "")
+
+                        # Step 7: Auto-parse execute_binary output and record measurements
+                        if stdout:
+                            measurements = {}
+                            for line in stdout.splitlines():
+                                # Skip comment lines and empty lines
+                                if line.strip().startswith("//") or line.strip().startswith("#"):
+                                    continue
+                                # Match patterns like "dram_latency_cycles: 450.5" or "sm_count = 56"
+                                m = re.match(r'\s*([\w_]+)\s*[:=]\s*([\d.]+[eE]?[\d]*)', line)
+                                if m:
+                                    key, val_str = m.group(1), m.group(2)
+                                    try:
+                                        val = float(val_str)
+                                        measurements[key] = val
+                                    except ValueError:
+                                        pass
+
+                            if measurements:
+                                # Record to completed_targets in state machine
+                                newly_measured = []
+                                for key, val in measurements.items():
+                                    all_targets_list = self._get_all_targets()
+                                    if (key not in self.loop_state.completed_targets
+                                        and key in all_targets_list):
+                                        self.loop_state.completed_targets.append(key)
+                                        newly_measured.append(key)
+
+                                # Generate structured measurement summary for visibility
+                                summary_lines = ["✅ MEASUREMENTS RECORDED:"]
+                                for key, val in measurements.items():
+                                    marker = " [NEW]" if key in newly_measured else ""
+                                    summary_lines.append(f"  • {key}: {val}{marker}")
+
+                                # Add progress info
+                                total_targets = len(self._get_all_targets())
+                                completed_count = len(self.loop_state.completed_targets)
+                                summary_lines.append(f"\nProgress: {completed_count}/{total_targets} targets measured")
+
+                                summary = "\n".join(summary_lines)
+
+                                self.context_manager.add_entry(
+                                    Role.SYSTEM,
+                                    summary,
+                                    token_count=30,
+                                )
+                                print(f"[AgentLoop] Recorded {len(newly_measured)} new measurements: {newly_measured}")
+
                         if stdout and ": 0" in stdout:
                             zero_lines = [l for l in stdout.splitlines()
                                           if l.strip() and ": 0" in l and not l.strip().startswith("//")]
@@ -523,14 +648,40 @@ class AgentLoop:
                             from src.domain.design_principles import get_design_principle
                             next_principle = get_design_principle(next_target)
                             next_brief = next_principle[:400] if len(next_principle) > 400 else next_principle
+
+                            # Update target state machine: mark current as completed, switch to next
+                            prev_target = self.loop_state.current_target
+                            if (prev_target and prev_target not in self.loop_state.completed_targets
+                                and prev_target in [t for t in self._get_all_targets()]):
+                                self.loop_state.completed_targets.append(prev_target)
+                                print(f"[AgentLoop] Target '{prev_target}' marked as COMPLETED")
+
+                            self.loop_state.current_target = next_target
+                            print(f"[AgentLoop] Switching to target: {next_target}")
+
+                            # Build MANDATORY-level guidance message with high token weight
+                            guidance = (
+                                f"🛑 MANDATORY TARGET SWITCH 🛑\n\n"
+                                f"✅ Target '{prev_target}' is now COMPLETED.\n"
+                                f"❌ You still have NOT measured these targets: {unmeasured}\n\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"👉 IMMEDIATE NEXT ACTION REQUIRED:\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                                f"You MUST now measure: **{next_target}**\n\n"
+                                f"STEP 1: Call compile_cuda with NEW CUDA code for '{next_target}'\n"
+                                f"  → Do NOT reuse the previous kernel — each target needs unique code\n"
+                                f"  → Use the design principle below for guidance\n\n"
+                                f"STEP 2: Call execute_binary with the new binary_path from Step 1\n\n"
+                                f"⚠️ FORBIDDEN:\n"
+                                f"  • Do NOT continue optimizing or recompile '{prev_target}'\n"
+                                f"  • Do NOT output text explanations — CALL compile_cuda NOW\n"
+                                f"  • Do NOT skip this target — pipeline WILL FAIL if missing\n\n"
+                                f"Design principle for '{next_target}':\n{next_brief}"
+                            )
                             self.context_manager.add_entry(
                                 Role.SYSTEM,
-                                f"✅ Measurement successful! Now measure the NEXT target.\n\n"
-                                f"Remaining unmeasured targets: {unmeasured}\n\n"
-                                f"👉 NEXT: Write CUDA code for '{next_target}' and call compile_cuda.\n"
-                                f"Design principle for '{next_target}':\n{next_brief}\n\n"
-                                f"Do NOT output text — CALL compile_cuda NOW with new source code for '{next_target}'.",
-                                token_count=80,
+                                guidance,
+                                token_count=100,  # Higher weight to ensure visibility
                             )
             except Exception as e:
                 self.loop_state.last_error = str(e)
@@ -815,30 +966,63 @@ class AgentLoop:
         return False
 
     def _find_unmeasured_targets(self) -> list[str]:
-        """Find targets that have not yet been measured in this session."""
+        """Find targets that have not yet been measured in this session.
+
+        Enhanced to support multiple output formats:
+        - JSON stdout from execute_binary results
+        - Direct text output with 'key: value' format
+        - Various numeric formats (int, float, scientific notation)
+        """
         all_targets = []
         measured = set()
         entries = self.context_manager.get_entries()
+
+        # Extract all requested targets from system messages
         for entry in entries:
-            content = entry.content
-            if entry.role.value == "system" and "targets" in content:
-                m = re.search(r'"targets"\s*:\s*\[([^\]]+)\]', content)
+            if entry.role.value == "system" and "targets" in entry.content:
+                m = re.search(r'"targets"\s*:\s*\[([^\]]+)\]', entry.content)
                 if m:
                     all_targets = re.findall(r'"([^"]+)"', m.group(1))
-            if entry.role.value == "assistant":
-                for line in content.splitlines():
-                    m2 = re.match(r'\s*([\w_]+)\s*[:=]\s*[\d.]+', line)
-                    if m2:
-                        measured.add(m2.group(1))
-                    try:
-                        data = json.loads(content)
-                        if isinstance(data, dict) and "stdout" in data:
-                            for stdout_line in data["stdout"].splitlines():
-                                m3 = re.match(r'\s*([\w_]+)\s*[:=]\s*[\d.]+', stdout_line)
-                                if m3:
-                                    measured.add(m3.group(1))
-                    except (json.JSONDecodeError, TypeError):
-                        pass
+
+        # Enhanced measurement detection with multiple format support
+        for entry in entries:
+            if entry.role.value != "assistant":
+                continue
+
+            content = entry.content
+
+            # Format 1: JSON structured result (from tool calls)
+            try:
+                data = json.loads(content)
+                if isinstance(data, dict):
+                    # Check stdout field (most common for execute_binary)
+                    stdout = data.get("stdout", "")
+                    if isinstance(stdout, str) and stdout:
+                        for line in stdout.splitlines():
+                            m = re.match(r'\s*([\w_]+)\s*[:=]\s*[\d.]+[eE]?[\d]*', line)
+                            if m and not line.strip().startswith("//"):
+                                measured.add(m.group(1))
+
+                    # Check output field (alternative format)
+                    output = data.get("output", "")
+                    if isinstance(output, str) and output:
+                        for line in output.splitlines():
+                            m = re.match(r'\s*([\w_]+)\s*[:=]\s*[\d.]+[eE]?[\d]*', line)
+                            if m and not line.strip().startswith("//"):
+                                measured.add(m.group(1))
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+            # Format 2: Plain text with key-value pairs
+            for line in content.splitlines():
+                # Skip comment lines
+                if line.strip().startswith("//") or line.strip().startswith("#"):
+                    continue
+                # Match patterns like "dram_latency_cycles: 450.5" or "sm_count = 56"
+                m = re.match(r'\s*([\w_]+)\s*[:=]\s*[\d.]+[eE]?[\d]*', line)
+                if m:
+                    measured.add(m.group(1))
+
         return [t for t in all_targets if t not in measured]
 
     def _update_control_plane_progress(self, result: dict) -> None:

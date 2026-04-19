@@ -149,28 +149,42 @@ class StagePromptBuilder:
 
             parts.append(
                 f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"⚠️  CRITICAL: You MUST measure ALL {len(targets)} targets\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"Targets:\n{target_list_str}\n\n"
-                f"WORKFLOW (repeat for EACH target):\n"
-                f"  1. Write CUDA code for ONE target\n"
+                f"📊 TARGET ASSIGNMENT (MEASURE ALL OF THESE IN ORDER)\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"Targets to measure ({len(targets)} total):\n{target_list_str}\n\n"
+                f"⚠️ You MUST measure ALL targets above in SEQUENTIAL ORDER.\n"
+                f"Start with Target #1: **{targets[0]}**\n"
+                f"After completing each target, move to the next number.\n"
+                f"Do NOT skip any target. Do NOT reorder. Do NOT parallelize.\n\n"
+                f"Current status:\n"
+                f"  ☐ Target 1: {targets[0]} ← *** START HERE ***\n"
+            )
+
+            for i, t in enumerate(targets[1:], start=2):
+                parts[-1] += f"  ☐ Target {i}: {t}\n"
+
+            parts[-1] += (
+                f"\nWORKFLOW (repeat for EACH target):\n"
+                f"  1. Write CUDA code for ONE target (unique kernel per target)\n"
                 f"  2. compile_cuda(source=\"...\", flags=[\"-O3\"])\n"
                 f"  3. execute_binary(binary_path=\"<from compile>\")\n"
                 f"  4. Record the measured value from stdout\n"
-                f"  5. Go to next target — write NEW code, compile, execute\n\n"
-                f"⚠️  Each target needs DIFFERENT CUDA code!\n"
-                f"  - dram_latency → pointer-chasing kernel\n"
-                f"  - l2_cache_size → working-set sweep kernel\n"
-                f"  - actual_boost_clock → clock64() calibration kernel\n"
-                f"  - dram_bandwidth → stream copy kernel\n\n"
-                f"⚠️  compile_cuda OVERWRITES the previous binary each time.\n"
-                f"  So you MUST execute_binary IMMEDIATELY after each compile_cuda.\n"
-                f"  Do NOT compile all targets first — compile+execute one at a time.\n\n"
-                f"Do NOT skip any target. The pipeline will FAIL if any target is missing.\n\n"
+                f"  5. Wait for SYSTEM message → then move to NEXT target\n\n"
+                f"⚠️ CRITICAL RULES:\n"
+                f"  • Each target needs DIFFERENT CUDA code!\n"
+                f"    - {targets[0] if 'latency' in targets[0].lower() or 'dram' in targets[0].lower() else 'N/A'} → pointer-chasing kernel\n"
+                f"    - {targets[1] if len(targets) > 1 and ('cache' in targets[1].lower() or 'l2' in targets[1].lower()) else 'N/A'} → working-set sweep kernel\n"
+                f"    - {targets[2] if len(targets) > 2 and 'clock' in targets[2].lower() else 'N/A'} → clock64() calibration kernel\n\n"
+                f"  • compile_cuda OVERWRITES the previous binary each time.\n"
+                f"    So you MUST execute_binary IMMEDIATELY after each compile_cuda.\n"
+                f"    Do NOT compile all targets first — compile+execute one at a time.\n\n"
+                f"  • MAX 3 compilation attempts per target.\n"
+                f"    After 3 failures, MOVE ON to next target (system will force switch).\n\n"
+                f"  • Do NOT skip any target — pipeline WILL FAIL if any is missing!\n\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"📐 DESIGN PRINCIPLES FOR EACH TARGET\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"{principles_str}\n"
+                f"{principles_str}"
             )
 
         if prev_result is not None:
