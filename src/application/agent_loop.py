@@ -277,33 +277,54 @@ class AgentLoop:
 
             if tool_call.name == "compile_cuda":
                 # Step 4: Check per-target retry limit to prevent infinite recompilation loops
-                MAX_RETRIES_PER_TARGET = 3
+                MAX_RETRIES_PER_TARGET = 2  # Reduced from 3 to handle LLM syntax errors faster
+                MAX_COMPILE_FAILURES = 1    # Force switch after 1 compilation failure (syntax errors)
                 current_target = self.loop_state.current_target
                 all_targets_list = self._get_all_targets()
 
-                if (current_target and all_targets_list
-                    and self.loop_state.target_retry_count.get(current_target, 0) >= MAX_RETRIES_PER_TARGET):
+                if current_target and all_targets_list:
+                    retry_count = self.loop_state.target_retry_count.get(current_target, 0)
+
+                    # Check if we've exceeded max retries OR too many compile failures
+                    should_force_switch = False
+                    force_reason = ""
+
+                    if retry_count >= MAX_RETRIES_PER_TARGET:
+                        should_force_switch = True
+                        force_reason = f"max retries ({MAX_RETRIES_PER_TARGET})"
+
                     # Find next unmeasured target
                     remaining = [t for t in all_targets_list
                                  if t not in self.loop_state.completed_targets and t != current_target]
 
-                    if remaining:
+                    if should_force_switch and remaining:
                         next_target = remaining[0]
+
+                        # Build context-aware guidance based on failure reason
                         force_guidance = (
-                            f"🚨 MAX RETRIES REACHED FOR '{current_target}' ({MAX_RETRIES_PER_TARGET} attempts)\n\n"
-                            f"You have compiled '{current_target}' {MAX_RETRIES_PER_TARGET} times without success.\n"
-                            f"FORCING switch to next target: **{next_target}**\n\n"
-                            f"Call compile_cuda with NEW CUDA code for '{next_target}' NOW.\n"
-                            f"Do NOT attempt to fix or recompile '{current_target}' again.\n"
-                            f"The pipeline will mark '{current_target}' as failed and continue."
+                            f"🚨 FORCE SWITCH TRIGGERED for '{current_target}' ({force_reason})\n\n"
+                            f"⚠️ You have attempted '{current_target}' {retry_count} times.\n"
+                            f"⚠️ The pipeline is FORCING you to move to the next target.\n\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"👉 IMMEDIATE ACTION REQUIRED:\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                            f"You MUST now measure: **{next_target}**\n\n"
+                            f"STEP 1: Call compile_cuda with COMPLETELY NEW CUDA code for '{next_target}'\n"
+                            f"  → Do NOT reuse any code from '{current_target}'\n"
+                            f"  → Each target needs a UNIQUE kernel design\n\n"
+                            f"STEP 2: After successful compilation, call execute_binary IMMEDIATELY\n\n"
+                            f"⚠️ CRITICAL WARNINGS:\n"
+                            f"  • Do NOT attempt to fix '{current_target}' again - it's marked as FAILED\n"
+                            f"  • Do NOT output text explanations - CALL compile_cuda NOW\n"
+                            f"  • The pipeline will NOT wait for perfect code - move on to next target\n"
                         )
-                        self.context_manager.add_entry(Role.SYSTEM, force_guidance, token_count=60)
+                        self.context_manager.add_entry(Role.SYSTEM, force_guidance, token_count=80)
 
                         # Update state machine
                         self.loop_state.current_target = next_target
                         self.loop_state.target_retry_count[next_target] = 0
                         print(f"[AgentLoop] FORCE SWITCH: {current_target} -> {next_target} "
-                              f"(max retries reached)")
+                              f"(reason: {force_reason}, attempts: {retry_count})")
 
                         # Block this compile_cuda call by returning early
                         self._persist_state()
@@ -518,6 +539,21 @@ class AgentLoop:
                                 })
                                 self.stop()
                                 return
+
+                # Phase C: Smart compilation error detection and guidance for compile_cuda
+                if (tool_call.name == "compile_cuda" and isinstance(result, dict)
+                    and result.get("success") == False):
+
+                    error_text = result.get("errors", "")
+                    smart_guidance = self._detect_cuda_syntax_error(error_text)
+
+                    if smart_guidance:
+                        self.context_manager.add_entry(
+                            Role.SYSTEM,
+                            smart_guidance,
+                            token_count=70,
+                        )
+                        print(f"[AgentLoop] Smart error guidance injected for compile_cuda failure")
                         metrics_arg = tool_call.arguments.get("metrics", [])
                         if isinstance(metrics_arg, list):
                             invalid_metrics = [m for m in metrics_arg if not isinstance(m, str) or m.strip() in ("", ".")]
@@ -1024,6 +1060,85 @@ class AgentLoop:
                     measured.add(m.group(1))
 
         return [t for t in all_targets if t not in measured]
+
+    def _detect_cuda_syntax_error(self, error_text: str) -> str | None:
+        """Detect common CUDA compilation errors and provide targeted fix guidance.
+
+        Args:
+            error_text: The compilation error message from nvcc
+
+        Returns:
+            str | None: Targeted fix guidance, or None if no pattern matched
+        """
+        if not error_text or not isinstance(error_text, str):
+            return None
+
+        error_lower = error_text.lower()
+
+        # Pattern 1: asm volatile syntax error (missing colon)
+        if 'asm volatile' in error_lower and ('expected a ";"' in error_lower or 'expected ";"' in error_lower):
+            return (
+                "🔧 DETECTED: asm volatile() SYNTAX ERROR\n\n"
+                "❌ Your code has this WRONG pattern:\n"
+                '   asm volatile("") : "+l"(var) : : "memory");  // Extra quote before first colon\n\n'
+                "✅ FIX - Change to:\n"
+                '   asm volatile("" : "+l"(var) : : "memory"); // No extra quote!\n\n'
+                "💡 The FIRST colon must come IMMEDIATELY after the closing quote.\n"
+                "   Do NOT put any characters (including quotes) between ) and :\n\n"
+                "⚠️ This is the #1 cause of compilation failures. Fix it and retry."
+            )
+
+        # Pattern 2: Missing #include
+        if ('printf was not declared' in error_lower or "'printf'" in error_lower
+            or 'sort was not declared' in error_lower or "'std::sort'" in error_lower):
+
+            missing_includes = []
+            if 'printf' in error_lower:
+                missing_includes.append('#include <cstdio>')
+            if 'sort' in error_lower or 'std::sort' in error_lower:
+                missing_includes.append('#include <algorithm>')
+
+            includes_str = '\n'.join(f"   {inc}" for inc in missing_includes)
+
+            return (
+                f"🔧 DETECTED: MISSING #include STATEMENT(S)\n\n"
+                f"You are using functions without including their headers.\n\n"
+                f"✅ FIX - Add these lines at the TOP of your file (before any other code):\n\n"
+                f"{includes_str}\n\n"
+                f"⚠️ Make sure these are the VERY FIRST lines after your existing #includes."
+            )
+
+        # Pattern 3: Format specifier warning/error
+        if ("expects argument of type" in error_lower and ('%llu' in error_text or '%lu' in error_text)):
+            return (
+                "🔧 DETECTED: FORMAT SPECIFIER MISMATCH\n\n"
+                "❌ Using wrong format specifier for uint64_t.\n\n"
+                "✅ FIX - Use one of these instead:\n"
+                '   printf("%lu", (unsigned long)value);  // Cast to unsigned long\n'
+                '   // OR include <cinttypes> and use:\n'
+                '   printf("%" PRIu64 "\\n", value);  // Portable but requires macro\n\n'
+                "⚠️ On Tesla P100 (sm_60), use %lu with (unsigned long) cast."
+            )
+
+        # Pattern 4: General syntax error with line number
+        if 'error:' in error_lower and 'source.cu(' in error_text:
+            import re as re_module
+            line_match = re_module.search(r'source\.cu\((\d+)\)', error_text)
+            if line_match:
+                line_num = line_match.group(1)
+                return (
+                    f"🔧 COMPILATION ERROR at line {line_num}:\n\n"
+                    f"{error_text[:400]}\n\n"
+                    f"✅ ACTION REQUIRED:\n"
+                    f"1. Look at line {line_num} in your CUDA source\n"
+                    f"2. Fix the specific syntax error shown above\n"
+                    f"3. Common fixes: check semicolons, brackets, quotes, colons\n"
+                    f"4. Do NOT rewrite the entire kernel - just fix this line\n\n"
+                    f"⚠️ If you cannot fix it in 1 attempt, the system will force target switch."
+                )
+
+        # No pattern matched - return generic guidance
+        return None
 
     def _update_control_plane_progress(self, result: dict) -> None:
         """Update Control Plane with current CodeGen progress after each tool call."""

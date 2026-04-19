@@ -122,6 +122,46 @@ _CODE_GEN = (
     "- If compilation fails → fix error and retry (counts toward max 3 attempts)\n"
     "- If you see \"MANDATORY TARGET SWITCH\" message → OBEY IT IMMEDIATELY\n\n"
     "🚨 PIPELINE WILL FAIL if any target is missing from final output!\n\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    "⚠️ CUDA SYNTAX ERROR PREVENTION (CRITICAL — AVOID THESE MISTAKES)\n"
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    "❌ COMMON SYNTAX ERRORS (will cause compilation failure):\n\n"
+    "1. asm volatile() MISSING COLON:\n"
+    '   ❌ WRONG: asm volatile("") : "+l"(sink64) : : "memory");  // Extra quote before colon\n'
+    '   ✅ CORRECT: asm volatile("" : "+l"(sink64) : : "memory"); // Colon immediately after quotes\n\n'
+    "2. FORGETTING #include <cstdio> for printf:\n"
+    "   ❌ WRONG: Using printf without #include <cstdio>\n"
+    "   ✅ CORRECT: Always include: #include <cuda_runtime.h>\\n#include <cstdio>\\n#include <cstdint>\n\n"
+    "3. USING std::sort WITHOUT #include <algorithm>:\n"
+    "   ❌ WRONG: std::sort(...) without proper include\n"
+    "   ✅ CORRECT: Add #include <algorithm> at the top\n\n"
+    "4. INCORRECT FORMAT SPECIFIERS for uint64_t:\n"
+    '   ❌ WRONG: printf("%llu", value)  // May cause warning on some systems\n'
+    '   ✅ CORRECT: printf("%lu", (unsigned long)value) or use PRIu64 from <cinttypes>\n\n'
+    "✅ SAFE TEMPLATE (copy this structure):\n\n"
+    '#include <cuda_runtime.h>\n'
+    '#include <cstdio>\n'
+    '#include <cstdint>\n'
+    '#include <cstdlib>\n'
+    '#include <algorithm>\n'
+    '#include <cstring>\n\n'
+    "__global__ void your_kernel(/* params */) {\n"
+    "    // Single thread execution\n"
+    "    if (threadIdx.x != 0 || blockIdx.x != 0) return;\n\n"
+    "    // Compiler barrier\n"
+    '    asm volatile("" : : : "memory");\n\n'
+    "    // Timing\n"
+    "    volatile uint64_t start = clock64();\n"
+    "    // ... your measurement code ...\n"
+    "    volatile uint64_t end = clock64();\n\n"
+    "    // Anti-optimization sink\n"
+    '    asm volatile("" : "+l"(result) : : "memory");\n'
+    "}\n\n"
+    "⚠️ IF COMPILATION FAILS:\n"
+    "- Read the error message CAREFULLY\n"
+    "- Fix ONLY the specific error (usually syntax)\n"
+    "- Do NOT rewrite the entire kernel\n"
+    "- If it fails 2 times, the system will FORCE you to next target\n\n"
     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
     "GPU HARDWARE REFERENCE VALUES (for sanity checking your measurements):\n"
     "- Tesla P100: L2=4MB, DRAM latency ~300-500 cycles, boost clock ~1480-1620 MHz\n"
