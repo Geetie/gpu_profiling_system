@@ -333,13 +333,9 @@ class AgentLoop:
                 if current_target:
                     self.loop_state.target_retry_count[current_target] = \
                         self.loop_state.target_retry_count.get(current_target, 0) + 1
-<<<<<<< HEAD
-
-                # P0 FIX: Inject current_target into compile_cuda arguments for target-specific binary names
+# P0 FIX: Inject current_target into compile_cuda arguments for target-specific binary names
                 if tool_call.name == "compile_cuda" and current_target:
                     tool_call.arguments["target"] = current_target
-=======
->>>>>>> dae6ef7088db669b5b620a870a5972fd4695633d
 
                 source = tool_call.arguments.get("source", "")
                 validation_error = tool_call.arguments.get("_validation_error", "")
