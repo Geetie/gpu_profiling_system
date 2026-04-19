@@ -48,6 +48,13 @@ class StageExecutor:
     - Extract structured SubAgentResult from AgentLoop output
     """
 
+    MAX_TURNS_PER_STAGE = {
+        "plan": 20,
+        "code_gen": 50,
+        "metric_analysis": 30,
+        "verification": 20,
+    }
+
     def __init__(
         self,
         state_dir: str,
@@ -304,12 +311,16 @@ class StageExecutor:
         session = SessionState(session_id=session_id, goal=f"Pipeline stage: {stage_name}")
         control_plane = ControlPlane(rule_dir=None)
 
+        stage_max_turns = self.MAX_TURNS_PER_STAGE.get(stage_name, self._max_turns)
+        logger.info("[StageExecutor] Using max_turns=%d for stage %s (default would be %d)",
+                    stage_max_turns, stage_name, self._max_turns)
+
         loop = AgentLoop(
             session=session,
             context_manager=agent.context_manager,
             control_plane=control_plane,
             tool_registry=agent.tool_registry,
-            max_turns=self._max_turns,
+            max_turns=stage_max_turns,
             state_dir=self._state_dir,
             permission_mode=agent.permission_mode,
         )
@@ -338,7 +349,29 @@ class StageExecutor:
             loop.set_available_tools(self._build_tool_schemas(handlers, agent.tool_registry))
 
         if agent.permission_mode == PermissionMode.HIGH_AUTONOMY:
-            loop.set_approval_callback(lambda request: True)
+            def auto_approve_callback(request) -> bool:
+                """Auto-approve all requests in HIGH_AUTONOMY mode."""
+                logger.info(
+                    "[StageExecutor] Auto-approving request: tool=%s, id=%s",
+                    getattr(request, 'tool_name', 'unknown'),
+                    getattr(request, 'id', 'unknown'),
+                )
+                return True
+
+            loop.set_approval_callback(auto_approve_callback)
+            logger.info(
+                "[StageExecutor] Set auto-approve callback for %s stage (mode=%s)",
+                step.stage.value,
+                agent.permission_mode.value,
+            )
+
+            if self._sandbox and self._tool_handlers:
+                test_result = loop._test_approval_flow()
+                if not test_result.get("success"):
+                    logger.error(
+                        "[StageExecutor] CRITICAL: Approval flow test failed: %s",
+                        test_result.get("error"),
+                    )
 
         agent.context_manager.add_entry(Role.SYSTEM, system_prompt, token_count=50)
         agent.context_manager.add_entry(Role.USER, user_task, token_count=30)

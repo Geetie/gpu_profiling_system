@@ -938,39 +938,79 @@ class AgentLoop:
         if self._tool_executor is None:
             return {}
 
-        try:
-            return self._tool_executor(tool_call.name, tool_call.arguments)
-        except ApprovalRequiredError as e:
-            self._emit(EventKind.APPROVAL_REQUEST, {
-                "tool": tool_call.name,
-                "request_id": e.request.id,
-            })
+        max_approval_retries = 3
+        retry_count = 0
 
-            if self._approval_callback is not None:
-                approved = self._approval_callback(e.request)
-            else:
-                approved = False
+        while retry_count < max_approval_retries:
+            try:
+                result = self._tool_executor(tool_call.name, tool_call.arguments)
+                return result
 
-            self._respond_to_approval_queue(e.request, approved)
-
-            if approved:
-                self._emit(EventKind.APPROVAL_GRANTED, {
+            except ApprovalRequiredError as e:
+                retry_count += 1
+                self._emit(EventKind.APPROVAL_REQUEST, {
                     "tool": tool_call.name,
                     "request_id": e.request.id,
+                    "retry_count": retry_count,
                 })
-                return self._tool_executor(tool_call.name, tool_call.arguments)
-            else:
-                self._emit(EventKind.APPROVAL_DENIED, {
-                    "tool": tool_call.name,
-                    "request_id": e.request.id,
-                })
-                raise PermissionError(
-                    f"Tool '{tool_call.name}' approval denied"
-                ) from e
+
+                if self._approval_callback is not None:
+                    approved = self._approval_callback(e.request)
+                else:
+                    approved = False
+
+                self._respond_to_approval_queue(e.request, approved)
+
+                if approved:
+                    self._emit(EventKind.APPROVAL_GRANTED, {
+                        "tool": tool_call.name,
+                        "request_id": e.request.id,
+                        "retry_count": retry_count,
+                    })
+                    continue
+                else:
+                    self._emit(EventKind.APPROVAL_DENIED, {
+                        "tool": tool_call.name,
+                        "request_id": e.request.id,
+                    })
+                    raise PermissionError(
+                        f"Tool '{tool_call.name}' approval denied"
+                    ) from e
+
+        raise RuntimeError(
+            f"Approval loop detected for '{tool_call.name}' after {max_approval_retries} retries. "
+            f"This indicates a systemic issue with the approval system."
+        )
 
     def _respond_to_approval_queue(self, request, approved: bool) -> None:
         if hasattr(self._tool_executor, "_approval_queue"):
             self._tool_executor._approval_queue.respond(request.id, approved)
+
+    def _test_approval_flow(self) -> dict:
+        """Test the approval flow end-to-end.
+
+        Used by StageExecutor to verify approval callback connectivity
+        before starting pipeline execution.
+        """
+        try:
+            if self._approval_callback is None:
+                return {"success": False, "error": "No approval callback set"}
+
+            from src.application.approval_queue import ApprovalRequest
+            test_request = ApprovalRequest(
+                id="test_001",
+                tool_name="test_tool",
+                arguments={},
+                permissions=["test"],
+            )
+
+            approved = self._approval_callback(test_request)
+            if not approved:
+                return {"success": False, "error": "Callback returned False"}
+
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     def _persist_state(self) -> None:
         self._session_mgr.save_session(self.session)

@@ -43,7 +43,7 @@ _ALWAYS_REQUIRES_APPROVAL: dict[PermissionMode, frozenset[str]] = {
     PermissionMode.CONSERVATIVE: frozenset({"file:write", "process:exec"}),
     PermissionMode.DEFAULT: frozenset({"file:write", "process:exec"}),
     PermissionMode.RELAXED: frozenset({"process:exec"}),
-    PermissionMode.HIGH_AUTONOMY: frozenset({"process:exec"}),
+    PermissionMode.HIGH_AUTONOMY: frozenset(),
 }
 
 

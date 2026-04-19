@@ -5,6 +5,8 @@ under the current permission mode. Decisions are persisted (P6).
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 import time
 import uuid
@@ -60,32 +62,40 @@ class ApprovalQueue:
         """Submit a new approval request.
 
         Auto-rejects in CONSERVATIVE mode.
+        Uses deterministic request ID based on tool_name + arguments hash
+        to enable request reuse for identical calls.
         """
-        request_id = f"{tool_name}_{uuid.uuid4().hex[:12]}"
+        arg_hash = hashlib.md5(
+            json.dumps(arguments, sort_keys=True).encode()
+        ).hexdigest()[:12]
+        request_id = f"{tool_name}_{arg_hash}"
 
-        # CONSERVATIVE mode: auto-reject all modifications
-        if mode == PermissionMode.CONSERVATIVE:
+        with self._lock:
+            existing = self._requests.get(request_id)
+            if existing and existing.status == ApprovalStatus.APPROVED:
+                print(f"[ApprovalQueue] Reusing approved request: {request_id}")
+                return existing
+
+            if mode == PermissionMode.CONSERVATIVE:
+                request = ApprovalRequest(
+                    id=request_id,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    permissions=permissions,
+                    status=ApprovalStatus.AUTO_REJECTED,
+                    reason="Auto-rejected in CONSERVATIVE mode",
+                    responded_at=datetime.now(timezone.utc).isoformat(),
+                )
+                self._requests[request_id] = request
+                self._persist_decision(request)
+                return request
+
             request = ApprovalRequest(
                 id=request_id,
                 tool_name=tool_name,
                 arguments=arguments,
                 permissions=permissions,
-                status=ApprovalStatus.AUTO_REJECTED,
-                reason="Auto-rejected in CONSERVATIVE mode",
-                responded_at=datetime.now(timezone.utc).isoformat(),
             )
-            with self._lock:
-                self._requests[request_id] = request
-            self._persist_decision(request)
-            return request
-
-        request = ApprovalRequest(
-            id=request_id,
-            tool_name=tool_name,
-            arguments=arguments,
-            permissions=permissions,
-        )
-        with self._lock:
             self._requests[request_id] = request
 
         self._persister.log_entry(

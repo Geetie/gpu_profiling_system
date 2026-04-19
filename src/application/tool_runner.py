@@ -6,6 +6,8 @@ validate input → check approval → execute handler → validate output → pe
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any, Callable
 
 from src.application.approval_queue import ApprovalQueue, ApprovalRequest, ApprovalStatus
@@ -80,7 +82,7 @@ class ToolRunner:
         # Step 2: Validate input schema (returns coerced data)
         arguments = self._validator.validate(contract.input_schema, arguments)
 
-        # Step 3: Check approval requirements
+        # Step 3: Check approval requirements with caching
         needs_approval = False
         if contract.requires_approval:
             for perm in contract.permissions:
@@ -89,19 +91,28 @@ class ToolRunner:
                     break
 
         if needs_approval:
-            request = self._approval_queue.submit(
-                tool_name=tool_name,
-                arguments=arguments,
-                permissions=contract.permissions,
-                mode=self._permission_checker.mode,
-            )
-            if request.status == ApprovalStatus.PENDING:
-                raise ApprovalRequiredError(request)
-            elif request.status in (ApprovalStatus.REJECTED, ApprovalStatus.AUTO_REJECTED):
-                raise PermissionError(
-                    f"Tool '{tool_name}' approval {request.status.value}: "
-                    f"{request.reason}"
+            arg_hash = hashlib.md5(
+                json.dumps(arguments, sort_keys=True).encode()
+            ).hexdigest()[:12]
+            expected_id = f"{tool_name}_{arg_hash}"
+
+            existing_request = self._approval_queue.get_request(expected_id)
+            if existing_request and existing_request.status == ApprovalStatus.APPROVED:
+                print(f"[ToolRunner] Using cached approval for {tool_name}")
+            else:
+                request = self._approval_queue.submit(
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    permissions=contract.permissions,
+                    mode=self._permission_checker.mode,
                 )
+                if request.status == ApprovalStatus.PENDING:
+                    raise ApprovalRequiredError(request)
+                elif request.status in (ApprovalStatus.REJECTED, ApprovalStatus.AUTO_REJECTED):
+                    raise PermissionError(
+                        f"Tool '{tool_name}' approval {request.status.value}: "
+                        f"{request.reason}"
+                    )
 
         # Step 4: Execute handler
         handler = self._handlers.get(tool_name)
