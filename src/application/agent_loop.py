@@ -475,6 +475,58 @@ class AgentLoop:
             try:
                 result = self._execute_tool_call(tool_call)
                 print(f"[AgentLoop] Tool result: {tool_call.name} -> {str(result)[:200]}")
+
+                # CRITICAL FIX: After successful compile_cuda, FORCE execute_binary before next compile
+                if (tool_call.name == "compile_cuda" and isinstance(result, dict)
+                    and result.get("success") == True):
+
+                    # Check if we already executed binary after last compilation
+                    entries = self.context_manager.get_entries()
+                    has_recent_execute = False
+                    for entry in reversed(entries[-5:]):  # Check last 5 entries
+                        if (entry.role.value == "assistant"
+                            and '"tool": "execute_binary"' in entry.content):
+                            has_recent_execute = True
+                            break
+
+                    if not has_recent_execute:
+                        # Find the compiled binary path from result
+                        binary_path = None
+                        output = result.get("output", "")
+                        if output and "binary_path" in output:
+                            import re as re_module
+                            bp_match = re_module.search(r'binary_path["\']?\s*[:=]\s*["\']?([^\s"\',]+)', output)
+                            if bp_match:
+                                binary_path = bp_match.group(1)
+
+                        if not binary_path:
+                            # Fallback to target-specific path
+                            current_target = self.loop_state.current_target or "unknown"
+                            safe_target = current_target.replace(" ", "_").replace("-", "_").lower()
+                            binary_path = f".kaggle_sandbox/bin/benchmark_{safe_target}"
+
+                        force_exec_guidance = (
+                            f"🎯 MANDATORY: EXECUTE COMPILED BINARY\n\n"
+                            f"✅ Compilation SUCCESSFUL for '{self.loop_state.current_target}'!\n"
+                            f"⚠️ You MUST now execute the compiled binary BEFORE compiling again.\n\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"👉 IMMEDIATE ACTION: Call execute_binary NOW\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                            f'Step 1: Call execute_binary with:\n'
+                            f'  {{"tool": "execute_binary", "args": {{"binary_path": "{binary_path}"}}}}\n\n'
+                            f"⚠️ FORBIDDEN:\n"
+                            f"  • Do NOT call compile_cuda again without executing first\n"
+                            f"  • Do NOT modify your CUDA code - it already compiles successfully\n"
+                            f"  • Do NOT output text explanations - CALL execute_binary NOW\n\n"
+                            f"After execution, you will receive measurement results.\n"
+                            f"Then you can proceed to the next target."
+                        )
+                        self.context_manager.add_entry(
+                            Role.SYSTEM,
+                            force_exec_guidance,
+                            token_count=90,
+                        )
+                        print(f"[AgentLoop] Forced execute_binary guidance after successful compilation")
                 tool_status = result.get("status", "success") if isinstance(result, dict) else "success"
                 self._emit(EventKind.TOOL_RESULT, {
                     "tool": tool_call.name,
