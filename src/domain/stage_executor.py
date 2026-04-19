@@ -325,6 +325,11 @@ class StageExecutor:
             permission_mode=agent.permission_mode,
         )
 
+        # Initialize target state machine for CodeGen stage
+        if target_spec and stage_name == PipelineStage.CODE_GEN.value:
+            loop._init_target_state(target_spec)
+            logger.info("[StageExecutor] Target state machine initialized for CodeGen stage")
+
         if agent._model_caller is not None:
             loop.set_model_caller(agent._model_caller)
         else:
