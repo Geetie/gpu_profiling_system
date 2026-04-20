@@ -11,16 +11,20 @@
   "project_root": "/kaggle/working/gpu_profiling_system",
   "working_dir": "/kaggle/working",
   "log_files": [
+    "execution.log",
+    ".cmd_21c52f2a.log",
+    ".cmd_cc923f8b.log",
     ".cmd_878fa646.log",
     ".cmd_98ce8700.log",
-    ".cmd_21c52f2a.log",
-    ".cmd_88fc5b85.log",
     ".cmd_1437415f.log",
-    "execution.log",
-    ".cmd_cc923f8b.log",
-    ".cmd_e1240bb5.log"
+    ".cmd_88fc5b85.log",
+    ".cmd_e1240bb5.log",
+    "gpu_profiling_system/kaggle_results/execution.log",
+    "gpu_profiling_system/kaggle_results/cmd_e1240bb5.log",
+    "gpu_profiling_system/kaggle_results/cmd_cc923f8b.log"
   ],
   "agent_logs": [
-    "agent_logs/pipeline_log.jsonl"
+    "agent_logs/pipeline_log.jsonl",
+    "agent_logs/session_log.jsonl"
   ]
 }

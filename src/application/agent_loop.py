@@ -867,12 +867,23 @@ class AgentLoop:
             else:
                 MAX_CONSECUTIVE_NO_TOOL = 1  # Ultra-aggressive for later turns (LLM fatigue zone)
 
+            # BUG#6 FIX: Check if ALL targets are measured BEFORE triggering recovery
+            # This is the critical fix for the "3/3 measured but still failing" issue
+            unmeasured = self._find_unmeasured_targets()
+            if not unmeasured and self.loop_state.consecutive_no_tool_calls > 0:
+                # All targets measured, LLM is just signaling completion
+                print(f"[AgentLoop] ✅ ALL TARGETS COMPLETED! Signaling graceful exit "
+                      f"(consecutive_no_tool={self.loop_state.consecutive_no_tool_calls})")
+                self._emit(EventKind.STOP, {"reason": "all_targets_measured"})
+                self.stop()
+                return
+
             if self.loop_state.consecutive_no_tool_calls >= MAX_CONSECUTIVE_NO_TOOL:
                 print(f"[AgentLoop] 🚨 STALL DETECTED: {self.loop_state.consecutive_no_tool_calls} "
                       f"consecutive turns without tool calls (MAX={MAX_CONSECUTIVE_NO_TOOL}) - "
                       f"triggering FORCED RECOVERY")
 
-                unmeasured = self._find_unmeasured_targets()
+                # BUG#6 FIX: unmeasured already computed above, no need to call again
                 if unmeasured:
                     next_target = unmeasured[0]
                     from src.domain.design_principles import get_design_principle
