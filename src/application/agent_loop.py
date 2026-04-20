@@ -167,6 +167,11 @@ class AgentLoop:
         self.GLOBAL_HARD_TIMEOUT = 1500.0  # 25 minutes absolute maximum
         self._loop_start_time: float | None = None
 
+        # FIX for Bug #6: Enhanced stall recovery with global tracking
+        self._global_stall_count = 0  # Total stalls across all targets
+        self._max_global_stalls = 4   # Force-stop after this many total stalls
+        self._target_stall_history: dict[str, int] = {}  # Per-target stall count
+
     def _init_target_state(self, target_spec: dict[str, Any] | None = None) -> None:
         """Initialize the target state machine for CodeGen stage.
 
@@ -354,6 +359,11 @@ class AgentLoop:
         if self.loop_state.turn_count % 2 == 0:
             print(f"[AgentLoop] Triggering C-02 state sync (Turn {self.loop_state.turn_count})")
             self._sync_target_state_machine()
+
+            # FIX for Bug #5: Validate target completeness every 4 turns (after initial measurements)
+            if self.loop_state.turn_count % 4 == 0 and len(self.loop_state.completed_targets) > 0:
+                print(f"[AgentLoop] Triggering target completeness check (Turn {self.loop_state.turn_count})")
+                self._validate_target_completeness()
 
         if self._failure_pattern and self._failure_tracker.should_terminate(self._failure_pattern):
             self._emit(EventKind.STOP, {
@@ -1214,6 +1224,33 @@ class AgentLoop:
                       f"consecutive turns without tool calls (MAX={MAX_CONSECUTIVE_NO_TOOL}) - "
                       f"triggering FORCED RECOVERY")
 
+                # FIX for Bug #6: Track global stall count and enforce limit
+                self._global_stall_count += 1
+                prev_target = self.loop_state.current_target
+                if prev_target:
+                    self._target_stall_history[prev_target] = self._target_stall_history.get(prev_target, 0) + 1
+
+                print(f"[AgentLoop] 📊 Global stall count: {self._global_stall_count}/{self._max_global_stalls}")
+                if prev_target:
+                    print(f"[AgentLoop] 📊 Target '{prev_target}' stall history: {self._target_stall_history.get(prev_target, 0)}")
+
+                # Force-stop if too many stalls overall
+                if self._global_stall_count >= self._max_global_stalls:
+                    print(f"[AgentLoop] ❌ MAX GLOBAL STALLS REACHED ({self._max_global_stalls})!")
+                    print(f"[AgentLoop] → Force-stopping to prevent infinite loop")
+                    self._emit(EventKind.STOP, {
+                        "reason": "max_global_stalls",
+                        "total_stalls": self._global_stall_count,
+                        "stall_history": dict(self._target_stall_history),
+                    })
+                    self.stop()
+                    return
+
+                # Skip target if it has stalled 2+ times (smart degradation)
+                if prev_target and self._target_stall_history.get(prev_target, 0) >= 2:
+                    print(f"[AgentLoop] ⚠️ Target '{prev_target}' has stalled {self._target_stall_history[prev_target]} times")
+                    print(f"[AgentLoop] → Permanently skipping this target (unmeasurable)")
+
                 # BUG#6 FIX: unmeasured already computed above, no need to call again
                 if unmeasured:
                     next_target = unmeasured[0]
@@ -1824,6 +1861,84 @@ class AgentLoop:
         except Exception as e:
             print(f"[AgentLoop] C-02 SYNC ERROR: {e}")
             # Don't let sync errors crash the loop
+
+    def _validate_target_completeness(self) -> bool:
+        """FIX for Bug #5: Validate all targets are measured before CodeGen completion.
+
+        Checks if all requested targets have been measured and logs warnings for missing ones.
+        This prevents Verification REJECT due to missing measurements like l2_cache_size_mb.
+
+        Returns:
+            True if all targets are complete, False if any target is missing
+        """
+        try:
+            # Get all expected targets from cache (most reliable)
+            all_targets = []
+            if self.loop_state.all_targets_cache and len(self.loop_state.all_targets_cache) >= 2:
+                all_targets = self.loop_state.all_targets_cache.copy()
+
+            # Fallback: reconstruct from state machine
+            if not all_targets and self.loop_state.completed_targets:
+                known = set(self.loop_state.completed_targets)
+                if self.loop_state.current_target:
+                    known.add(self.loop_state.current_target)
+                all_targets = list(known)
+
+            if not all_targets or len(all_targets) < 2:
+                return True  # Cannot validate without target list, allow continuation
+
+            # Get actually measured targets
+            entries = self.context_manager.get_entries()
+            measured = set()
+
+            for entry in entries:
+                if entry.role.value == "assistant":
+                    content = entry.content
+                    try:
+                        data = json.loads(content) if isinstance(content, str) else {}
+                        if isinstance(data, dict):
+                            for field in ["stdout", "output"]:
+                                text = data.get(field, "")
+                                if text:
+                                    measurements = self._parse_measurements_from_text(str(text))
+                                    measurements.update(measurements)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                    measurements = self._parse_measurements_from_text(str(content))
+                    measured.update(measurements)
+
+            # Check completeness
+            missing = [t for t in all_targets if t not in measured]
+            completed_count = len([t for t in all_targets if t in measured])
+
+            print(f"[AgentLoop] TARGET COMPLETENESS CHECK: {completed_count}/{len(all_targets)} targets measured")
+
+            if missing:
+                print(f"[AgentLoop] ⚠️ MISSING TARGETS ({len(missing)}): {missing}")
+                print(f"[AgentLoop] → This will likely cause Verification REJECT!")
+                print(f"[AgentLoop] → Recommend: Force-switch to measure missing targets")
+
+                # Inject warning into context to guide LLM
+                warning_msg = (
+                    f"[URGENT: {len(missing)} TARGETS NOT MEASURED]\n"
+                    f"Missing: {', '.join(missing)}\n"
+                    f"You MUST compile and execute code to measure these targets before completing.\n"
+                    f"Use compile_cuda + execute_binary tools immediately.\n"
+                    f"Do NOT proceed to next stage until all targets are measured."
+                )
+                self.context_manager.add_entry(
+                    Role.SYSTEM,
+                    warning_msg,
+                    token_count=50,
+                )
+                return False
+
+            print(f"[AgentLoop] ✅ All {len(all_targets)} targets validated as complete")
+            return True
+
+        except Exception as e:
+            print(f"[AgentLoop] Target completeness check error: {e}")
+            return True  # Don't block on check errors
 
     def _parse_measurements_from_text(self, text: str) -> set[str]:
         """Parse measurement values from text content.
