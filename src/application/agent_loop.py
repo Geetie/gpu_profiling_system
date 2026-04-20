@@ -151,16 +151,6 @@ class AgentLoop:
             self.loop_state.target_retry_count = {t: 0 for t in targets}
             print(f"[AgentLoop] Target state initialized: current={targets[0]}, total={len(targets)}")
 
-    def _get_all_targets(self) -> list[str]:
-        """Get all requested targets from context entries."""
-        entries = self.context_manager.get_entries()
-        for entry in entries:
-            if entry.role.value == "system" and "targets" in entry.content:
-                m = re.search(r'"targets"\s*:\s*\[([^\]]+)\]', entry.content)
-                if m:
-                    return re.findall(r'"([^"]+)"', m.group(1))
-        return []
-
     def on_event(
         self,
         handler: Callable[[LoopEvent], None],
@@ -279,9 +269,8 @@ class AgentLoop:
                 # Step 4: Check per-target retry limit to prevent infinite recompilation loops
                 MAX_RETRIES_PER_TARGET = 2  # Reduced from 3 to handle LLM syntax errors faster
                 current_target = self.loop_state.current_target
-                all_targets_list = self._get_all_targets()
 
-                if current_target and all_targets_list:
+                if current_target:
                     retry_count = self.loop_state.target_retry_count.get(current_target, 0)
 
                     # Check if we've exceeded max retries
@@ -684,7 +673,7 @@ class AgentLoop:
                                     summary_lines.append(f"  • {key}: {val}{marker}")
 
                                 # Add progress info
-                                total_targets = len(self._get_all_targets())
+                                total_targets = len(self.loop_state.completed_targets) + len(self._find_unmeasured_targets())
                                 completed_count = len(self.loop_state.completed_targets)
                                 summary_lines.append(f"\nProgress: {completed_count}/{total_targets} targets measured")
 
@@ -725,8 +714,7 @@ class AgentLoop:
 
                             # Update target state machine: mark current as completed, switch to next
                             prev_target = self.loop_state.current_target
-                            if (prev_target and prev_target not in self.loop_state.completed_targets
-                                and prev_target in [t for t in self._get_all_targets()]):
+                            if prev_target and prev_target not in self.loop_state.completed_targets:
                                 self.loop_state.completed_targets.append(prev_target)
                                 print(f"[AgentLoop] Target '{prev_target}' marked as COMPLETED")
 
