@@ -282,8 +282,7 @@ class AgentLoop:
                         force_reason = f"max retries ({MAX_RETRIES_PER_TARGET})"
 
                     # Find next unmeasured target
-                    remaining = [t for t in all_targets_list
-                                 if t not in self.loop_state.completed_targets and t != current_target]
+                    remaining = self._find_unmeasured_targets()
 
                     if should_force_switch and remaining:
                         next_target = remaining[0]
