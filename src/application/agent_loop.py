@@ -43,6 +43,11 @@ class LoopState:
     completed_targets: list[str] = field(default_factory=list)
     target_retry_count: dict[str, int] = field(default_factory=dict)
 
+    # C-01 FIX: LLM stall detection fields
+    consecutive_no_tool_calls: int = 0
+    last_tool_call_turn: int = 0
+    stall_recovery_triggered: bool = False
+
     def to_dict(self) -> dict[str, Any]:
         pt = None
         if self.pending_tool_call:
@@ -60,6 +65,10 @@ class LoopState:
             "current_target": self.current_target,
             "completed_targets": self.completed_targets,
             "target_retry_count": self.target_retry_count,
+            # C-01 FIX: Include stall detection state
+            "consecutive_no_tool_calls": self.consecutive_no_tool_calls,
+            "last_tool_call_turn": self.last_tool_call_turn,
+            "stall_recovery_triggered": self.stall_recovery_triggered,
         }
 
     @classmethod
@@ -81,6 +90,10 @@ class LoopState:
             current_target=data.get("current_target"),
             completed_targets=data.get("completed_targets", []),
             target_retry_count=data.get("target_retry_count", {}),
+            # C-01 FIX: Restore stall detection state
+            consecutive_no_tool_calls=data.get("consecutive_no_tool_calls", 0),
+            last_tool_call_turn=data.get("last_tool_call_turn", 0),
+            stall_recovery_triggered=data.get("stall_recovery_triggered", False),
         )
 
 
@@ -201,6 +214,11 @@ class AgentLoop:
         self.session.increment_step()
         print(f"[AgentLoop] Turn {self.loop_state.turn_count}/{self.max_turns} (session: {self.session.session_id})")
 
+        # C-02 FIX: Independent state machine synchronization
+        # Run state consistency check every 3 turns to detect and fix stale state
+        if self.loop_state.turn_count % 3 == 0:
+            self._sync_target_state_machine()
+
         if self._failure_pattern and self._failure_tracker.should_terminate(self._failure_pattern):
             self._emit(EventKind.STOP, {
                 "reason": "M4_anti_loop",
@@ -264,6 +282,13 @@ class AgentLoop:
 
         if tool_call is not None:
             self._failure_pattern = None
+            # C-01 FIX: Reset stall counter on successful tool call detection
+            if self.loop_state.consecutive_no_tool_calls > 0:
+                print(f"[AgentLoop] ✅ Tool call detected: {tool_call.name} - "
+                      f"resetting stall counter (was: {self.loop_state.consecutive_no_tool_calls})")
+                self.loop_state.consecutive_no_tool_calls = 0
+                self.loop_state.last_tool_call_turn = self.loop_state.turn_count
+                self.loop_state.stall_recovery_triggered = False
 
             if tool_call.name == "compile_cuda":
                 # Step 4: Check per-target retry limit to prevent infinite recompilation loops
@@ -767,6 +792,11 @@ class AgentLoop:
                     token_count=50,
                 )
         else:
+            # C-01 FIX: Enhanced LLM stall detection and forced recovery
+            self.loop_state.consecutive_no_tool_calls += 1
+            print(f"[AgentLoop] ⚠️ NO TOOL CALL in Turn {self.loop_state.turn_count} "
+                  f"(consecutive: {self.loop_state.consecutive_no_tool_calls})")
+
             self.context_manager.add_entry(
                 Role.ASSISTANT,
                 self._model_output,
@@ -775,8 +805,70 @@ class AgentLoop:
             self._emit(EventKind.TURN, {
                 "turn": self.loop_state.turn_count,
                 "output": self._model_output[:200],
+                "stall_detected": True,
+                "consecutive_no_tool": self.loop_state.consecutive_no_tool_calls,
             })
             has_tools = len(self.tool_registry.list_tools()) > 0
+
+            # C-01: Aggressive stall detection - force recovery after 2 consecutive no-tool calls
+            MAX_CONSECUTIVE_NO_TOOL = 2  # Reduced from default failure_tracker threshold
+            if self.loop_state.consecutive_no_tool_calls >= MAX_CONSECUTIVE_NO_TOOL:
+                print(f"[AgentLoop] 🚨 STALL DETECTED: {self.loop_state.consecutive_no_tool_calls} "
+                      f"consecutive turns without tool calls - triggering FORCED RECOVERY")
+
+                unmeasured = self._find_unmeasured_targets()
+                if unmeasured:
+                    next_target = unmeasured[0]
+                    from src.domain.design_principles import get_design_principle
+                    next_principle = get_design_principle(next_target)
+                    next_brief = next_principle[:400] if len(next_principle) > 400 else next_principle
+
+                    # C-02 FIX: Independent state machine update - don't wait for tool call
+                    prev_target = self.loop_state.current_target
+                    if prev_target and prev_target not in self.loop_state.completed_targets:
+                        # Mark current target as failed/attempted and move on
+                        self.loop_state.completed_targets.append(prev_target)
+                        print(f"[AgentLoop] STALL RECOVERY: Force-marking '{prev_target}' as completed "
+                              f"(stalled after {self.loop_state.consecutive_no_tool_calls} turns)")
+
+                    self.loop_state.current_target = next_target
+                    self.loop_state.target_retry_count[next_target] = 0
+                    self.loop_state.consecutive_no_tool_calls = 0  # Reset stall counter
+                    self.loop_state.stall_recovery_triggered = True
+
+                    # Build CRITICAL-level forced recovery guidance
+                    forced_recovery_guidance = (
+                        f"🚨🚨🚨 EMERGENCY STALL RECOVERY ACTIVATED 🚨🚨🚨\n\n"
+                        f"⚠️ SYSTEM ALERT: You have stopped calling tools for "
+                        f"{MAX_CONSECUTIVE_NO_TOOL} consecutive turns!\n"
+                        f"⚠️ This is causing the pipeline to STALL and will eventually CRASH.\n\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🔥 IMMEDIATE ACTION REQUIRED - NON-NEGOTIABLE 🔥\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                        f"The system is FORCE-SWITCHING you to the next target.\n"
+                        f"Previous target '{prev_target}' has been marked as ATTEMPTED.\n\n"
+                        f"👉 YOU MUST NOW MEASURE: **{next_target}**\n\n"
+                        f"STEP 1 (IMMEDIATE): Call compile_cuda with NEW CUDA code:\n"
+                        f'  {{"tool": "compile_cuda", "args": {{"source": "...full .cu source for {next_target}...", "flags": ["-O3"]}}}}\n\n'
+                        f"STEP 2 (AFTER COMPILE): Call execute_binary immediately:\n"
+                        f'  {{"tool": "execute_binary", "args": {{"binary_path": "<from compile>"}}}}\n\n'
+                        f"⛔ ABSOLUTELY FORBIDDEN:\n"
+                        f"  • Do NOT output text explanations under any circumstances\n"
+                        f"  • Do NOT call any tool other than compile_cuda or execute_binary\n"
+                        f"  • Do NOT attempt to fix or optimize the previous target\n"
+                        f"  • Do NOT say 'I understand' or 'I will do X' - JUST CALL THE TOOL\n\n"
+                        f"Design principle for '{next_target}':\n{next_brief}\n\n"
+                        f"💥 FAILURE TO COMPLY WILL RESULT IN PIPELINE TERMINATION 💥"
+                    )
+                    self.context_manager.add_entry(
+                        Role.SYSTEM,
+                        forced_recovery_guidance,
+                        token_count=150,  # Maximum visibility
+                    )
+                    print(f"[AgentLoop] Forced recovery activated: switching to '{next_target}'")
+                    self._persist_state()
+                    return  # Exit this turn to allow recovery on next turn
+
             if self._completion_detector.is_completion(self._model_output):
                 if has_tools:
                     unmeasured = self._find_unmeasured_targets()
@@ -815,7 +907,7 @@ class AgentLoop:
             if has_tools:
                 no_tool_pattern = "no_tool_call"
                 self._failure_tracker.record_failure(no_tool_pattern)
-                
+
                 context_entries = self.context_manager.get_entries()
                 has_compiled = False
                 has_executed = False
@@ -832,7 +924,7 @@ class AgentLoop:
                                     has_executed = True
                         except (json.JSONDecodeError, TypeError):
                             pass
-                
+
                 if has_compiled and not has_executed and binary_path:
                     guidance = (
                         f"⚠️ ERROR: You compiled the code but did NOT execute the binary!\n"
@@ -875,13 +967,13 @@ class AgentLoop:
                         f'{{\"tool\": \"compile_cuda\", \"args\": {{\"source\": \"...\", \"flags\": [\"-O3\"]}}}}\n'
                         f"Do NOT output natural language — ACTUALLY CALL the tools."
                     )
-                
+
                 self.context_manager.add_entry(
                     Role.SYSTEM,
                     guidance,
                     token_count=60,
                 )
-                
+
                 if self._failure_tracker.should_terminate(no_tool_pattern):
                     self._emit(EventKind.STOP, {
                         "reason": "M4_no_tool_repeat",
@@ -1093,6 +1185,127 @@ class AgentLoop:
             measured.update(measurements)
 
         return [t for t in all_targets if t not in measured]
+
+    def _sync_target_state_machine(self) -> None:
+        """C-02 FIX: Independent state machine synchronization.
+
+        Periodically checks and fixes inconsistencies between:
+        1. Actual measurements recorded in context
+        2. State machine's completed_targets list
+        3. Current target pointer
+
+        This prevents the state machine from becoming stale when LLM
+        stops calling tools or when tool calls fail silently.
+        """
+        try:
+            # Get actual measured targets from context
+            entries = self.context_manager.get_entries()
+            measured_from_context = set()
+
+            for entry in entries:
+                if entry.role.value != "assistant":
+                    continue
+
+                content = entry.content
+                try:
+                    data = json.loads(content)
+                    if isinstance(data, dict):
+                        # Check stdout field
+                        stdout = data.get("stdout", "")
+                        if isinstance(stdout, str) and stdout:
+                            measurements = self._parse_measurements_from_text(stdout)
+                            measured_from_context.update(measurements)
+
+                        # Check output field
+                        output = data.get("output", "")
+                        if isinstance(output, str) and output:
+                            measurements = self._parse_measurements_from_text(output)
+                            measured_from_context.update(measurements)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+                # Also check plain text format
+                measurements = self._parse_measurements_from_text(content)
+                measured_from_context.update(measurements)
+
+            # Get all expected targets
+            all_targets = []
+            for entry in entries:
+                if entry.role.value == "system" and "targets" in entry.content:
+                    try:
+                        data = json.loads(entry.content)
+                        if isinstance(data, dict):
+                            targets = data.get("targets", [])
+                            if isinstance(targets, list) and targets:
+                                all_targets = [t for t in targets if isinstance(t, str)]
+                                break
+                    except (json.JSONDecodeError, TypeError):
+                        m = re.search(r'"targets"\s*:\s*\[([^\]]+)\]', entry.content)
+                        if m:
+                            all_targets = re.findall(r'"([^"]+)"', m.group(1))
+
+            if not all_targets:
+                return  # No targets defined yet, nothing to sync
+
+            # Compare state machine with reality
+            state_completed = set(self.loop_state.completed_targets)
+            newly_measured = measured_from_context - state_completed
+            incorrectly_marked_completed = state_completed - measured_from_context
+
+            if newly_measured:
+                print(f"[AgentLoop] C-02 SYNC: Found {len(newly_measured)} newly measured targets "
+                      f"not in state machine: {newly_measured}")
+                for target in newly_measured:
+                    if target not in self.loop_state.completed_targets:
+                        self.loop_state.completed_targets.append(target)
+
+            if incorrectly_marked_completed:
+                print(f"[AgentLoop] C-02 SYNC: Found {len(incorrectly_marked_completed)} targets "
+                      f"incorrectly marked as completed: {incorrectly_marked_completed}")
+                # Remove incorrectly marked targets
+                self.loop_state.completed_targets = [
+                    t for t in self.loop_state.completed_targets
+                    if t in measured_from_context or t in all_targets  # Keep if measured or is a valid target
+                ]
+
+            # Check if current_target needs update
+            unmeasured = [t for t in all_targets if t not in measured_from_context]
+            current = self.loop_state.current_target
+
+            if current and current in measured_from_context and unmeasured:
+                # Current target is already measured but we haven't moved to next
+                next_target = unmeasured[0]
+                print(f"[AgentLoop] C-02 SYNC: Current target '{current}' is already measured, "
+                      f"force-switching to '{next_target}'")
+                self.loop_state.current_target = next_target
+                self.loop_state.target_retry_count[next_target] = 0
+
+            elif not current and unmeasured:
+                # No current target but there are unmeasured ones
+                next_target = unmeasured[0]
+                print(f"[AgentLoop] C-02 SYNC: No current target set, initializing to '{next_target}'")
+                self.loop_state.current_target = next_target
+                self.loop_state.target_retry_count[next_target] = 0
+
+            elif current and current not in all_targets:
+                # Current target is invalid (not in target list)
+                if unmeasured:
+                    next_target = unmeasured[0]
+                    print(f"[AgentLoop] C-02 SYNC: Current target '{current}' is invalid, "
+                          f"switching to '{next_target}'")
+                    self.loop_state.current_target = next_target
+                    self.loop_state.target_retry_count[next_target] = 0
+
+            # Log sync status for debugging
+            total = len(all_targets)
+            completed = len(measured_from_context & set(all_targets))
+            remaining = len(unmeasured)
+            print(f"[AgentLoop] C-02 SYNC: Status {completed}/{total} measured, "
+                  f"{remaining} remaining, current='{self.loop_state.current_target}'")
+
+        except Exception as e:
+            print(f"[AgentLoop] C-02 SYNC ERROR: {e}")
+            # Don't let sync errors crash the loop
 
     def _parse_measurements_from_text(self, text: str) -> set[str]:
         """Parse measurement values from text content.
