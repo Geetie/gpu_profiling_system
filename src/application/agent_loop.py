@@ -215,8 +215,9 @@ class AgentLoop:
         print(f"[AgentLoop] Turn {self.loop_state.turn_count}/{self.max_turns} (session: {self.session.session_id})")
 
         # C-02 FIX: Independent state machine synchronization
-        # Run state consistency check every 3 turns to detect and fix stale state
-        if self.loop_state.turn_count % 3 == 0:
+        # BUG#3 FIX: Reduced from every 3 turns to every 2 turns for faster detection
+        if self.loop_state.turn_count % 2 == 0:
+            print(f"[AgentLoop] Triggering C-02 state sync (Turn {self.loop_state.turn_count})")
             self._sync_target_state_machine()
 
         if self._failure_pattern and self._failure_tracker.should_terminate(self._failure_pattern):
@@ -645,10 +646,52 @@ class AgentLoop:
                     # Auto-inject binary_path hint after compile_cuda success
                     if tool_call.name == "compile_cuda" and result.get("binary_path"):
                         bp = result["binary_path"]
+                        current_target = self.loop_state.current_target
                         compile_count = sum(1 for e in self.context_manager.get_entries()
                                             if e.role.value == "assistant"
                                             and _safe_get_tool(e) == "compile_cuda"
                                             and _safe_get_success(e))
+
+                        # BUG#2 FIX: Detect repeated compilation of already-measured target
+                        if current_target and current_target in self.loop_state.completed_targets:
+                            print(f"[AgentLoop] ⚠️ BUG#2 DETECTED: Re-compiling already-measured target '{current_target}' "
+                                  f"(compile #{compile_count})")
+
+                            unmeasured = self._find_unmeasured_targets()
+                            if unmeasured:
+                                next_target = unmeasured[0]
+                                from src.domain.design_principles import get_design_principle
+                                next_principle = get_design_principle(next_target)
+                                next_brief = next_principle[:400] if len(next_principle) > 400 else next_principle
+
+                                force_switch_msg = (
+                                    f"🚨🚨🚨 FORCED TARGET SWITCH 🚨🚨🚨\n\n"
+                                    f"⛔ STOP! You are RE-COMPILING an already-measured target!\n"
+                                    f"✅ Target '{current_target}' was ALREADY measured successfully.\n\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"👉 FORCED: Switch to NEXT UNMEASURED TARGET\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                                    f"You MUST now measure: **{next_target}**\n\n"
+                                    f"Remaining unmeasured targets: {unmeasured}\n\n"
+                                    f"STEP 1 (MANDATORY): Call compile_cuda with NEW code:\n"
+                                    f'  {{"tool": "compile_cuda", "args": {{"source": "...new kernel for {next_target}...", "flags": ["-O3"]}}}}\n\n'
+                                    f"⚠️ ABSOLUTELY FORBIDDEN:\n"
+                                    f"  • Do NOT compile '{current_target}' again - it's DONE\n"
+                                    f"  • Do NOT output text explanations\n"
+                                    f"  • Do NOT reuse old CUDA code\n\n"
+                                    f"Design principle for '{next_target}':\n{next_brief}"
+                                )
+                                self.context_manager.add_entry(
+                                    Role.SYSTEM,
+                                    force_switch_msg,
+                                    token_count=120,
+                                )
+                                # Force switch the state machine
+                                self.loop_state.current_target = next_target
+                                self.loop_state.target_retry_count[next_target] = 0
+                                print(f"[AgentLoop] Force-switched from '{current_target}' to '{next_target}' "
+                                      f"(reason: repeated compilation of measured target)")
+
                         auto_hint = (
                             f"✅ Compilation #{compile_count} succeeded! Binary saved to: {bp}\n"
                             f"👉 IMMEDIATELY call execute_binary to run this binary:\n"
@@ -1126,27 +1169,82 @@ class AgentLoop:
         - JSON stdout from execute_binary results
         - Direct text output with 'key: value' format
         - Various numeric formats (int, float, scientific notation)
+
+        BUG#1 FIX: Now extracts targets from MULTIPLE sources to ensure completeness:
+        1. LoopState initialization data (most reliable)
+        2. User messages (target_spec from Planner)
+        3. System messages (progress reports)
         """
         all_targets = []
         measured = set()
         entries = self.context_manager.get_entries()
 
-        # Extract all requested targets from system messages (enhanced JSON parsing)
-        for entry in entries:
-            if entry.role.value == "system" and "targets" in entry.content:
-                # P0 FIX: Use JSON parsing instead of regex for more reliable extraction
-                try:
-                    data = json.loads(entry.content)
-                    if isinstance(data, dict):
-                        targets = data.get("targets", [])
-                        if isinstance(targets, list) and targets:
-                            all_targets = [t for t in targets if isinstance(t, str)]
-                            break  # Found valid targets, stop searching
-                except (json.JSONDecodeError, TypeError):
-                    # Fallback to regex if JSON parsing fails
-                    m = re.search(r'"targets"\s*:\s*\[([^\]]+)\]', entry.content)
+        # P0 FIX: Extract from LoopState first (if initialized via _init_target_state)
+        if self.loop_state.completed_targets or self.loop_state.current_target:
+            # Try to reconstruct full target list from completed + current + unmeasured
+            known_targets = set(self.loop_state.completed_targets)
+            if self.loop_state.current_target:
+                known_targets.add(self.loop_state.current_target)
+            if len(known_targets) >= 2:  # At least 2 targets suggests we have the list
+                all_targets = list(known_targets)
+
+        # Extract all requested targets from user messages (contains target_spec from Planner)
+        if not all_targets:
+            for entry in entries:
+                if entry.role.value == "user":
+                    content = entry.content
+                    # Pattern 1: Target specification dict
+                    m = re.search(r"'targets'\s*:\s*\[([^\]]+)\]", content)
                     if m:
-                        all_targets = re.findall(r'"([^"]+)"', m.group(1))
+                        found_targets = re.findall(r"'([^']+)'", m.group(1))
+                        if found_targets and len(found_targets) >= 2:  # Valid multi-target spec
+                            all_targets = found_targets
+                            print(f"[AgentLoop] _find_unmeasured: Found {len(all_targets)} targets from user message")
+                            break
+
+                    # Pattern 2: JSON format target specification
+                    try:
+                        data = json.loads(content)
+                        if isinstance(data, dict):
+                            targets = data.get("targets", [])
+                            if isinstance(targets, list) and len(targets) >= 2:
+                                all_targets = [t for t in targets if isinstance(t, str)]
+                                print(f"[AgentLoop] _find_unmeasured: Found {len(all_targets)} targets from user JSON")
+                                break
+
+                        # Also check nested "Target specification" field
+                        target_spec = data.get("target_spec", {})
+                        if isinstance(target_spec, dict):
+                            targets = target_spec.get("targets", [])
+                            if isinstance(targets, list) and len(targets) >= 2:
+                                all_targets = [t for t in targets if isinstance(t, str)]
+                                print(f"[AgentLoop] _find_unmeasured: Found {len(all_targets)} targets from target_spec")
+                                break
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+        # Fallback: Extract from system messages (original logic)
+        if not all_targets:
+            for entry in entries:
+                if entry.role.value == "system" and "targets" in entry.content:
+                    try:
+                        data = json.loads(entry.content)
+                        if isinstance(data, dict):
+                            targets = data.get("targets", [])
+                            if isinstance(targets, list) and targets:
+                                all_targets = [t for t in targets if isinstance(t, str)]
+                                print(f"[AgentLoop] _find_unmeasured: Found {len(all_targets)} targets from system message (fallback)")
+                                break
+                    except (json.JSONDecodeError, TypeError):
+                        m = re.search(r'"targets"\s*:\s*\[([^\]]+)\]', entry.content)
+                        if m:
+                            all_targets = re.findall(r'"([^"]+)"', m.group(1))
+
+        # CRITICAL: If still no targets found but we have measurements, use measurements as reference
+        if not all_targets and self.loop_state.completed_targets:
+            print(f"[AgentLoop] _find_unmeasured WARNING: No target list found, "
+                  f"using {len(self.loop_state.completed_targets)} completed targets as baseline")
+            all_targets = list(self.loop_state.completed_targets)
 
         # Enhanced measurement detection with multiple format support
         for entry in entries:
@@ -1159,19 +1257,16 @@ class AgentLoop:
             try:
                 data = json.loads(content)
                 if isinstance(data, dict):
-                    # Check stdout field (most common for execute_binary)
                     stdout = data.get("stdout", "")
                     if isinstance(stdout, str) and stdout:
                         measurements = self._parse_measurements_from_text(stdout)
                         measured.update(measurements)
 
-                    # Check output field (alternative format)
                     output = data.get("output", "")
                     if isinstance(output, str) and output:
                         measurements = self._parse_measurements_from_text(output)
                         measured.update(measurements)
 
-                    # Check for explicit "measurements" field (P0 enhancement)
                     measurements_field = data.get("measurements", {})
                     if isinstance(measurements_dict := measurements_field, dict):
                         for key, val in measurements_dict.items():
@@ -1184,7 +1279,15 @@ class AgentLoop:
             measurements = self._parse_measurements_from_text(content)
             measured.update(measurements)
 
-        return [t for t in all_targets if t not in measured]
+        unmeasured = [t for t in all_targets if t not in measured]
+
+        # DEBUG: Log the results for troubleshooting
+        if all_targets:
+            print(f"[AgentLoop] _find_unmeasured: total={len(all_targets)}, "
+                  f"measured={len(measured & set(all_targets))}, unmeasured={len(unmeasured)}, "
+                  f"all_targets={all_targets}")
+
+        return unmeasured
 
     def _sync_target_state_machine(self) -> None:
         """C-02 FIX: Independent state machine synchronization.
@@ -1228,24 +1331,60 @@ class AgentLoop:
                 measurements = self._parse_measurements_from_text(content)
                 measured_from_context.update(measurements)
 
-            # Get all expected targets
+            # Get all expected targets (use same enhanced logic as _find_unmeasured_targets)
             all_targets = []
-            for entry in entries:
-                if entry.role.value == "system" and "targets" in entry.content:
-                    try:
-                        data = json.loads(entry.content)
-                        if isinstance(data, dict):
-                            targets = data.get("targets", [])
-                            if isinstance(targets, list) and targets:
-                                all_targets = [t for t in targets if isinstance(t, str)]
-                                break
-                    except (json.JSONDecodeError, TypeError):
-                        m = re.search(r'"targets"\s*:\s*\[([^\]]+)\]', entry.content)
-                        if m:
-                            all_targets = re.findall(r'"([^"]+)"', m.group(1))
+            # BUG#3 FIX: Use multiple sources like _find_unmeasured_targets does
+            if self.loop_state.completed_targets or self.loop_state.current_target:
+                known_targets = set(self.loop_state.completed_targets)
+                if self.loop_state.current_target:
+                    known_targets.add(self.loop_state.current_target)
+                if len(known_targets) >= 2:
+                    all_targets = list(known_targets)
 
             if not all_targets:
-                return  # No targets defined yet, nothing to sync
+                for entry in entries:
+                    if entry.role.value == "user":
+                        content = entry.content
+                        m = re.search(r"'targets'\s*:\s*\[([^\]]+)\]", content)
+                        if m:
+                            found = re.findall(r"'([^']+)'", m.group(1))
+                            if found and len(found) >= 2:
+                                all_targets = found
+                                break
+                        try:
+                            data = json.loads(content)
+                            if isinstance(data, dict):
+                                targets = data.get("targets", [])
+                                if isinstance(targets, list) and len(targets) >= 2:
+                                    all_targets = [t for t in targets if isinstance(t, str)]
+                                    break
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+
+            if not all_targets:
+                for entry in entries:
+                    if entry.role.value == "system" and "targets" in entry.content:
+                        try:
+                            data = json.loads(entry.content)
+                            if isinstance(data, dict):
+                                targets = data.get("targets", [])
+                                if isinstance(targets, list) and targets:
+                                    all_targets = [t for t in targets if isinstance(t, str)]
+                                    break
+                        except (json.JSONDecodeError, TypeError):
+                            m = re.search(r'"targets"\s*:\s*\[([^\]]+)\]', entry.content)
+                            if m:
+                                all_targets = re.findall(r'"([^"]+)"', m.group(1))
+
+            # BUG#3 FIX: Don't return early if no targets found - try to use what we have
+            if not all_targets:
+                if self.loop_state.completed_targets:
+                    print(f"[AgentLoop] C-02 SYNC WARNING: No target list found in context, "
+                          f"using {len(self.loop_state.completed_targets)} completed targets")
+                    all_targets = list(self.loop_state.completed_targets)
+                else:
+                    print(f"[AgentLoop] C-02 SYNC: No targets found anywhere, skipping sync")
+                    return  # Only skip if absolutely no target information available
 
             # Compare state machine with reality
             state_completed = set(self.loop_state.completed_targets)
