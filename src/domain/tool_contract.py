@@ -154,8 +154,17 @@ def build_agent_registry(
         ToolContract(
             name="compile_cuda",
             description="Compile CUDA source code via nvcc",
-            input_schema={"source": "string", "flags": ["string"]},
-            output_schema={"success": "boolean", "output": "string", "errors": "string"},
+            input_schema={"source": "string", "flags": ["string"], "target": "string"},
+            output_schema={
+                "success": "boolean",
+                "status": "string",
+                "output": "string",
+                "errors": "string",
+                "binary_path": "string",
+                "source_path": "string",
+                "has_warning": "boolean",
+                "next_action": "string"
+            },
             permissions=["file:read", "file:write", "process:exec"],
             requires_approval=True,
             is_blocking=True,
