@@ -411,13 +411,21 @@ class AgentLoop:
                 if not self._check_time_budget(current_target_for_check):
                     # Time budget exceeded - force skip to next target
                     remaining_targets = self._find_unmeasured_targets()
+
+                    # T6 BUG FIX: Exclude current target from candidates to prevent infinite loop!
+                    remaining_targets = [t for t in remaining_targets if t != current_target_for_check]
+
                     if remaining_targets:
                         next_target = remaining_targets[0]
                         print(f"[AgentLoop] ⚠️ T5-FIX#1: Force-switching from '{current_target_for_check}' "
                               f"to '{next_target}' (time budget exceeded)")
                         self.loop_state.current_target = next_target
                         self.loop_state.target_retry_count[next_target] = 0
-                        self.loop_state.completed_targets.append(current_target_for_check)
+
+                        # T6 BUG FIX: Mark failed target as completed to prevent re-selection
+                        if current_target_for_check not in self.loop_state.completed_targets:
+                            self.loop_state.completed_targets.append(current_target_for_check)
+
                         self.loop_state.consecutive_no_tool_calls = 0
                         self._reset_target_timer(next_target)
                         
@@ -453,6 +461,9 @@ class AgentLoop:
 
                     # Find next unmeasured target
                     remaining = self._find_unmeasured_targets()
+
+                    # T6 BUG FIX: Exclude current target to prevent re-selection loop!
+                    remaining = [t for t in remaining if t != current_target]
 
                     if should_force_switch and remaining:
                         next_target = remaining[0]
@@ -1866,6 +1877,55 @@ class AgentLoop:
                     f"4. Do NOT rewrite the entire kernel - just fix this line\n\n"
                     f"⚠️ If you cannot fix it in 1 attempt, the system will force target switch."
                 )
+
+        # Pattern 5 (T6 FIX): Host/Device function call error (COMMON in LLM-generated CUDA code!)
+        if ('calling a __host__ function' in error_lower or '__device__ function' in error_lower):
+            return (
+                "🚨🚨🚨 CRITICAL CUDA ERROR: HOST/DEVICE FUNCTION VIOLATION 🚨🚨🚨\n\n"
+                "❌ You are calling a **HOST-ONLY** function from a **DEVICE** (__global__/__) function!\n\n"
+
+                "**FORBIDDEN in __global__ or __device__ functions:**\n"
+                "  • cudaEventCreate() / cudaEventDestroy()\n"
+                "  • cudaEventRecord() / cudaEventSynchronize()\n"
+                "  • cudaEventElapsedTime()\n"
+                "  • cudaMalloc() / cudaFree() / cudaMemcpy()\n"
+                "  • printf() (use sparingly)\n\n"
+
+                "**ALLOWED in __global__ or __device__ functions:**\n"
+                "  • clock64() - for GPU timing (USE THIS INSTEAD!)\n"
+                "  • __threadfence() - memory fence\n"
+                "  • __syncthreads() - thread barrier\n"
+                "  • atomic operations\n\n"
+
+                "✅ CORRECT ARCHITECTURE PATTERN:\n"
+                "```cuda\n"
+                "// Kernel code (runs on GPU):\n"
+                "__global__ void my_kernel(...) {\n"
+                "    uint64_t start = clock64();  // ✅ Use clock64() for timing!\n"
+                "    // ... do work ...\n"
+                "    uint64_t end = clock64();\n"
+                "    *result = end - start;\n"
+                "}\n\n"
+                "// Host code (runs on CPU):\n"
+                "int main() {\n"
+                "    cudaEvent_t start, stop;  // ✅ cudaEvent* only in main()!\n"
+                "    cudaEventCreate(&start);\n"
+                "    cudaEventCreate(&stop);\n"
+                "    cudaEventRecord(start);\n"
+                "    my_kernel<<<...>>>(...);\n"
+                "    cudaDeviceSynchronize();\n"
+                "    cudaEventRecord(stop);\n"
+                "    float ms = 0;\n"
+                "    cudaEventElapsedTime(&ms, start, stop);\n"
+                "}\n"
+                "```\n\n"
+
+                "💡 **RULE OF THUMB:**\n"
+                "  If it starts with 'cuda', it probably belongs in main(), not in __global__!\n"
+                "  The ONLY exception is cudaDeviceSynchronize() which can be called from host.\n\n"
+                "⚠️ This is the #1 mistake LLMs make when writing CUDA code.\n"
+                "   Fix this architectural error and retry compilation."
+            )
 
         # No pattern matched - return generic guidance
         return None

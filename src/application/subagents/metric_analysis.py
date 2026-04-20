@@ -233,23 +233,39 @@ class MetricAnalysisAgent(BaseSubAgent):
         """
         # T5 FIX #3: Inject tool restriction guidance to prevent compile_cuda errors
         tool_restriction_guidance = (
-            "⚠️ IMPORTANT TOOL RESTRICTIONS (MetricAnalysis Stage):\n\n"
-            "You are in the METRIC ANALYSIS stage, NOT CodeGen.\n"
-            "Your task is to ANALYZE existing measurements, NOT generate new code.\n\n"
-            "✅ AVAILABLE TOOLS:\n"
-            "  • run_ncu - Profile binaries with Nsight Compute (if available)\n"
-            "  • read_file - Read output files or logs\n\n"
-            "❌ FORBIDDEN TOOLS (will cause errors):\n"
-            "  • compile_cuda - NOT registered in this stage\n"
-            "  • execute_binary - NOT registered in this stage\n\n"
-            "📋 YOUR ACTUAL TASK:\n"
-            "1. Use run_ncu to profile the compiled binaries (if NCU is available)\n"
-            "2. If NCU fails (ERR_NVGPUCTRPERM), switch to text-based analysis immediately\n"
-            "3. Analyze the measurement values for reasonableness and consistency\n"
-            "4. Provide bottleneck classification and confidence assessment\n\n"
-            "⛔ DO NOT attempt to call compile_cuda or execute_binary!\n"
-            "   These tools are ONLY available in the CodeGen stage.\n"
-            "   Calling them will result in 'Tool not registered' errors.\n"
+            "🚨🚨🚨 CRITICAL STAGE IDENTIFICATION 🚨🚨🚨\n\n"
+            "You are in the **METRIC ANALYSIS** stage.\n"
+            "This is NOT the CodeGen stage. You CANNOT compile or execute code.\n\n"
+
+            "✅ **YOUR ONLY AVAILABLE TOOLS:**\n"
+            "  1. **run_ncu** - Profile existing binaries with Nsight Compute\n"
+            "     Usage: Call run_ncu with the binary path from CodeGen stage\n"
+            "  2. **read_file** - Read measurement output files\n\n"
+
+            "❌❌❌ **ABSOLUTELY FORBIDDEN (WILL CAUSE IMMEDIATE ERRORS):**\n"
+            "  • **compile_cuda** - This tool DOES NOT EXIST in this stage!\n"
+            "    If you call it, you will get: KeyError \"Tool 'compile_cuda' is not registered\"\n"
+            "  • **execute_binary** - This tool DOES NOT EXIST in this stage!\n"
+            "    If you call it, you will get: KeyError \"Tool 'execute_binary' is not registered\"\n\n"
+
+            "🎯 **YOUR ACTUAL TASK (STEP BY STEP):**\n"
+            "1. Check if NCU is available (call run_ncu on any binary)\n"
+            "2. If NCU returns ERR_NVGPUCTRPERM → NCU is unavailable in this environment\n"
+            "   → Immediately switch to TEXT-BASED ANALYSIS of existing measurements\n"
+            "3. Read the measurement values from execute_binary results (already done by CodeGen)\n"
+            "4. Analyze if values are reasonable for this GPU architecture\n"
+            "5. Provide confidence assessment and potential error sources\n\n"
+
+            "⛔⛔⛔ **VIOLATION CONSEQUENCES:**\n"
+            "If you attempt to call compile_cuda or execute_binary:\n"
+            "  • The system will throw a KeyError exception\n"
+            "  • Your analysis will FAIL completely\n"
+            "  • You are WASTING valuable API calls and time\n"
+            "  • The pipeline will stall or produce incorrect results\n\n"
+
+            "💡 **REMEMBER:** CodeGen already compiled and executed the code.\n"
+            "   Your job is to ANALYZE the results, not re-do the work!\n"
+            "   If you need new measurements, that's CodeGen's job, not yours.\n"
         )
         
         self.context_manager.add_entry(
