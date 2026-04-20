@@ -172,6 +172,9 @@ class AgentLoop:
         self._max_global_stalls = 4   # Force-stop after this many total stalls
         self._target_stall_history: dict[str, int] = {}  # Per-target stall count
 
+        # T11 FIX: Per-stage maximum turn limits to prevent LLM loops
+        self.MAX_METRIC_ANALYSIS_TURNS = 6  # MetricAnalysis should complete in ≤6 turns
+
     def _init_target_state(self, target_spec: dict[str, Any] | None = None) -> None:
         """Initialize the target state machine for CodeGen stage.
 
@@ -372,6 +375,22 @@ class AgentLoop:
         self.loop_state.turn_count += 1
         self.session.increment_step()
         print(f"[AgentLoop] Turn {self.loop_state.turn_count}/{self.max_turns} (session: {self.session.session_id})")
+
+        # T11 FIX: Enforce per-stage maximum turn limits
+        # MetricAnalysis should complete quickly (≤6 turns) to avoid 3+ minute stalls
+        session_id_lower = self.session.session_id.lower() if self.session.session_id else ""
+        if "metric_analysis" in session_id_lower:
+            if self.loop_state.turn_count > self.MAX_METRIC_ANALYSIS_TURNS:
+                print(f"[AgentLoop] ⚠️ T11 FIX: METRIC_ANALYSIS TURN LIMIT EXCEEDED!")
+                print(f"   Turns: {self.loop_state.turn_count} > Limit: {self.MAX_METRIC_ANALYSIS_TURNS}")
+                print(f"   → Force-completing MetricAnalysis to prevent stall")
+                self._emit(EventKind.STOP, {
+                    "reason": "metric_analysis_turn_limit_exceeded",
+                    "actual_turns": self.loop_state.turn_count,
+                    "max_turns": self.MAX_METRIC_ANALYSIS_TURNS,
+                })
+                self.stop()
+                return
 
         # T5 FIX #1: Check total CodeGen time budget
         if not self._check_total_code_gen_budget():

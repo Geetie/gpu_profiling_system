@@ -275,6 +275,8 @@ class MetricAnalysisAgent(BaseSubAgent):
         )
 
         # P0-1 FIX: Intelligent NCU Degradation - Check availability BEFORE starting
+        # T11 ENHANCEMENT: Re-check on EVERY call (not just first time)
+        # This ensures persistent guidance even if LLM "forgets" in later turns
         try:
             from src.infrastructure.tools.run_ncu import _ncu_permission_cache
 
@@ -411,14 +413,30 @@ class MetricAnalysisAgent(BaseSubAgent):
     ) -> tuple[list[dict[str, Any]], bool]:
         """Profile binaries with Nsight Compute.
 
+        T11 FIX: Enhanced with early-exit on first NCU failure.
+        If the first binary fails due to NCU unavailability, immediately stop
+        profiling remaining binaries to save ~35s per binary.
+
         Returns:
             Tuple of (list of ncu result dicts, whether any profiling succeeded).
         """
         metrics = self._select_metrics_for_target(target)
         ncu_results: list[dict[str, Any]] = []
         any_success = False
+        ncu_unavailable_detected = False  # T11 FIX: Track NCU availability
 
         for binary_path in binary_paths:
+            # T11 FIX: Early exit if NCU already detected as unavailable
+            if ncu_unavailable_detected:
+                import logging as _logging
+                logger = _logging.getLogger(__name__)
+                logger.warning(
+                    f"[MetricAnalysis] ⚡ SKIPPING remaining binary (NCU unavailable)\n"
+                    f"  Binary: {binary_path}\n"
+                    f"  Saved ~35s by early exit"
+                )
+                continue
+
             try:
                 result = self._call_tool("run_ncu", {
                     "executable": binary_path,
@@ -427,6 +445,16 @@ class MetricAnalysisAgent(BaseSubAgent):
                 if isinstance(result, dict):
                     parsed = result.get("parsed_metrics", {})
                     error = parsed.get("error", "") if isinstance(parsed, dict) else ""
+
+                    # T11 FIX: Detect NCU unavailability and set flag
+                    if parsed.get("fast_fail") or parsed.get("cached_result"):
+                        ncu_unavailable_detected = True
+                        logger.warning(
+                            f"[MetricAnalysis] ⚠️ NCU unavailable detected for '{binary_path}'\n"
+                            f"  Error: {error[:100]}\n"
+                            f"  Will skip remaining {len(binary_paths) - binary_paths.index(binary_path) - 1} binaries"
+                        )
+
                     if not error:
                         ncu_results.append(result)
                         any_success = True
@@ -450,11 +478,46 @@ class MetricAnalysisAgent(BaseSubAgent):
         return ncu_results, any_success
 
     def _call_tool(self, tool_name: str, args: dict[str, Any]) -> Any:
-        """Call a registered tool through the infrastructure layer."""
-        from src.infrastructure.tools.run_ncu import run_ncu_handler
+        """Call a registered tool through the infrastructure layer.
+
+        T11 FIX: Enhanced with NCU permission pre-check to avoid wasted API calls.
+        If NCU is already marked as unavailable, returns cached error immediately (<1ms)
+        instead of attempting actual execution (which would waste ~35s per call).
+        """
+        from src.infrastructure.tools.run_ncu import (
+            run_ncu_handler,
+            _ncu_permission_cache,
+        )
 
         if tool_name == "run_ncu":
+            # T11 FIX: Pre-check NCU permission cache BEFORE executing
+            if _ncu_permission_cache.get("checked") and not _ncu_permission_cache.get("allowed"):
+                import logging as _logging
+                logger = _logging.getLogger(__name__)
+                logger.warning(
+                    f"[MetricAnalysis] ⚡ FAST FAIL: NCU cached as unavailable\n"
+                    f"  Reason: {_ncu_permission_cache.get('error_message', 'unknown')}\n"
+                    f"  Saved ~35s by skipping actual ncu execution"
+                )
+                return {
+                    "raw_output": "",
+                    "parsed_metrics": {
+                        "error": f"NCU unavailable (cached): {_ncu_permission_cache.get('error_message', 'unknown')}",
+                        "hint": "NCU permission denied. Use text-based analysis instead.",
+                        "cached_result": True,
+                        "fast_fail": True,  # Flag for _profile_with_ncu to detect
+                    },
+                }
+
             return run_ncu_handler(args, sandbox=self._sandbox)
+
+        if self.tool_registry.has_tool(tool_name):
+            self._persister.log_entry(
+                action="tool_call_unsupported",
+                details={"tool": tool_name, "error": "No handler registered"},
+            )
+
+        return {"error": f"Tool '{tool_name}' handler not available"}
 
         if self.tool_registry.has_tool(tool_name):
             self._persister.log_entry(
