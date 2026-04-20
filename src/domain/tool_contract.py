@@ -173,7 +173,13 @@ def build_agent_registry(
             name="execute_binary",
             description="Run a compiled binary and capture output",
             input_schema={"binary_path": "string", "args": ["string"]},
-            output_schema={"stdout": "string", "stderr": "string", "return_code": "integer"},
+            output_schema={
+                "success": "boolean",
+                "status": "string",
+                "stdout": "string",
+                "stderr": "string",
+                "return_code": "integer"
+            },
             permissions=["process:exec", "file:read"],
             requires_approval=True,
             is_blocking=True,

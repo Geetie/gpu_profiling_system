@@ -112,6 +112,7 @@ def execute_binary_handler(
 
     return {
         "status": "success" if result.return_code == 0 else "error",
+        "success": result.return_code == 0,
         "stdout": stdout,
         "stderr": result.stderr[:2000] if len(result.stderr) > 2000 else result.stderr,
         "return_code": result.return_code,
