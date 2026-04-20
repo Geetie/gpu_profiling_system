@@ -22,6 +22,7 @@ class SubAgentStatus(Enum):
     SUCCESS = "success"
     FAILED = "failed"
     REJECTED = "rejected"
+    PARTIAL = "partial"  # BUG#8 FIX: Partial success - some but not all targets measured (completion rate < 80%)
 
 
 class PipelineStage(Enum):

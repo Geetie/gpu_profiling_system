@@ -350,10 +350,9 @@ class AgentLoop:
                         self._persist_state()
                         return
 
-                # Increment retry count for current target
-                if current_target:
-                    self.loop_state.target_retry_count[current_target] = \
-                        self.loop_state.target_retry_count.get(current_target, 0) + 1
+                # NOTE: Retry counter increment moved to compilation RESULT processing (line ~670)
+                # This fixes BUG#7: counter should only increment on FAILURE, not on every call
+                # Old behavior: incremented here (line 355-356) causing false retry limit hits on success
 # P0 FIX: Inject current_target into compile_cuda arguments for target-specific binary names
                 if tool_call.name == "compile_cuda" and current_target:
                     tool_call.arguments["target"] = current_target
@@ -641,11 +640,63 @@ class AgentLoop:
                             )
                         else:
                             guidance += self._build_compile_error_guidance(str(errors))
-                    self.context_manager.add_entry(
-                        Role.SYSTEM,
-                        guidance,
-                        token_count=60,
-                    )
+
+                        # BUG#7 FIX (PART 2): Increment retry counter ONLY on compilation FAILURE
+                        # This is the correct location - after confirming the compilation actually failed
+                        current_target = self.loop_state.current_target
+                        if current_target:
+                            MAX_RETRIES = 2
+                            current_retry = self.loop_state.target_retry_count.get(current_target, 0)
+                            new_retry = current_retry + 1
+                            self.loop_state.target_retry_count[current_target] = new_retry
+
+                            print(f"[AgentLoop] ❌ BUG#7 FIXED: Compilation failed for '{current_target}', "
+                                  f"incrementing retry count {current_retry} → {new_retry}/{MAX_RETRIES}")
+
+                            # Check if we've now exceeded max retries AFTER this failure
+                            if new_retry >= MAX_RETRIES:
+                                print(f"[AgentLoop] ⚠️ Target '{current_target}' reached max retries "
+                                      f"({new_retry}/{MAX_RETRIES}), forcing switch to next target")
+
+                                # Force mark as completed to prevent infinite loop
+                                if current_target not in self.loop_state.completed_targets:
+                                    self.loop_state.completed_targets.append(current_target)
+                                    print(f"[AgentLoop] Force-marked '{current_target}' as completed "
+                                          f"(retry limit reached after {new_retry} failures)")
+
+                                # Switch to next target
+                                unmeasured = self._find_unmeasured_targets()
+                                if unmeasured:
+                                    next_target = unmeasured[0]
+                                    from src.domain.design_principles import get_design_principle
+                                    next_principle = get_design_principle(next_target)
+
+                                    force_switch_msg = (
+                                        f"🚨🚨🚨 COMPILATION RETRY LIMIT EXHAUSTED 🚨🚨🚨\n\n"
+                                        f"⛔ Target '{current_target}' failed {new_retry} times.\n"
+                                        f"It has been force-marked as completed (unmeasured).\n\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                        f"👉 FORCED SWITCH TO: **{next_target}**\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                                        f"You MUST now call compile_cuda with NEW code for {next_target}.\n"
+                                        f"Do NOT attempt '{current_target}' again.\n\n"
+                                        f"Design principle for '{next_target}':\n{next_principle[:400]}"
+                                    )
+                                    guidance = force_switch_msg
+                                    self.loop_state.current_target = next_target
+                                    self.loop_state.target_retry_count[next_target] = 0
+                                else:
+                                    # No more targets - signal completion
+                                    print(f"[AgentLoop] ✅ All targets processed (including force-marked)")
+                                    self._emit(EventKind.STOP, {"reason": "all_targets_processed"})
+                                    self.stop()
+                                    return
+
+                        self.context_manager.add_entry(
+                            Role.SYSTEM,
+                            guidance,
+                            token_count=60,
+                        )
                     self._failure_pattern = f"tool_error:{tool_call.name}"
                     self._failure_tracker.record_failure(self._failure_pattern)
                 elif isinstance(result, dict) and result.get("success") is True:
@@ -659,52 +710,21 @@ class AgentLoop:
                                             and _safe_get_tool(e) == "compile_cuda"
                                             and _safe_get_success(e))
 
-                        # BUG#7 FIX: Check retry count BEFORE allowing compilation
-                        current_retry = self.loop_state.target_retry_count.get(current_target, 0)
+                        # BUG#7 FIX (REVISED): Handle retry counter based on COMPILATION RESULT
+                        # Key insight: Counter should ONLY increment on FAILURE, reset on SUCCESS
                         MAX_RETRIES = 2  # Same as max_retries_per_target in TargetStateMachine
 
-                        if current_retry >= MAX_RETRIES:
-                            print(f"[AgentLoop] ⚠️ BUG#7 BLOCKED: Target '{current_target}' has reached "
-                                  f"max retries ({current_retry}/{MAX_RETRIES}), refusing to process compilation")
-                            
-                            # Force mark as completed to prevent infinite loop
-                            if current_target and current_target not in self.loop_state.completed_targets:
-                                self.loop_state.completed_targets.append(current_target)
-                                print(f"[AgentLoop] Force-marked '{current_target}' as completed "
-                                      f"(retry limit reached)")
-                            
-                            # Switch to next target or signal completion
-                            unmeasured = self._find_unmeasured_targets()
-                            if not unmeasured:
-                                print(f"[AgentLoop] ✅ All targets processed (including force-marked)")
-                                self._emit(EventKind.STOP, {"reason": "all_targets_processed"})
-                                self.stop()
-                                return
-                            else:
-                                next_target = unmeasured[0]
-                                from src.domain.design_principles import get_design_principle
-                                next_principle = get_design_principle(next_target)
-                                
-                                block_msg = (
-                                    f"🚫 TARGET '{current_target}' REACHED RETRY LIMIT ({MAX_RETRIES})\n\n"
-                                    f"It has been force-marked as completed.\n\n"
-                                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                    f"👉 SWITCH TO: **{next_target}**\n"
-                                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                                    f"You MUST now call compile_cuda with NEW code for {next_target}.\n"
-                                    f"Do NOT attempt to fix {current_target} again.\n\n"
-                                    f"Design principle:\n{next_principle[:400]}"
-                                )
-                                self.context_manager.add_entry(
-                                    Role.SYSTEM,
-                                    block_msg,
-                                    token_count=100,
-                                )
-                                self.loop_state.current_target = next_target
-                                self.loop_state.target_retry_count[next_target] = 0
-                        else:
+                        if current_target:
+                            # ✅ SUCCESS path: Reset retry counter to allow fresh attempts if needed later
+                            # This fixes the core bug where successful compilations were counted as retries
+                            current_retry = self.loop_state.target_retry_count.get(current_target, 0)
+                            if current_retry > 0:
+                                print(f"[AgentLoop] ✅ BUG#7 FIXED: Compilation succeeded for '{current_target}', "
+                                      f"resetting retry count from {current_retry} to 0")
+                                self.loop_state.target_retry_count[current_target] = 0
+
                             # BUG#2 FIX: Detect repeated compilation of already-measured target
-                            if current_target and current_target in self.loop_state.completed_targets:
+                            if current_target in self.loop_state.completed_targets:
                                 print(f"[AgentLoop] ⚠️ BUG#2 DETECTED: Re-compiling already-measured target '{current_target}' "
                                       f"(compile #{compile_count})")
 

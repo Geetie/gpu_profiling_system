@@ -1,0 +1,10 @@
+{
+  "session_id": "sess_6efedf82",
+  "goal": "Profile GPU hardware parameters for the given targets",
+  "step_count": 0,
+  "is_complete": false,
+  "error": "Verification rejected: Verdict: REJECT; - Missing measurement for 'actual_boost_clock_mhz' target - this was requested but not measured; - Only 2 out of 3 requested targets were successfully measured (dram_latency_cycles and l2_cache_size_mb are present, but actual_boost_clock_mhz is missing); Concerns:; - The pipeline failed to measure the actual_boost_clock_mhz target, which represents incomplete execution of the requested profiling task",
+  "created_at": "2026-04-20T10:57:59.347032+00:00",
+  "updated_at": "2026-04-20T11:08:31.557162+00:00",
+  "context_snapshot": {}
+}

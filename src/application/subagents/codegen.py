@@ -84,7 +84,7 @@ class CodeGenAgent(BaseSubAgent):
         # This ensures CodeGen knows the correct architecture to use
         detected_arch = self._detect_gpu_arch()
         print(f"[CodeGen] Detected GPU architecture: {detected_arch}")
-        
+
         # Add architecture info to context so model knows the correct arch
         self.context_manager.add_entry(
             Role.SYSTEM,
@@ -94,6 +94,70 @@ class CodeGenAgent(BaseSubAgent):
             f"Use the detected architecture {detected_arch} exactly.",
             token_count=50,
         )
+
+        # GPUFeatureDB Integration (P0 Priority): Inject architecture-specific measurement parameters
+        # This eliminates hardcoded sm_60 logic and auto-adapts to different GPUs
+        try:
+            from src.infrastructure.gpu_feature_db import GPUFeatureDB
+
+            gpu_db = GPUFeatureDB()
+            gpu_specs = gpu_db.detect_and_get_features()
+
+            if gpu_specs:
+                # Get target-specific optimal parameters
+                measure_params = gpu_db.get_measurement_params(target, detected_arch)
+
+                # Build comprehensive GPU context for LLM
+                gpu_context_parts = [
+                    f"📊 **GPU Feature Database** — Architecture-Specific Parameters\n",
+                    f"Detected GPU: {gpu_specs.name} ({gpu_specs.compute_capability})\n",
+                    f"Memory: {gpu_specs.memory_size_gb}GB {gpu_specs.memory_type}, "
+                    f"{gpu_specs.memory_bandwidth_gbps:.0f} GB/s bandwidth\n",
+                    f"SMs: {gpu_specs.sm_count}, L2 Cache: {gpu_specs.l2_cache_size_kb}KB, "
+                    f"Clock: {gpu_specs.base_clock_mhz}-{gpu_specs.boost_clock_mhz} MHz\n",
+                    f"\n📏 **Recommended Measurement Parameters for '{target}':**\n",
+                ]
+
+                # Add target-specific params
+                if "working_set_mb" in measure_params:
+                    gpu_context_parts.append(
+                        f"  • Working set: {measure_params['working_set_mb']}MB "
+                        f"(must exceed L2 cache)\n"
+                    )
+                if "expected_range" in measure_params:
+                    gpu_context_parts.append(
+                        f"  • Expected value range: {measure_params['expected_range']}\n"
+                    )
+                if "method" in measure_params:
+                    gpu_context_parts.append(
+                        f"  • Recommended method: {measure_params['method']}\n"
+                    )
+                if "notes" in measure_params:
+                    gpu_context_parts.append(
+                        f"  • Notes: {measure_params['notes']}\n"
+                    )
+
+                # Add general architecture guidance
+                gpu_context_parts.extend([
+                    f"\n⚠️ **Critical Constraints:**\n",
+                    f"  • Max shared memory/block: {gpu_specs.shared_memory_per_block_kb}KB\n",
+                    f"  • Max registers/thread: {gpu_specs.register_count_per_thread}\n",
+                    f"  • Warp size: {gpu_specs.warp_size}, Max threads/SM: {gpu_specs.max_threads_per_sm}\n",
+                    f"\n✅ Use these parameters to generate ACCURATE micro-benchmarks.\n",
+                ])
+
+                gpu_context = "".join(gpu_context_parts)
+                self.context_manager.add_entry(
+                    Role.SYSTEM,
+                    gpu_context,
+                    token_count=150,  # Generous token budget for rich context
+                )
+                print(f"[GPUFeatureDB] ✅ Injected {target}-specific params for {gpu_specs.name}")
+            else:
+                print(f"[GPUFeatureDB] ⚠️ Could not detect GPU specs, using fallback defaults")
+        except Exception as e:
+            print(f"[GPUFeatureDB] ❌ Integration error (non-fatal): {e}")
+            # Non-fatal: continue without GPUFeatureDB data
 
         self.context_manager.add_entry(
             Role.USER,

@@ -1174,10 +1174,32 @@ class StageExecutor:
                         logger.info("[StageExecutor] ✅ BUG#8 FIX: All targets measured via relaxed check")
                         status = SubAgentStatus.SUCCESS
                     elif len(measured_keys) > 0:
-                        # Some measurements exist - acceptable for mock/test scenarios
-                        logger.warning("[StageExecutor] ⚠️ BUG#8 FIX: Partial measurements accepted "
-                                      "(measured=%s, requested=%s)", sorted(measured_keys), sorted(requested_targets))
-                        status = SubAgentStatus.SUCCESS
+                        # BUG#8 FIX (REVISED): Calculate completion rate and apply 80% threshold
+                        completion_rate = len(measured_keys) / len(requested_targets) if requested_targets else 0.0
+
+                        if completion_rate >= 0.8:
+                            # Acceptable: 80%+ of targets measured (allows for minor measurement failures)
+                            logger.info(
+                                "[StageExecutor] ⚠️ BUG#8 REVISED: Partial measurements accepted "
+                                "(measured=%d/%d=%.1f%%, threshold=80%%)",
+                                len(measured_keys), len(requested_targets), completion_rate * 100
+                            )
+                            status = SubAgentStatus.SUCCESS
+                            data["completion_rate"] = completion_rate
+                        else:
+                            # Too few measurements - mark as PARTIAL to indicate incomplete work
+                            logger.warning(
+                                "[StageExecutor] ❌ BUG#8 REVISED: Insufficient completion rate "
+                                "(measured=%d/%d=%.1f%%, threshold=80%%) → PARTIAL",
+                                len(measured_keys), len(requested_targets), completion_rate * 100
+                            )
+                            status = SubAgentStatus.PARTIAL
+                            data["completion_rate"] = completion_rate
+                            data["error_detail"] = (
+                                f"Only {completion_rate*100:.1f}% of targets measured "
+                                f"({len(measured_keys)}/{len(requested_targets)}). "
+                                f"Minimum required: 80%. Missing targets: {sorted(requested_targets - measured_keys)}"
+                            )
                     else:
                         status = SubAgentStatus.FAILED
                         data["error_detail"] = (
