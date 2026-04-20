@@ -146,7 +146,12 @@ def build_agent_registry(
             name="run_ncu",
             description="Execute NVIDIA Nsight Compute analysis on a target binary",
             input_schema={"executable": "string", "metrics": ["string"]},
-            output_schema={"raw_output": "string", "parsed_metrics": "object"},
+            output_schema={
+                "success": "boolean",
+                "status": "string",
+                "raw_output": "string",
+                "parsed_metrics": "object"
+            },
             permissions=["file:read", "process:exec"],
             requires_approval=False,
             is_blocking=True,
