@@ -1069,6 +1069,74 @@ class AgentLoop:
 
                             print(f"[AgentLoop] Parsed {len(measurements)} measurements from stdout: {list(measurements.keys())}")
 
+                            # P0-2 FIX: Sanity Check - Validate measurement values BEFORE recording
+                            if measurements:
+                                invalid_measurements = []
+                                validation_warnings = []
+
+                                # Define physically plausible ranges for common GPU parameters
+                                VALID_RANGES = {
+                                    "dram_latency_cycles": (50, 5000, "cycles"),
+                                    "l2_cache_size_mb": (0.25, 100, "MB"),
+                                    "l1_cache_size_kb": (8, 1024, "KB"),
+                                    "actual_boost_clock_mhz": (200, 4000, "MHz"),
+                                    "base_clock_mhz": (200, 3000, "MHz"),
+                                    "sm_count": (1, 200, "count"),
+                                    "max_shmem_per_block_kb": (1, 256, "KB"),
+                                    "memory_bandwidth_gbps": (10, 5000, "GB/s"),
+                                    "shmem_bandwidth_gbps": (100, 100000, "GB/s"),
+                                }
+
+                                for target_name, value in measurements.items():
+                                    is_valid = True
+                                    reason = ""
+
+                                    if target_name in VALID_RANGES:
+                                        min_val, max_val, unit = VALID_RANGES[target_name]
+                                        if not (min_val <= value <= max_val):
+                                            is_valid = False
+                                            reason = (
+                                                f"❌ SANITY CHECK FAILED for '{target_name}':\n"
+                                                f"   Measured: {value} {unit}\n"
+                                                f"   Expected: [{min_val}, {max_val}] {unit}\n\n"
+                                                f"   Possible causes:\n"
+                                                f"   • Unit conversion error (ms vs s, MB vs KB)\n"
+                                                f"   • Algorithm bug (wrong formula or missing factor)\n"
+                                                f"   • Hardware anomaly (extremely rare)\n\n"
+                                                f"   ⚠️ This value will be FLAGGED but ACCEPTED in lenient mode.\n"
+                                                f"   Verification stage will likely REJECT it."
+                                            )
+                                            invalid_measurements.append(target_name)
+                                            validation_warnings.append(reason)
+
+                                    if not is_valid:
+                                        print(f"[AgentLoop] ⚠️ P0-2 SANITY CHECK: {reason}")
+
+                                # Inject validation warnings into context if any invalid values found
+                                if validation_warnings:
+                                    sanity_warning = (
+                                        "🚨🚨🚨 MEASUREMENT SANITY CHECK ALERT 🚨🚨🚨\n\n"
+                                        f"Detected {len(invalid_measurements)} potentially invalid measurement(s):\n\n"
+                                    )
+                                    for warning in validation_warnings:
+                                        sanity_warning += warning + "\n---\n"
+
+                                    sanity_warning += (
+                                        "💡 RECOMMENDED ACTION:\n"
+                                        "If you have remaining time budget, consider re-measuring these targets.\n"
+                                        "Otherwise, proceed to next target - Verification will validate rigorously.\n"
+                                    )
+
+                                    self.context_manager.add_entry(
+                                        Role.SYSTEM,
+                                        sanity_warning,
+                                        token_count=80,
+                                    )
+                                    logger.warning(
+                                        f"[AgentLoop] ⚠️ P0-2: {len(invalid_measurements)} measurement(s) "
+                                        f"failed sanity check: {invalid_measurements}"
+                                    )
+
                             if measurements:
                                 newly_measured = []
                                 for key, val in measurements.items():

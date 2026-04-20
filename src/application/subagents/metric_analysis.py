@@ -273,7 +273,69 @@ class MetricAnalysisAgent(BaseSubAgent):
             tool_restriction_guidance,
             token_count=200,  # High visibility
         )
-        
+
+        # P0-1 FIX: Intelligent NCU Degradation - Check availability BEFORE starting
+        try:
+            from src.infrastructure.tools.run_ncu import _ncu_permission_cache
+
+            if _ncu_permission_cache.get("allowed") == False:
+                # NCU is confirmed unavailable - inject FORCE SKIP guidance
+                ncu_skip_guidance = (
+                    "🚨🚨🚨 IMMEDIATE ACTION REQUIRED - NCU PERMANENTLY UNAVAILABLE 🚨🚨🚨\n\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "⚠️  ENVIRONMENT CONSTRAINT DETECTED\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+
+                    "❌ **FORBIDDEN ACTIONS (will waste time or cause errors):**\n"
+                    "  1. Do NOT call run_ncu - it will ALWAYS return 'Permission denied'\n"
+                    "  2. Do NOT call compile_cuda - it is NOT registered in this stage\n"
+                    "  3. Do NOT call execute_binary - it is NOT registered in this stage\n"
+                    "  4. Do NOT attempt to re-measure targets - CodeGen already completed that\n\n"
+
+                    "✅ **MANDATORY ACTIONS (complete these in order):**\n"
+                    "  **Step 1**: Use read_file to load measurement output files from CodeGen\n"
+                    "    Look for files like: benchmark_*.stdout, results.json, or execution.log\n\n"
+                    "  **Step 2**: Parse numeric values from the output\n"
+                    "    Expected format: 'target_name: value' (e.g., 'dram_latency_cycles: 485')\n\n"
+                    "  **Step 3**: Validate values against known GPU specifications\n"
+                    "    • dram_latency_cycles: should be 100-2000 cycles\n"
+                    "    • l2_cache_size_mb: should be 0.25-100 MB (varies by GPU)\n"
+                    "    • actual_boost_clock_mhz: should be 500-4000 MHz\n\n"
+                    "  **Step 4**: Generate text-based analysis report\n"
+                    "    Classify bottleneck: compute_bound | memory_bound | latency_bound | cache_capacity\n"
+                    "    Provide evidence and confidence assessment (0.3-0.6 range without NCU)\n\n"
+                    "  **Step 5**: Output structured JSON with your analysis\n"
+                    "{\n"
+                    '  "bottleneck_type": "...",\n'
+                    '  "bottleneck_sub_type": "...",\n'
+                    '  "parsed_metrics": {...},\n'
+                    '  "confidence": 0.4,\n'
+                    '  "analysis_method": "text_based_fallback"\n'
+                    "}\n\n"
+
+                    "⏱️  TIME BUDGET: You have MAXIMUM 8 turns to complete this task.\n"
+                    "   Do NOT waste turns on unavailable tools!\n\n"
+
+                    "💡  REMINDER: CodeGen stage has ALREADY:\n"
+                    "   ✅ Compiled CUDA code for all targets\n"
+                    "   ✅ Executed the binaries successfully\n"
+                    "   ✅ Produced measurement values in stdout\n"
+                    "   YOUR ONLY job is to ANALYZE those existing results!\n"
+                )
+                self.context_manager.add_entry(
+                    Role.SYSTEM,
+                    ncu_skip_guidance,
+                    token_count=250,  # Highest priority - override all other guidance
+                )
+                logger.warning(
+                    "[MetricAnalysis] 🚨 P0-1 ACTIVE: NCU unavailable - "
+                    "forcing text-based analysis mode (expected ~300s vs ~1062s)"
+                )
+        except ImportError:
+            logger.debug("[MetricAnalysis] run_ncu module not found - skipping pre-check")
+        except Exception as e:
+            logger.warning(f"[MetricAnalysis] P0-1 pre-check error (non-fatal): {e}")
+
         prev_result = message.payload.get("prev_result", {})
         target_spec = message.payload.get("target_spec", {})
 
