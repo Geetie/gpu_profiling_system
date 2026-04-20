@@ -143,6 +143,55 @@ class PlannerAgent(BaseSubAgent):
         max_retries = 3
         base_delay = 1.0
 
+        # ⚡ FIX-C: Plan阶段Context优化 - 清理历史消息以减少API处理时间
+        # Plan阶段只需要简洁的system prompt + target_spec，不需要累积的历史对话
+        try:
+            # 记录优化前的context size (用于监控)
+            original_messages = self.context_manager.to_messages()
+            original_total_chars = sum(len(m.get("content", "")) for m in original_messages)
+            logger.info(f"[Planner] 🔍 Context optimization check: "
+                        f"{len(original_messages)} messages, {original_total_chars} chars total")
+
+            if len(original_messages) > 2 or original_total_chars > 2000:
+                # Context过大，执行清理
+                logger.warning(f"[Planner] ⚡ Optimizing context for faster API response "
+                              f"({original_total_chars} chars → target <500 chars)")
+
+                # 保留system prompt（第一条），清除所有历史
+                if original_messages and original_messages[0].get("role") == "system":
+                    system_msg = original_messages[0]
+                    # 使用精简版system prompt（如果原版太长）
+                    if len(system_msg.get("content", "")) > 500:
+                        minimal_system = (
+                            "You are a GPU Profiling Planner Agent.\n\n"
+                            "CONSTRAINTS:\n"
+                            "- Output ONLY JSON text (no tool calls)\n"
+                            "- Decompose targets into tasks with: target, category, method\n"
+                            "- Categories: latency_measurement, capacity_measurement, "
+                            "clock_measurement, bandwidth_measurement, unknown\n\n"
+                            "Your role is ANALYSIS only — not code generation or execution."
+                        )
+                        system_msg["content"] = minimal_system
+                        logger.info("[Planner] Replaced verbose system prompt with minimal version")
+
+                    # 重置context为仅包含精简的system prompt
+                    self.context_manager.clear_history()
+                    self.context_manager.add_entry(
+                        Role.SYSTEM,
+                        system_msg.get("content", ""),
+                        token_count=100
+                    )
+
+                    optimized_messages = self.context_manager.to_messages()
+                    optimized_chars = sum(len(m.get("content", "")) for m in optimized_messages)
+                    logger.info(f"[Planner] ✅ Context optimized: {original_total_chars} → "
+                                f"{optimized_chars} chars ({(1-optimized_chars/original_total_chars)*100:.0f}% reduction)")
+            else:
+                logger.info(f"[Planner] ✅ Context already optimal ({original_total_chars} chars)")
+        except Exception as e:
+            logger.warning(f"[Planner] ⚠️ Context optimization failed (non-fatal): {e}")
+            # 继续使用原始context，不会影响功能
+
         user_msg = (
             "You are a PLANNING AGENT. Your ONLY job is to decompose targets into tasks.\n\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -172,6 +221,10 @@ class PlannerAgent(BaseSubAgent):
         )
         messages = self.context_manager.to_messages()
         messages.append({"role": "user", "content": user_msg})
+
+        # 添加最终发送的message size日志
+        final_total_chars = sum(len(m.get("content", "")) for m in messages)
+        logger.info(f"[Planner] 📤 Sending {len(messages)} messages ({final_total_chars} chars) to LLM")
 
         tasks: list[dict[str, Any]] = []
         last_error = ""

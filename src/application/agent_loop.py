@@ -253,6 +253,32 @@ class AgentLoop:
         self._last_turn_time = _time.time()
         print(f"[AgentLoop] ⏱️ Timer reset for '{new_target}' (budget: {self.MAX_TARGET_TIME_BUDGET}s)")
     
+    def _should_block_tool(self, tool_name: str) -> bool:
+        """Check if a tool should be blocked by the Interceptor (BUG#5 FIX)."""
+        # Block run_ncu if NCU is known to be unavailable
+        if tool_name == "run_ncu":
+            try:
+                from src.infrastructure.tools.run_ncu import _ncu_permission_cache
+                if _ncu_permission_cache.get("allowed") == False:
+                    return True
+            except ImportError:
+                pass  # If module not found, don't block
+
+        # Future: Add more blocking rules here for other tools
+        return False
+
+    def _get_block_reason(self, tool_name: str) -> str:
+        """Get human-readable reason for why a tool is blocked."""
+        if tool_name == "run_ncu":
+            try:
+                from src.infrastructure.tools.run_ncu import _ncu_permission_cache
+                error_msg = _ncu_permission_cache.get("error_message", "Unknown")
+                return f"NCU permission denied (ERR_NVGPUCTRPERM): {error_msg}"
+            except ImportError:
+                return "NCU unavailable in this environment"
+
+        return f"Tool '{tool_name}' is not available in current context"
+
     def _check_long_turn(self) -> None:
         """T5 FIX #2: Detect abnormally long turns (potential hidden stalls).
         
@@ -349,10 +375,37 @@ class AgentLoop:
 
         # T5 FIX #1: Check total CodeGen time budget
         if not self._check_total_code_gen_budget():
-            # Force complete CodeGen stage
-            print("[AgentLoop] Force-completing CodeGen due to time budget exhaustion")
-            self._emit(EventKind.STOP, {"reason": "code_gen_time_budget_exceeded"})
-            return
+            # 🔧 BUG#2 FIX: Check if we can still complete remaining targets
+            unmeasured = self._find_unmeasured_targets()
+            current = self.loop_state.current_target
+
+            if len(unmeasured) <= 1 and (not unmeasured or unmeasured[0] == current):
+                # Only 0 or 1 target left (and it's the current one)
+                # No point in continuing - mark as failed and exit
+                print(f"[AgentLoop] ❌ BUG#2 FIX: ABORTING - Cannot complete within budget!")
+                print(f"   Remaining targets: {unmeasured}")
+                print(f"   Elapsed: {_time.time() - self.code_gen_start_time:.1f}s > Limit: {self.MAX_CODE_GEN_TOTAL}s")
+
+                if unmeasured:
+                    # Mark as failed instead of completed
+                    if unmeasured[0] not in getattr(self.loop_state, 'failed_targets', []):
+                        if not hasattr(self.loop_state, 'failed_targets'):
+                            self.loop_state.failed_targets = []
+                        self.loop_state.failed_targets.append(unmeasured[0])
+                        print(f"[AgentLoop] → Marked '{unmeasured[0]}' as FAILED")
+
+                self._emit(EventKind.STOP, {
+                    "reason": "code_gen_time_exhausted_with_incomplete_targets",
+                    "failed_targets": unmeasured,
+                })
+                self.stop()  # 🔧 CRITICAL: Actually stop the loop!
+                return
+            else:
+                # Still have multiple targets - force complete what we have
+                print("[AgentLoop] Force-completing CodeGen due to time budget exhaustion")
+                self._emit(EventKind.STOP, {"reason": "code_gen_time_budget_exceeded"})
+                self.stop()  # 🔧 BUG#2 FIX: Ensure loop actually stops!
+                return
 
         # C-02 FIX: Independent state machine synchronization
         # BUG#3 FIX: Reduced from every 3 turns to every 2 turns for faster detection
@@ -465,6 +518,59 @@ class AgentLoop:
                 self.loop_state.last_tool_call_turn = self.loop_state.turn_count
                 self.loop_state.stall_recovery_triggered = False
 
+            # 🔧 BUG#5 FIX: Tool Call Interceptor - Block known-unavailable tools
+            if self._should_block_tool(tool_call.name):
+                block_reason = self._get_block_reason(tool_call.name)
+                print(f"[AgentLoop] 🛡️ BUG#5 INTERCEPTOR: BLOCKED '{tool_call.name}' - {block_reason}")
+
+                # Generate blocked response instead of executing
+                blocked_response = {
+                    'status': 'blocked',
+                    'raw_output': '',
+                    'parsed_metrics': {},
+                    'error': (
+                        f"🚨🚨🚨 TOOL BLOCKED BY INTERCEPTOR 🚨🚨🚨\n\n"
+                        f"Tool '{tool_call.name}' is PERMANENTLY UNAVAILABLE!\n\n"
+                        f"Reason: {block_reason}\n\n"
+                        f"⛔ Do NOT call this tool again.\n"
+                        f"   It will ALWAYS fail with the same error.\n\n"
+                        f"✅ ALTERNATIVE ACTIONS:\n"
+                    ),
+                }
+
+                # Add stage-specific guidance
+                if tool_call.name == "run_ncu":
+                    blocked_response['error'] += (
+                        "   1. Use read_file to load measurement output files\n"
+                        "   2. Perform text-based analysis on existing data\n"
+                        "   3. Output structured JSON with bottleneck classification\n\n"
+                        f"💡 You have saved API calls by not retrying a broken tool.\n"
+                    )
+                elif tool_call.name in ["compile_cuda", "execute_binary"]:
+                    blocked_response['error'] += (
+                        "   1. Check if you're in the correct pipeline stage\n"
+                        "   2. CodeGen/MetricAnalysis have different available tools\n"
+                        "   3. Focus on your assigned task for this stage\n"
+                    )
+
+                # Inject strong warning into context
+                interceptor_warning = (
+                    f"⛔ INTERCEPTOR ALERT: Your call to '{tool_call.name}' was BLOCKED!\n\n"
+                    f"{block_reason}\n\n"
+                    f"Do NOT attempt to call this tool again in future turns.\n"
+                    f"Each blocked call wastes ~60-90 seconds of API time.\n"
+                )
+                self.context_manager.add_entry(
+                    Role.SYSTEM,
+                    interceptor_warning,
+                    token_count=100,  # High visibility
+                )
+
+                # Process as normal tool result (but with blocked status)
+                self._process_tool_result(blocked_response)
+                self._persist_state()
+                return  # Skip actual tool execution
+
             # T5 FIX #1: Check per-target time budget BEFORE processing any tool call
             current_target_for_check = self.loop_state.current_target
             if current_target_for_check and tool_call.name in ["compile_cuda", "execute_binary"]:
@@ -485,6 +591,12 @@ class AgentLoop:
                         # T6 BUG FIX: Mark failed target as completed to prevent re-selection
                         if current_target_for_check not in self.loop_state.completed_targets:
                             self.loop_state.completed_targets.append(current_target_for_check)
+
+                        # 🔧 BUG#1 FIX: Reset old target's start_time to prevent accumulation!
+                        if current_target_for_check in self.target_start_time:
+                            del self.target_start_time[current_target_for_check]
+                            print(f"[AgentLoop] 🔧 BUG#1 FIX: Cleared time tracker for "
+                                  f"'{current_target_for_check}' (was accumulating)")
 
                         self.loop_state.consecutive_no_tool_calls = 0
                         self._reset_target_timer(next_target)
@@ -1287,7 +1399,25 @@ class AgentLoop:
                 self.stop()
                 return
 
-            if self.loop_state.consecutive_no_tool_calls >= MAX_CONSECUTIVE_NO_TOOL:
+            # ⚡ FIX-A: Plan阶段Stall Detection优化 (解决Plan耗时95秒问题)
+            # Plan/Planner阶段故意设计为0工具，无tool call是正常行为！
+            if not has_tools:
+                # 无工具阶段（如Plan）: 检查是否已输出有效内容而非误判为stall
+                output_length = len(self._model_output.strip()) if self._model_output else 0
+
+                if output_length > 20:  # 有实质性的文本输出（如JSON任务列表）
+                    print(f"[AgentLoop] ✅ No-tool stage completed naturally "
+                          f"(output={output_length} chars, turn={self.loop_state.turn_count})")
+                    # 自然结束，不触发stall recovery
+                    self.stop()
+                    return
+                elif self.loop_state.consecutive_no_tool_calls >= 2:
+                    # 真正的空输出（可能是错误）
+                    print(f"[AgentLoop] ⚠️ No-tool stage returned empty output "
+                          f"({output_length} chars) - possible error")
+
+            # 原有stall检测逻辑（仅对有工具的阶段生效）
+            if has_tools and self.loop_state.consecutive_no_tool_calls >= MAX_CONSECUTIVE_NO_TOOL:
                 print(f"[AgentLoop] 🚨 STALL DETECTED: {self.loop_state.consecutive_no_tool_calls} "
                       f"consecutive turns without tool calls (MAX={MAX_CONSECUTIVE_NO_TOOL}) - "
                       f"triggering FORCED RECOVERY")

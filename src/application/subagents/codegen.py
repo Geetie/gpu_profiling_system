@@ -461,7 +461,21 @@ class CodeGenAgent(BaseSubAgent):
                         '  printf("DEBUG: cycles=%llu, elapsed_ms=%.2f, elapsed_sec=%.4f\\n",\n'
                         "         host_cycles, elapsed_ms, elapsed_sec);\n"
                         '  printf("DEBUG: raw_freq_hz=%.1f, final_freq_mhz=%.1f\\n",\n'
-                        "         host_cycles/elapsed_sec, clock_freq_mhz);\n"
+                        "         host_cycles/elapsed_sec, clock_freq_mhz);\n\n"
+
+                        "🚨 **ANTI-CHEAT SANITY CHECK (MANDATORY):**\n"
+                        "Before printing the final answer, you MUST verify:\n\n"
+                        '  if (clock_freq_mhz < 100 || clock_freq_mhz > 5000) {\n'
+                        '      printf("ERROR: Invalid clock frequency: %.1f MHz\\n", clock_freq_mhz);\n'
+                        '      printf("Expected range: 500-4000 MHz for any NVIDIA GPU\\n");\n'
+                        '      printf("Check your formula! Did you forget to divide by 1000?\\n");\n'
+                        '      // Recalculate with corrected formula:\n'
+                        '      float elapsed_sec_corrected = elapsed_ms / 1000.0f;\n'
+                        '      float freq_corrected = (float)host_cycles / elapsed_sec_corrected / 1e6f;\n'
+                        '      printf("CORRECTED: actual_boost_clock_mhz: %.1f\\n", freq_corrected);\n'
+                        '  } else {\n'
+                        '      printf("actual_boost_clock_mhz: %.1f\\n", clock_freq_mhz);\n'
+                        '  }\n'
                     )
                     gpu_context_parts.append(clock_guidance)
 
