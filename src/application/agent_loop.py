@@ -861,10 +861,16 @@ class AgentLoop:
             has_tools = len(self.tool_registry.list_tools()) > 0
 
             # C-01: Aggressive stall detection - force recovery after 2 consecutive no-tool calls
-            MAX_CONSECUTIVE_NO_TOOL = 2  # Reduced from default failure_tracker threshold
+            # BUG#5 FIX: Even more aggressive for later turns (context fatigue mitigation)
+            if self.loop_state.turn_count <= 10:
+                MAX_CONSECUTIVE_NO_TOOL = 2  # Normal for early turns
+            else:
+                MAX_CONSECUTIVE_NO_TOOL = 1  # Ultra-aggressive for later turns (LLM fatigue zone)
+
             if self.loop_state.consecutive_no_tool_calls >= MAX_CONSECUTIVE_NO_TOOL:
                 print(f"[AgentLoop] 🚨 STALL DETECTED: {self.loop_state.consecutive_no_tool_calls} "
-                      f"consecutive turns without tool calls - triggering FORCED RECOVERY")
+                      f"consecutive turns without tool calls (MAX={MAX_CONSECUTIVE_NO_TOOL}) - "
+                      f"triggering FORCED RECOVERY")
 
                 unmeasured = self._find_unmeasured_targets()
                 if unmeasured:
@@ -886,29 +892,57 @@ class AgentLoop:
                     self.loop_state.consecutive_no_tool_calls = 0  # Reset stall counter
                     self.loop_state.stall_recovery_triggered = True
 
+                    # BUG#5 FIX: Enhanced recovery with minimal code skeleton to reduce LLM effort
+                    from src.domain.design_principles import get_design_principle
+                    next_principle = get_design_principle(next_target)
+                    next_brief = next_principle[:400] if len(next_principle) > 400 else next_principle
+
+                    # BUG#5 FIX: Provide minimal working code skeleton to reduce LLM workload
+                    minimal_skeleton = (
+                        f"📝 MINIMAL WORKING CODE SKELETON for '{next_target}' (adapt this):\n"
+                        f"```cuda\n"
+                        f"#include <cuda_runtime.h>\n"
+                        f"#include <cstdio>\n\n"
+                        f"__global__ void measure_{next_target}(int* result) {{\n"
+                        f"    if (threadIdx.x != 0 || blockIdx.x != 0) return;\n"
+                        f"    // TODO: Implement measurement logic here\n"
+                        f"    // Use clock64() for timing, or CUDA API calls\n"
+                        f"    *result = 0; // Replace with actual measurement\n"
+                        f"}}\n\n"
+                        f"int main() {{\n"
+                        f"    int* d_result;\n"
+                        f"    cudaMalloc(&d_result, sizeof(int));\n"
+                        f"    measure_{next_target}<<<1,1>>>(d_result);\n"
+                        f"    cudaDeviceSynchronize();\n"
+                        f"    int h_result;\n"
+                        f"    cudaMemcpy(&h_result, d_result, sizeof(int), cudaMemcpyDeviceToHost);\n"
+                        f"    printf(\"{next_target}: %d\\n\", h_result);\n"
+                        f"    cudaFree(d_result);\n"
+                        f"    return 0;\n"
+                        f"}}\n```\n"
+                    )
+
                     # Build CRITICAL-level forced recovery guidance
                     forced_recovery_guidance = (
                         f"🚨🚨🚨 EMERGENCY STALL RECOVERY ACTIVATED 🚨🚨🚨\n\n"
-                        f"⚠️ SYSTEM ALERT: You have stopped calling tools for "
-                        f"{MAX_CONSECUTIVE_NO_TOOL} consecutive turns!\n"
-                        f"⚠️ This is causing the pipeline to STALL and will eventually CRASH.\n\n"
+                        f"⚠️ CRITICAL: You have stopped calling tools for "
+                        f"{MAX_CONSECUTIVE_NO_TOOL}+ consecutive turns!\n"
+                        f"⚠️ The system is FORCE-ASSIGNING you the next target.\n\n"
                         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"🔥 IMMEDIATE ACTION REQUIRED - NON-NEGOTIABLE 🔥\n"
+                        f"🔥 YOUR ONLY TASK: Measure '{next_target}'\n"
                         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"The system is FORCE-SWITCHING you to the next target.\n"
-                        f"Previous target '{prev_target}' has been marked as ATTEMPTED.\n\n"
-                        f"👉 YOU MUST NOW MEASURE: **{next_target}**\n\n"
-                        f"STEP 1 (IMMEDIATE): Call compile_cuda with NEW CUDA code:\n"
-                        f'  {{"tool": "compile_cuda", "args": {{"source": "...full .cu source for {next_target}...", "flags": ["-O3"]}}}}\n\n'
-                        f"STEP 2 (AFTER COMPILE): Call execute_binary immediately:\n"
-                        f'  {{"tool": "execute_binary", "args": {{"binary_path": "<from compile>"}}}}\n\n'
-                        f"⛔ ABSOLUTELY FORBIDDEN:\n"
-                        f"  • Do NOT output text explanations under any circumstances\n"
-                        f"  • Do NOT call any tool other than compile_cuda or execute_binary\n"
-                        f"  • Do NOT attempt to fix or optimize the previous target\n"
-                        f"  • Do NOT say 'I understand' or 'I will do X' - JUST CALL THE TOOL\n\n"
-                        f"Design principle for '{next_target}':\n{next_brief}\n\n"
-                        f"💥 FAILURE TO COMPLY WILL RESULT IN PIPELINE TERMINATION 💥"
+                        f"{minimal_skeleton}\n\n"
+                        f"⚡ IMMEDIATE ACTION (NO THINKING NEEDED):\n"
+                        f"1. Copy the skeleton above\n"
+                        f"2. Fill in the measurement logic inside the kernel\n"
+                        f"3. Call compile_cuda with the completed code\n"
+                        f"4. Then call execute_binary with the binary_path\n\n"
+                        f"⛔ FORBIDDEN:\n"
+                        f"  • Do NOT explain anything in text\n"
+                        f"  • Do NOT plan or think - just code\n"
+                        f"  • Do NOT skip this target\n\n"
+                        f"Design principle: {next_brief}\n\n"
+                        f"💥 PIPELINE WILL FAIL if you don't call compile_cuda NOW!"
                     )
                     self.context_manager.add_entry(
                         Role.SYSTEM,
