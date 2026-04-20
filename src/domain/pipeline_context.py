@@ -37,7 +37,7 @@ class PipelineContext:
     target_spec: dict[str, Any] = field(default_factory=dict)
     conversation_history: list[dict[str, str]] = field(default_factory=list)
     iteration_count: int = 0
-    max_iterations: int = 3
+    max_iterations: int = 1  # Reduced from 3 to prevent long retry loops (FIX for 32-min timeout)
     rejection_history: list[dict[str, Any]] = field(default_factory=list)
     metric_feedback: list[dict[str, Any]] = field(default_factory=list)
     _stage_results: dict[str, SubAgentResult] = field(default_factory=dict)

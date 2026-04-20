@@ -163,6 +163,10 @@ class AgentLoop:
         self.code_gen_start_time: float | None = None
         self._last_turn_time: float | None = None  # T5 FIX #2: Time-based stall detection
 
+        # FIX for 32-min timeout: Global hard timeout to prevent runaway execution
+        self.GLOBAL_HARD_TIMEOUT = 1500.0  # 25 minutes absolute maximum
+        self._loop_start_time: float | None = None
+
     def _init_target_state(self, target_spec: dict[str, Any] | None = None) -> None:
         """Initialize the target state machine for CodeGen stage.
 
@@ -288,10 +292,27 @@ class AgentLoop:
         self._event_bus.emit(LoopEvent(kind=kind, payload=payload or {}))
 
     def start(self) -> None:
+        import time as _time
         self.loop_state.is_running = True
+        self._loop_start_time = _time.time()
         self._emit(EventKind.START, {"session_id": self.session.session_id})
 
         while self.loop_state.is_running:
+            # FIX for 32-min timeout: Check global hard timeout
+            if self._loop_start_time:
+                elapsed_total = _time.time() - self._loop_start_time
+                if elapsed_total > self.GLOBAL_HARD_TIMEOUT:
+                    print(f"[AgentLoop] ⚠️ GLOBAL HARD TIMEOUT EXCEEDED!")
+                    print(f"   Total elapsed: {elapsed_total:.1f}s > Limit: {self.GLOBAL_HARD_TIMEOUT}s ({self.GLOBAL_HARD_TIMEOUT/60:.0f} min)")
+                    print(f"   → Force-stopping AgentLoop to prevent Kaggle 32-min timeout")
+                    self._emit(EventKind.STOP, {
+                        "reason": "global_hard_timeout",
+                        "elapsed_seconds": elapsed_total,
+                        "timeout_limit": self.GLOBAL_HARD_TIMEOUT,
+                    })
+                    self.stop()
+                    return
+
             self._inner_loop_step()
 
     def stop(self) -> None:
@@ -370,6 +391,35 @@ class AgentLoop:
                 context="model_caller",
                 message=str(e),
             )
+
+            # FIX for 32-min timeout: Fast-fail on connection errors to prevent infinite retry loops
+            if "ConnectionError" in type(e).__name__ or "RemoteDisconnected" in str(e):
+                import time as _time
+                # Track consecutive connection errors
+                if not hasattr(self, '_consecutive_connection_errors'):
+                    self._consecutive_connection_errors = 0
+                    self._first_connection_error_time = _time.time()
+
+                self._consecutive_connection_errors += 1
+                elapsed_since_first = _time.time() - self._first_connection_error_time
+
+                print(f"[AgentLoop] ⚠️ Connection Error #{self._consecutive_connection_errors} (elapsed: {elapsed_since_first:.0f}s)")
+
+                # If 3+ consecutive connection errors within 2 minutes, force stop
+                if self._consecutive_connection_errors >= 3 and elapsed_since_first < 120:
+                    print(f"[AgentLoop] ❌ TOO MANY CONNECTION ERRORS - Force stopping to prevent timeout")
+                    print(f"   Errors: {self._consecutive_connection_errors} in {elapsed_since_first:.0f}s")
+                    self._emit(EventKind.STOP, {
+                        "reason": "connection_error_limit",
+                        "error_count": self._consecutive_connection_errors,
+                        "elapsed_seconds": elapsed_since_first,
+                    })
+                    self.stop()
+                    return
+            else:
+                # Reset counter on non-connection errors
+                if hasattr(self, '_consecutive_connection_errors'):
+                    self._consecutive_connection_errors = 0
             # 不要将 API 错误保存到 ASSISTANT 消息中，避免污染上下文
             # 使用 SYSTEM 角色记录错误信息
             self.context_manager.add_entry(
