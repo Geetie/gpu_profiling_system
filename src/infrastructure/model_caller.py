@@ -123,17 +123,66 @@ def _caller_from_config(
     max_tokens: int,
     tools: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
-    """Fallback: read config directly from api_config.json."""
-    config = load_config()
-    env = config["env"]
+    """Fallback: read config directly from api_config.json with OpenAI env var support.
 
-    api_key = env.get("ANTHROPIC_AUTH_TOKEN", "")
-    check_key(api_key, "API")
+    COMPLIANCE (Requirement #2 & #3):
+    - Priority 1: Read from OpenAI-compatible environment variables (for GPT-5.4 evaluation)
+    - Priority 2: Fallback to api_config.json (for development/testing only)
+    """
+    import os
 
-    base_url = env.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
-    model = model_name or env.get("ANTHROPIC_MODEL", "qwen3.6-plus")
+    # 🆕 PRIORITY 1: OpenAI-compatible environment variables (GPT-5.4 evaluation requirement)
+    env_api_key = os.getenv("API_KEY", "").strip()
+    env_base_url = os.getenv("BASE_URL", "").strip()
+    env_base_model = os.getenv("BASE_MODEL", "").strip()
 
-    return _call_api(base_url, api_key, model, messages, max_tokens, tools)
+    if env_api_key and env_base_model:
+        print(f"[model_caller] ✅ Using OpenAI-compatible environment variables")
+        print(f"[model_caller]   Model: {env_base_model}")
+        print(f"[model_caller]   Base URL: {env_base_url or 'https://api.openai.com/v1'}")
+
+        effective_url = env_base_url or "https://api.openai.com/v1"
+        headers = {
+            "Authorization": f"Bearer {env_api_key}",
+            "Content-Type": "application/json",
+        }
+
+        return _call_openai_compatible(
+            base_url=effective_url,
+            headers=headers,
+            model=env_base_model,
+            messages=messages,
+            max_tokens=max_tokens,
+            tools=tools
+        )
+
+    # PRIORITY 2: Fallback to api_config.json (development environment only)
+    try:
+        config = load_config()
+        env = config["env"]
+
+        api_key = env.get("ANTHROPIC_AUTH_TOKEN", "")
+        check_key(api_key, "API")
+
+        base_url = env.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+        model = model_name or env.get("ANTHROPIC_MODEL", "qwen3.6-plus")
+
+        return _call_api(base_url, api_key, model, messages, max_tokens, tools)
+
+    except (FileNotFoundError, ValueError) as e:
+        print(f"[model_caller] ⚠️ Config file not found or invalid: {e}")
+        if not env_api_key:
+            raise ValueError(
+                "No API credentials found!\n\n"
+                "Please set one of the following:\n"
+                "1. Environment variables: API_KEY + BASE_MODEL (recommended for submission)\n"
+                "2. Config file: config/api_config.json (for development only)\n\n"
+                "For evaluation submission, use:\n"
+                "  export API_KEY=<your-key>\n"
+                "  export BASE_MODEL=gpt-5.4\n"
+                "  export BASE_URL=https://api.openai.com/v1"
+            )
+        raise
 
 
 def _caller_from_provider(

@@ -147,47 +147,49 @@ class DynamicGuidanceManager:
                                        design_principle: str,
                                        consecutive_stalls: int) -> dict:
         """
-        构建停滞恢复引导消息（包含代码骨架）
-        
+        构建停滞恢复引导消息（纯文本指导，无代码骨架 - 符合spec.md P5要求）
+
         Args:
             target_name: 目标名称
             design_principle: 设计原则
             consecutive_stalls: 连续停滞次数
-            
+
         Returns:
             引导消息字典
         """
         weight = 150  # Emergency level always
-        
-        minimal_skeleton = (
-            f"📝 MINIMAL CODE SKELETON for '{target_name}':\n"
-            f"```cuda\n"
-            f"#include <cuda_runtime.h>\n"
-            f"#include <cstdio>\n\n"
-            f"__global__ void measure_{target_name}(int* result) {{\n"
-            f"    *result = 0; // TODO: Implement measurement\n"
-            f"}}\n\n"
-            f"int main() {{\n"
-            f"    // Allocate, launch kernel, print result\n"
-            f"}}\n```\n"
-        )
-        
+
+        # COMPLIANCE: No code skeleton per requirement #1 (Agent must generate CUDA autonomously)
         message = (
             f"🚨🚨🚨 STALL RECOVERY ({consecutive_stalls} turns) 🚨🚨🚨\n\n"
-            f"{minimal_skeleton}\n\n"
-            f"YOUR ONLY TASK: Measure '{target_name}'\n\n"
-            f"1. Copy skeleton above\n"
-            f"2. Fill in measurement logic\n"
-            f"3. Call compile_cuda\n"
-            f"4. Call execute_binary\n\n"
-            f"Design principle: {design_principle[:300]}"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔥 YOUR ONLY TASK: Measure '{target_name}'\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"⚡ IMMEDIATE ACTION REQUIRED:\n"
+            f"1. Design a COMPLETE CUDA micro-benchmark from SCRATCH\n"
+            f"2. Generate working C++/CUDA source code with proper syntax\n"
+            f"3. Use cudaEvent_t for accurate GPU timing measurement\n"
+            f"4. Call compile_cuda with your generated code\n"
+            f"5. Then call execute_binary to run and measure\n\n"
+            f"💡 CODE REQUIREMENTS:\n"
+            f"  • Include #include <cuda_runtime.h> and <cstdio>\n"
+            f"  • Implement __global__ kernel with measurement logic\n"
+            f"  • Use cudaMalloc, cudaMemcpy, cudaFree properly\n"
+            f"  • Output format: printf(\"{target_name}: <value>\\n\")\n"
+            f"  • Include error checking with cudaGetErrorString()\n\n"
+            f"⛔ FORBIDDEN:\n"
+            f"  • Do NOT use any template or skeleton code\n"
+            f"  • Do NOT output text without calling tools\n"
+            f"  • Do NOT skip this target or ask questions\n\n"
+            f"Design principle: {design_principle[:300]}\n\n"
+            f"💥 PIPELINE DEPENDS ON YOUR IMMEDIATE ACTION!"
         )
-        
+
         return {
             "message": message,
             "token_weight": weight,
             "level": "emergency",
-            "includes_skeleton": True
+            "includes_skeleton": False  # COMPLIANCE: No skeleton provided
         }
     
     def should_inject_completion_hint(self) -> bool:

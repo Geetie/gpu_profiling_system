@@ -13,13 +13,13 @@
   "likely_gpu_family": "pascal_p100",
   "theoretical_max_concurrent_blocks": 448,
   "_confidence_sm_detection": 0.9,
-  "num_tool_calls": 1,
   "concerns": [
     "Verdict: REJECT",
-    "- Missing measurement for 'actual_boost_clock_mhz' target - this was requested but not measured",
-    "- Only 2 out of 3 requested targets were successfully measured (dram_latency_cycles and l2_cache_size_mb are present, but actual_boost_clock_mhz is missing)",
-    "Concerns:",
-    "- The pipeline failed to measure the actual_boost_clock_mhz target, which represents incomplete execution of the requested profiling task"
+    "Findings: [Missing measurements for l2_cache_size_mb and actual_boost_clock_mhz]",
+    "Concerns: [Only dram_latency_cycles was measured out of three requested targets. The measurement pipeline failed to complete the full measurement suite.]",
+    "The verification shows that only 1 out of 3 requested targets was measured. The requested targets were ['dram_latency_cycles', 'l2_cache_size_mb', 'actual_boost_clock_mhz'], but only dram_latency_cycles (451.0 cycles) was successfully measured. Two targets are completely missing from the results.",
+    "While the measured dram_latency_cycles value of 451 cycles falls within the expected GPU DRAM latency range (300-1000 cycles), the incomplete measurement set violates the completeness requirement. According to the verification protocol, if any requested target is missing from measurements, the verdict must be REJECT.",
+    "The pipeline appears to have encountered execution failures (as evidenced by the emergency stall recovery messages and failed tool calls) that prevented completion of the full measurement suite."
   ],
   "cross_validation": {
     "sm_count_matches_family": true,
@@ -37,8 +37,9 @@
   ],
   "_quality_ok": false,
   "_quality_warnings": [
+    "Zero measurements detected and REMOVED: num_tool_calls. This indicates measurement code is broken (clock64() not called, code optimized away).",
     "Missing requested targets (not measured or filtered): actual_boost_clock_mhz, dram_latency_cycles, l2_cache_size_mb",
     "No evidence files or references \u2014 measurements may not be verifiable",
-    "Partial results: 12/3 targets measured. Missing after quality filtering: actual_boost_clock_mhz, dram_latency_cycles, l2_cache_size_mb"
+    "Partial results: 11/3 targets measured. Missing after quality filtering: actual_boost_clock_mhz, dram_latency_cycles, l2_cache_size_mb"
   ]
 }

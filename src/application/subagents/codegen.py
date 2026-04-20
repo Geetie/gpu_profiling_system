@@ -18,6 +18,22 @@ Architecture Detection:
 - Passes correct -arch=sm_XX flag to nvcc for compilation
 - Supports all NVIDIA GPU architectures (sm_35 to sm_90+)
 
+GPUFeatureDB Integration (Phase 2 Enhancement):
+------------------------------------------------
+Added comprehensive DEBUG-level logging to track the complete integration chain:
+- Module import success/failure
+- Database initialization status
+- GPU detection results (name, compute capability)
+- Measurement parameter retrieval per target
+- Context injection confirmation
+- Graceful degradation on errors
+
+This logging enables debugging of issues like:
+- GPUFeatureDB not being called at all
+- Silent failures in feature detection
+- Incorrect parameter retrieval
+- Missing context injection
+
 COMPLIANCE NOTES:
 - spec.md P1: Tool Definition Boundaries — No unregistered operations
 - spec.md P5: Compile-time elimination — No runtime fallback to hardcoded code
@@ -26,6 +42,7 @@ COMPLIANCE NOTES:
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from src.application.context import ContextManager, Role
@@ -40,6 +57,9 @@ from src.domain.subagent import (
 from src.domain.tool_contract import ToolRegistry
 from src.infrastructure.probing.arch_detection import detect_gpu_arch
 from src.infrastructure.sandbox import LocalSandbox, SandboxConfig, SandboxRunner
+
+# Configure module-level logger for CodeGen agent and GPUFeatureDB integration
+logger = logging.getLogger(__name__)
 
 
 class CodeGenAgent(BaseSubAgent):
@@ -97,15 +117,67 @@ class CodeGenAgent(BaseSubAgent):
 
         # GPUFeatureDB Integration (P0 Priority): Inject architecture-specific measurement parameters
         # This eliminates hardcoded sm_60 logic and auto-adapts to different GPUs
+        #
+        # Phase 2 Enhancement: Added comprehensive DEBUG-level logging for:
+        # - Module import tracking
+        # - Database initialization status
+        # - GPU detection results (name, compute capability)
+        # - Measurement parameter retrieval per target
+        # - Context injection confirmation
+        # - Graceful degradation on errors
+        logger.debug("[CodeGen] 🔄 Attempting to initialize GPUFeatureDB...")
+
         try:
             from src.infrastructure.gpu_feature_db import GPUFeatureDB
 
+            logger.debug("[CodeGen] ✅ GPUFeatureDB module imported successfully")
+            logger.info("[CodeGen] 🔄 Initializing GPUFeatureDB instance...")
+
             gpu_db = GPUFeatureDB()
+            logger.info("[CodeGen] ✅ GPUFeatureDB initialized successfully")
+
+            logger.debug(f"[CodeGen] 🔍 Detecting GPU features for architecture: {detected_arch}")
             gpu_specs = gpu_db.detect_and_get_features()
 
             if gpu_specs:
+                # Log successful GPU detection with full details
+                logger.info(
+                    f"[CodeGen] 📊 GPUFeatureDB detected: {gpu_specs.name} "
+                    f"({gpu_specs.compute_capability})"
+                )
+                logger.debug(
+                    f"[CodeGen] 📋 Full GPU specifications:\n"
+                    f"  • Name: {gpu_specs.name}\n"
+                    f"  • Compute Capability: {gpu_specs.compute_capability}\n"
+                    f"  • Memory: {gpu_specs.memory_size_gb}GB {gpu_specs.memory_type}\n"
+                    f"  • Memory Bandwidth: {gpu_specs.memory_bandwidth_gbps:.0f} GB/s\n"
+                    f"  • SM Count: {gpu_specs.sm_count}\n"
+                    f"  • L2 Cache: {gpu_specs.l2_cache_size_kb}KB\n"
+                    f"  • Clock: {gpu_specs.base_clock_mhz}-{gpu_specs.boost_clock_mhz} MHz\n"
+                    f"  • Shared Memory/Block: {gpu_specs.shared_memory_per_block_kb}KB\n"
+                    f"  • Registers/Thread: {gpu_specs.register_count_per_thread}\n"
+                    f"  • Warp Size: {gpu_specs.warp_size}\n"
+                    f"  • Max Threads/SM: {gpu_specs.max_threads_per_sm}"
+                )
+
                 # Get target-specific optimal parameters
+                logger.debug(
+                    f"[CodeGen] 📏 Retrieving measurement params for target '{target}' "
+                    f"on architecture '{detected_arch}'..."
+                )
                 measure_params = gpu_db.get_measurement_params(target, detected_arch)
+
+                # Log retrieved measurement parameters
+                logger.info(
+                    f"[CodeGen] 📏 Measurement params for '{target}':\n"
+                    f"  • Working set: {measure_params.get('working_set_mb', 'N/A')}MB\n"
+                    f"  • Expected range: {measure_params.get('expected_range', 'N/A')}\n"
+                    f"  • Method: {measure_params.get('method', 'N/A')}\n"
+                    f"  • Notes: {measure_params.get('notes', 'N/A')}"
+                )
+                logger.debug(
+                    f"[CodeGen] 🔧 Full measurement parameters dict: {measure_params}"
+                )
 
                 # Build comprehensive GPU context for LLM
                 gpu_context_parts = [
@@ -124,17 +196,29 @@ class CodeGenAgent(BaseSubAgent):
                         f"  • Working set: {measure_params['working_set_mb']}MB "
                         f"(must exceed L2 cache)\n"
                     )
+                    logger.debug(
+                        f"[CodeGen] ➕ Added working_set_mb={measure_params['working_set_mb']}MB to context"
+                    )
                 if "expected_range" in measure_params:
                     gpu_context_parts.append(
                         f"  • Expected value range: {measure_params['expected_range']}\n"
+                    )
+                    logger.debug(
+                        f"[CodeGen] ➕ Added expected_range={measure_params['expected_range']} to context"
                     )
                 if "method" in measure_params:
                     gpu_context_parts.append(
                         f"  • Recommended method: {measure_params['method']}\n"
                     )
+                    logger.debug(
+                        f"[CodeGen] ➕ Added method={measure_params['method']} to context"
+                    )
                 if "notes" in measure_params:
                     gpu_context_parts.append(
                         f"  • Notes: {measure_params['notes']}\n"
+                    )
+                    logger.debug(
+                        f"[CodeGen] ➕ Added notes to context"
                     )
 
                 # Add general architecture guidance
@@ -145,17 +229,96 @@ class CodeGenAgent(BaseSubAgent):
                     f"  • Warp size: {gpu_specs.warp_size}, Max threads/SM: {gpu_specs.max_threads_per_sm}\n",
                     f"\n✅ Use these parameters to generate ACCURATE micro-benchmarks.\n",
                 ])
+                
+                # T5 ENHANCEMENT: Add L2 cache-specific algorithm guidance
+                if "l2_cache" in target.lower():
+                    l2_guidance = (
+                        f"\n🔧 **L2 CACHE MEASUREMENT - SPECIAL ALGORITHM GUIDANCE:**\n\n"
+                        f"The L2 cache size is tricky to measure accurately. "
+                        f"Use this PROVEN algorithm:\n\n"
+                        f"**Method: Binary Search with Cliff Detection**\n"
+                        f"1. Create an array of size N (start with N=16MB)\n"
+                        f"2. Access every K-th element (K=16 or 32 bytes)\n"
+                        f"3. Measure average access time (use cudaEventElapsedTime)\n"
+                        f"4. Double the array size and repeat (16→32→64→...→256MB)\n"
+                        f"5. Plot access time vs array size\n"
+                        f"6. Find the 'cliff' where time jumps 3-5x → that's L2 size!\n\n"
+                        f"**Key Implementation Details:**\n"
+                        f"• Use __restrict__ keyword for pointers (prevent compiler optimization)\n"
+                        f"• Use volatile reads to prevent caching effects\n"
+                        f"• Warm up loop: Run 1000 iterations before timing\n"
+                        f"• Timing loop: Average over 10,000 iterations\n"
+                        f"• Expected L2 cliff at: ~{gpu_specs.l2_cache_size_kb/1024:.1f}MB for this GPU\n\n"
+                        f"⚠️ COMMON PITFALLS TO AVOID:\n"
+                        f"• Don't use too small working set (<1MB) - fits in L1/L2\n"
+                        f"• Don't use random access patterns - use stride=cache_line_size\n"
+                        f"• Don't forget to call cudaDeviceSynchronize() before timing\n"
+                        f"• Don't use printf inside timing loop (I/O overhead)\n\n"
+                        f"💡 This algorithm should complete in <30 seconds total.\n"
+                        f"If your kernel takes >60s, there's likely a bug!"
+                    )
+                    gpu_context_parts.append(l2_guidance)
+                    
+                    logger.info(
+                        f"[CodeGen] 🔧 Added L2 cache-specific algorithm guidance ({len(l2_guidance)} chars)"
+                    )
 
                 gpu_context = "".join(gpu_context_parts)
+
+                # Inject into context manager
+                logger.debug(
+                    f"[CodeGen] 💉 Injecting GPUFeatureDB context ({len(gpu_context)} chars) "
+                    f"into context_manager..."
+                )
                 self.context_manager.add_entry(
                     Role.SYSTEM,
                     gpu_context,
                     token_count=150,  # Generous token budget for rich context
                 )
-                print(f"[GPUFeatureDB] ✅ Injected {target}-specific params for {gpu_specs.name}")
+
+                logger.info(
+                    f"[CodeGen] ✅ GPUFeatureDB context injected successfully\n"
+                    f"  • Target: {target}\n"
+                    f"  • GPU: {gpu_specs.name}\n"
+                    f"  • Context length: {len(gpu_context)} chars\n"
+                    f"  • Token budget: 150 tokens"
+                )
             else:
+                # GPU detection failed but no exception raised
+                logger.warning(
+                    "[CodeGen] ⚠️ GPUFeatureDB.detect_and_get_features() returned None\n"
+                    "  This usually means:\n"
+                    "  1. No NVIDIA GPU detected in the system\n"
+                    "  2. CUDA runtime not available\n"
+                    "  3. GPU driver issues\n"
+                    "  → Continuing with fallback defaults (no architecture-specific params)"
+                )
                 print(f"[GPUFeatureDB] ⚠️ Could not detect GPU specs, using fallback defaults")
+
+        except ImportError as e:
+            # Module import failed — GPUFeatureDB not available
+            logger.error(
+                f"[CodeGen] ❌ FAILED to import GPUFeatureDB module: {e}\n"
+                f"  Error type: ImportError\n"
+                f"  This means src/infrastructure/gpu_feature_db.py does not exist or has syntax errors.\n"
+                f"  → System will continue WITHOUT GPUFeatureDB data (graceful degradation)"
+            )
+            print(f"[GPUFeatureDB] ❌ Import error (non-fatal): {e}")
+
         except Exception as e:
+            # Any other error during GPUFeatureDB integration
+            logger.warning(
+                f"[CodeGen] ⚠️ GPUFeatureDB integration encountered an error: {e}\n"
+                f"  Exception type: {type(e).__name__}\n"
+                f"  Error message: {str(e)[:200]}\n"
+                f"  → This is NON-FATAL: system will continue without GPUFeatureDB data\n"
+                f"  → Micro-benchmarks will use generic/fallback parameters instead"
+            )
+            # Log full traceback at DEBUG level for detailed debugging
+            logger.debug(
+                f"[CodeGen] 🔍 GPUFeatureDB error details (full traceback):\n",
+                exc_info=True
+            )
             print(f"[GPUFeatureDB] ❌ Integration error (non-fatal): {e}")
             # Non-fatal: continue without GPUFeatureDB data
 

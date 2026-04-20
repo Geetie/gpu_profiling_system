@@ -155,6 +155,14 @@ class AgentLoop:
         self._tool_call_parser = CompositeToolCallParser()
         self._completion_detector = CompletionDetector()
 
+        # T5 FIX #1: Per-target time budget control (prevent 308s black hole)
+        self.target_time_budget: dict[str, float] = {}
+        self.target_start_time: dict[str, float] = {}
+        self.MAX_TARGET_TIME_BUDGET = 120.0  # seconds per target
+        self.MAX_CODE_GEN_TOTAL = 400.0  # total CodeGen stage limit
+        self.code_gen_start_time: float | None = None
+        self._last_turn_time: float | None = None  # T5 FIX #2: Time-based stall detection
+
     def _init_target_state(self, target_spec: dict[str, Any] | None = None) -> None:
         """Initialize the target state machine for CodeGen stage.
 
@@ -169,7 +177,92 @@ class AgentLoop:
             self.loop_state.current_target = targets[0]
             self.loop_state.completed_targets = []
             self.loop_state.target_retry_count = {t: 0 for t in targets}
+            
+            # T5 FIX #1: Initialize time tracking for each target
+            import time as _time
+            current_time = _time.time()
+            for target in targets:
+                self.target_start_time[target] = current_time
+                self.target_time_budget[target] = self.MAX_TARGET_TIME_BUDGET
+            
+            # Initialize CodeGen total time tracker
+            self.code_gen_start_time = current_time
+            self._last_turn_time = current_time
+            
             print(f"[AgentLoop] Target state initialized: current={targets[0]}, total={len(targets)}")
+            print(f"[AgentLoop] ⏱️ Time budget control enabled: {self.MAX_TARGET_TIME_BUDGET}s/target, {self.MAX_CODE_GEN_TOTAL}s total")
+
+    def _check_time_budget(self, target: str) -> bool:
+        """T5 FIX #1: Check if target has exceeded its time budget.
+        
+        Args:
+            target: Current target name
+            
+        Returns:
+            True if within budget, False if exceeded (should skip)
+        """
+        import time as _time
+        
+        if target not in self.target_start_time:
+            return True  # No tracking started yet, allow
+            
+        elapsed = _time.time() - self.target_start_time.get(target, _time.time())
+        
+        if elapsed > self.MAX_TARGET_TIME_BUDGET:
+            print(f"[AgentLoop] ⚠️ T5-FIX#1: TIME BUDGET EXCEEDED for '{target}'!")
+            print(f"   Elapsed: {elapsed:.1f}s > Budget: {self.MAX_TARGET_TIME_BUDGET}s")
+            print(f"   → Force-skipping to next target to prevent pipeline stall")
+            return False
+            
+        return True
+    
+    def _check_total_code_gen_budget(self) -> bool:
+        """T5 FIX #1: Check if total CodeGen time has exceeded limit.
+        
+        Returns:
+            True if within budget, False if exceeded
+        """
+        import time as _time
+        
+        if not self.code_gen_start_time:
+            return True
+            
+        elapsed = _time.time() - self.code_gen_start_time
+        
+        if elapsed > self.MAX_CODE_GEN_TOTAL:
+            print(f"[AgentLoop] ⚠️ T5-FIX#1: TOTAL CODE GEN TIME EXCEEDED!")
+            print(f"   Elapsed: {elapsed:.1f}s > Limit: {self.MAX_CODE_GEN_TOTAL}s")
+            print(f"   → Force-completing CodeGen stage to prevent timeout")
+            return False
+            
+        return True
+    
+    def _reset_target_timer(self, new_target: str) -> None:
+        """Reset time budget when switching to a new target."""
+        import time as _time
+        self.target_start_time[new_target] = _time.time()
+        self._last_turn_time = _time.time()
+        print(f"[AgentLoop] ⏱️ Timer reset for '{new_target}' (budget: {self.MAX_TARGET_TIME_BUDGET}s)")
+    
+    def _check_long_turn(self) -> None:
+        """T5 FIX #2: Detect abnormally long turns (potential hidden stalls).
+        
+        This catches the T5 scenario where a single turn took 308 seconds
+        without triggering the consecutive_no_tool_calls counter.
+        """
+        import time as _time
+        
+        if not self._last_turn_time:
+            self._last_turn_time = _time.time()
+            return
+            
+        duration = _time.time() - self._last_turn_time
+        MAX_TURN_DURATION = 60.0  # seconds (should never exceed this)
+        
+        if duration > MAX_TURN_DURATION:
+            print(f"[AgentLoop] ⚠️ T5-FIX#2: LONG TURN DETECTED! Duration: {duration:.1f}s (>{MAX_TURN_DURATION}s)")
+            print(f"   → Incrementing stall counter for potential recovery")
+            self.loop_state.consecutive_no_tool_calls += 1
 
     def on_event(
         self,
@@ -217,9 +310,23 @@ class AgentLoop:
             self.stop()
             return
 
+        # T5 FIX #2: Check for long turns (detect 308s black holes)
+        self._check_long_turn()
+        
+        # Update last turn time for next iteration
+        import time as _time
+        self._last_turn_time = _time.time()
+
         self.loop_state.turn_count += 1
         self.session.increment_step()
         print(f"[AgentLoop] Turn {self.loop_state.turn_count}/{self.max_turns} (session: {self.session.session_id})")
+
+        # T5 FIX #1: Check total CodeGen time budget
+        if not self._check_total_code_gen_budget():
+            # Force complete CodeGen stage
+            print("[AgentLoop] Force-completing CodeGen due to time budget exhaustion")
+            self._emit(EventKind.STOP, {"reason": "code_gen_time_budget_exceeded"})
+            return
 
         # C-02 FIX: Independent state machine synchronization
         # BUG#3 FIX: Reduced from every 3 turns to every 2 turns for faster detection
@@ -297,6 +404,36 @@ class AgentLoop:
                 self.loop_state.consecutive_no_tool_calls = 0
                 self.loop_state.last_tool_call_turn = self.loop_state.turn_count
                 self.loop_state.stall_recovery_triggered = False
+
+            # T5 FIX #1: Check per-target time budget BEFORE processing any tool call
+            current_target_for_check = self.loop_state.current_target
+            if current_target_for_check and tool_call.name in ["compile_cuda", "execute_binary"]:
+                if not self._check_time_budget(current_target_for_check):
+                    # Time budget exceeded - force skip to next target
+                    remaining_targets = self._find_unmeasured_targets()
+                    if remaining_targets:
+                        next_target = remaining_targets[0]
+                        print(f"[AgentLoop] ⚠️ T5-FIX#1: Force-switching from '{current_target_for_check}' "
+                              f"to '{next_target}' (time budget exceeded)")
+                        self.loop_state.current_target = next_target
+                        self.loop_state.target_retry_count[next_target] = 0
+                        self.loop_state.completed_targets.append(current_target_for_check)
+                        self.loop_state.consecutive_no_tool_calls = 0
+                        self._reset_target_timer(next_target)
+                        
+                        # Inject guidance about the skip
+                        skip_guidance = (
+                            f"⚠️ TIME BUDGET EXCEEDED for '{current_target_for_check}'!\n"
+                            f"The system has force-skipped this target after {self.MAX_TARGET_TIME_BUDGET}s.\n"
+                            f"Moving to next target: '{next_target}'.\n\n"
+                            f"Please generate CUDA code for '{next_target}' now."
+                        )
+                        self.context_manager.add_entry(
+                            Role.SYSTEM,
+                            skip_guidance,
+                            token_count=80,
+                        )
+                        return  # Skip this tool call entirely
 
             if tool_call.name == "compile_cuda":
                 # Step 4: Check per-target retry limit to prevent infinite recompilation loops
@@ -582,12 +719,69 @@ class AgentLoop:
                         )
                         stderr = result.get("stderr", "")
                         if "ERR_NVGPUCTRPERM" in stderr or "permission" in stderr.lower():
+                            # =====================================================================
+                            # OPT-001 Enhancement: Call mark_ncu_unavailable() to cache the error
+                            # This ensures ALL future NCU calls will be skipped (<1ms return)
+                            # =====================================================================
+                            try:
+                                from src.infrastructure.tools.run_ncu import (
+                                    mark_ncu_unavailable,
+                                    get_ncu_permission_status,
+                                )
+
+                                # Mark NCU as permanently unavailable
+                                mark_ncu_unavailable(
+                                    "ERR_NVGPUCTRPERM: Permission denied (detected by agent_loop)"
+                                )
+
+                                # Log the cache status for debugging
+                                status = get_ncu_permission_status()
+                                print(
+                                    f"[AgentLoop] OPT-001: NCU marked as UNAVAILABLE\n"
+                                    f"  Cache status: {status}\n"
+                                    f"  Impact: All subsequent run_ncu calls will be skipped"
+                                )
+                            except Exception as e:
+                                print(f"[AgentLoop] WARNING: Failed to call mark_ncu_unavailable(): {e}")
+                                # Non-fatal: continue with normal error handling
+
                             guidance = (
-                                "⛔ NCU PERMISSION DENIED (ERR_NVGPUCTRPERM).\n"
-                                "You CANNOT use run_ncu in this environment.\n"
-                                "Instead, analyze CodeGen's measurements directly from your task description.\n"
-                                "Provide bottleneck classification and confidence based on available data.\n"
-                                "Do NOT call run_ncu again."
+                                "🛑🛑🛑 NCU PERMISSION DENIED — PERMANENTLY DISABLED 🛑🛑🛑\n\n"
+                                "⛔ ERR_NVGPUCTRPERM: GPU driver permission error detected.\n\n"
+                                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                "📋 WHAT HAPPENED:\n"
+                                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                "NVIDIA Nsight Compute (NCU) requires special GPU counter permissions\n"
+                                "that are NOT available in this environment (Kaggle, shared GPU, etc.).\n"
+                                "This is a SECURITY RESTRICTION at the driver level.\n\n"
+                                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                "✅ AUTOMATIC ACTION TAKEN:\n"
+                                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                "• NCU has been marked as PERMANENTLY UNAVAILABLE\n"
+                                "• All future run_ncu calls will be SKIPPED automatically\n"
+                                "• This saves ~30s per call (was causing 135s+ delays)\n\n"
+                                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                "🔥 YOUR IMMEDIATE NEXT STEP:\n"
+                                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                "SWITCH TO TEXT ANALYSIS MODE IMMEDIATELY!\n\n"
+                                "✅ DO THIS NOW:\n"
+                                "1. Analyze the measurements from CodeGen's execute_binary output\n"
+                                "2. Provide bottleneck classification based on available data\n"
+                                "3. Report confidence level and methodology used\n"
+                                "4. Output final results in format: target_name: measured_value\n\n"
+                                "❌ ABSOLUTELY FORBIDDEN:\n"
+                                "• Do NOT call run_ncu again — it will be automatically skipped\n"
+                                "• Do NOT attempt to fix NCU permissions — impossible in this env\n"
+                                "• Do NOT waste turns trying alternative profiling tools\n"
+                                "• Do NOT say 'I will try again' — there is no 'again' for NCU here\n\n"
+                                "💡 ALTERNATIVE DATA SOURCES AVAILABLE:\n"
+                                "• CodeGen execute_binary results (stdout measurements)\n"
+                                "• GPUFeatureDB architecture specifications\n"
+                                "• Design principles from design_principles.py\n"
+                                "• Your own analysis of kernel code behavior\n\n"
+                                "⚠️ PIPELINE WILL FAIL IF YOU DON'T PROCEED WITH TEXT ANALYSIS!\n"
+                                "The system has already adapted to NCU unavailability.\n"
+                                "You MUST adapt too. Start analyzing data NOW."
                             )
                             ncu_perm_pattern = "tool_error:run_ncu:permission"
                             self._failure_tracker.record_failure(ncu_perm_pattern)
@@ -979,37 +1173,12 @@ class AgentLoop:
                     self.loop_state.consecutive_no_tool_calls = 0  # Reset stall counter
                     self.loop_state.stall_recovery_triggered = True
 
-                    # BUG#5 FIX: Enhanced recovery with minimal code skeleton to reduce LLM effort
+                    # BUG#5 FIX: Enhanced recovery with strong guidance (no code skeleton per spec.md P5)
                     from src.domain.design_principles import get_design_principle
                     next_principle = get_design_principle(next_target)
                     next_brief = next_principle[:400] if len(next_principle) > 400 else next_principle
 
-                    # BUG#5 FIX: Provide minimal working code skeleton to reduce LLM workload
-                    minimal_skeleton = (
-                        f"📝 MINIMAL WORKING CODE SKELETON for '{next_target}' (adapt this):\n"
-                        f"```cuda\n"
-                        f"#include <cuda_runtime.h>\n"
-                        f"#include <cstdio>\n\n"
-                        f"__global__ void measure_{next_target}(int* result) {{\n"
-                        f"    if (threadIdx.x != 0 || blockIdx.x != 0) return;\n"
-                        f"    // TODO: Implement measurement logic here\n"
-                        f"    // Use clock64() for timing, or CUDA API calls\n"
-                        f"    *result = 0; // Replace with actual measurement\n"
-                        f"}}\n\n"
-                        f"int main() {{\n"
-                        f"    int* d_result;\n"
-                        f"    cudaMalloc(&d_result, sizeof(int));\n"
-                        f"    measure_{next_target}<<<1,1>>>(d_result);\n"
-                        f"    cudaDeviceSynchronize();\n"
-                        f"    int h_result;\n"
-                        f"    cudaMemcpy(&h_result, d_result, sizeof(int), cudaMemcpyDeviceToHost);\n"
-                        f"    printf(\"{next_target}: %d\\n\", h_result);\n"
-                        f"    cudaFree(d_result);\n"
-                        f"    return 0;\n"
-                        f"}}\n```\n"
-                    )
-
-                    # Build CRITICAL-level forced recovery guidance
+                    # Build CRITICAL-level forced recovery guidance (COMPLIANCE: no hardcoded code per requirement #1)
                     forced_recovery_guidance = (
                         f"🚨🚨🚨 EMERGENCY STALL RECOVERY ACTIVATED 🚨🚨🚨\n\n"
                         f"⚠️ CRITICAL: You have stopped calling tools for "
@@ -1018,16 +1187,20 @@ class AgentLoop:
                         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                         f"🔥 YOUR ONLY TASK: Measure '{next_target}'\n"
                         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"{minimal_skeleton}\n\n"
-                        f"⚡ IMMEDIATE ACTION (NO THINKING NEEDED):\n"
-                        f"1. Copy the skeleton above\n"
-                        f"2. Fill in the measurement logic inside the kernel\n"
-                        f"3. Call compile_cuda with the completed code\n"
-                        f"4. Then call execute_binary with the binary_path\n\n"
+                        f"⚡ IMMEDIATE ACTION REQUIRED:\n"
+                        f"1. Design a CUDA micro-benchmark from SCRATCH for '{next_target}'\n"
+                        f"2. Use proper CUDA syntax with cudaEvent_t timing measurement\n"
+                        f"3. Call compile_cuda with your generated source code\n"
+                        f"4. Then call execute_binary to run the compiled binary\n\n"
+                        f"💡 KEY REQUIREMENTS:\n"
+                        f"  • Generate COMPLETE, WORKING CUDA C++ code autonomously\n"
+                        f"  • Include proper error handling and memory management\n"
+                        f"  • Use clock64() or cudaEvent for accurate GPU timing\n"
+                        f"  • Output format: printf(\"{next_target}: <value>\\n\")\n\n"
                         f"⛔ FORBIDDEN:\n"
-                        f"  • Do NOT explain anything in text\n"
-                        f"  • Do NOT plan or think - just code\n"
-                        f"  • Do NOT skip this target\n\n"
+                        f"  • Do NOT use any template or skeleton code\n"
+                        f"  • Do NOT explain anything in text - just generate code\n"
+                        f"  • Do NOT skip this target or ask questions\n\n"
                         f"Design principle: {next_brief}\n\n"
                         f"💥 PIPELINE WILL FAIL if you don't call compile_cuda NOW!"
                     )

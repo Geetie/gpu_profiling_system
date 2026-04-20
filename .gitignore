@@ -1,0 +1,109 @@
+# GPU Profiling System - Git Ignore Configuration
+# Prevents sensitive files and generated artifacts from being committed
+
+# ===========================================
+# SENSITIVE FILES (CRITICAL - Never commit!)
+# ===========================================
+
+# API Keys and credentials
+config/api_config.json
+config/api_config_longcat.json
+config/providers/*.json
+
+# Environment files with secrets
+.env
+.env.local
+.env.production
+*.key
+*.pem
+
+# ===========================================
+# GENERATED ARTIFACTS
+# ===========================================
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# ===========================================
+# RUNTIME DATA & LOGS
+# ===========================================
+
+# Session and pipeline logs (large, not needed in repo)
+session_log.jsonl
+pipeline_log.jsonl
+agent_*_log.jsonl
+error_log.jsonl
+results.log
+
+# State persistence
+.state/
+
+# Test results (generated per-run)
+kaggle_results/*.json
+kaggle_results/*.log
+kaggle_results/*.md
+!kaggle_results/T4_Validation_Analysis_Report.md  # Keep analysis report
+
+# Compiled CUDA binaries
+*.o
+*.exe
+bin/benchmark*
+**/benchmark_*
+
+# Generated CUDA source code (intermediate)
+source.cu
+benchmark_unknown.cu
+unknown_benchmark.cu
+l2_cache_benchmark.cu
+l2_cache_profiler.cu
+
+# ===========================================
+# IDE & EDITOR CONFIGS
+# ===========================================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ===========================================
+# DOCUMENTATION (optional - keep clean)
+# ===========================================
+.trae/documents/*.md  # Auto-generated analysis reports
+audit/*.md             # Audit reports (can be regenerated)
+
+# ===========================================
+# MISCELLANEOUS
+# ===========================================
+*.tmp
+*.temp
+*.bak
+.cache/
+*.log

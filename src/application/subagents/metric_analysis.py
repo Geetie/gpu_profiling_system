@@ -226,9 +226,38 @@ class MetricAnalysisAgent(BaseSubAgent):
         Strategy:
         1. Extract binary paths from CodeGen output
         2. If binary paths exist, profile with ncu
-        3. Perform Roofline analysis on ncu data
+        3. Perform Roofline model analysis on ncu data
         4. Fall back to printf analysis if no binaries or ncu unavailable
+        
+        T5 FIX #3: Enhanced tool restrictions to prevent compile_cuda KeyError
         """
+        # T5 FIX #3: Inject tool restriction guidance to prevent compile_cuda errors
+        tool_restriction_guidance = (
+            "⚠️ IMPORTANT TOOL RESTRICTIONS (MetricAnalysis Stage):\n\n"
+            "You are in the METRIC ANALYSIS stage, NOT CodeGen.\n"
+            "Your task is to ANALYZE existing measurements, NOT generate new code.\n\n"
+            "✅ AVAILABLE TOOLS:\n"
+            "  • run_ncu - Profile binaries with Nsight Compute (if available)\n"
+            "  • read_file - Read output files or logs\n\n"
+            "❌ FORBIDDEN TOOLS (will cause errors):\n"
+            "  • compile_cuda - NOT registered in this stage\n"
+            "  • execute_binary - NOT registered in this stage\n\n"
+            "📋 YOUR ACTUAL TASK:\n"
+            "1. Use run_ncu to profile the compiled binaries (if NCU is available)\n"
+            "2. If NCU fails (ERR_NVGPUCTRPERM), switch to text-based analysis immediately\n"
+            "3. Analyze the measurement values for reasonableness and consistency\n"
+            "4. Provide bottleneck classification and confidence assessment\n\n"
+            "⛔ DO NOT attempt to call compile_cuda or execute_binary!\n"
+            "   These tools are ONLY available in the CodeGen stage.\n"
+            "   Calling them will result in 'Tool not registered' errors.\n"
+        )
+        
+        self.context_manager.add_entry(
+            Role.SYSTEM,
+            tool_restriction_guidance,
+            token_count=200,  # High visibility
+        )
+        
         prev_result = message.payload.get("prev_result", {})
         target_spec = message.payload.get("target_spec", {})
 
