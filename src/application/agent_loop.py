@@ -671,12 +671,9 @@ class AgentLoop:
                             print(f"[AgentLoop] Parsed {len(measurements)} measurements from stdout: {list(measurements.keys())}")
 
                             if measurements:
-                                # Record to completed_targets in state machine
                                 newly_measured = []
                                 for key, val in measurements.items():
-                                    all_targets_list = self._get_all_targets()
-                                    if (key not in self.loop_state.completed_targets
-                                        and key in all_targets_list):
+                                    if key not in self.loop_state.completed_targets:
                                         self.loop_state.completed_targets.append(key)
                                         newly_measured.append(key)
 
