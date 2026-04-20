@@ -921,7 +921,12 @@ class AgentLoop:
             # BUG#6 FIX: Check if ALL targets are measured BEFORE triggering recovery
             # This is the critical fix for the "3/3 measured but still failing" issue
             unmeasured = self._find_unmeasured_targets()
-            if not unmeasured and self.loop_state.consecutive_no_tool_calls > 0:
+
+            # ENHANCED CHECK: Ensure we have actual work done before declaring success
+            # Prevent false positives in test/mock environments where no real tool calls were made
+            has_actual_work = len(self.loop_state.completed_targets) > 0 or self.loop_state.turn_count >= 3
+
+            if not unmeasured and self.loop_state.consecutive_no_tool_calls > 0 and has_actual_work:
                 # All targets measured, LLM is just signaling completion
                 print(f"[AgentLoop] ✅ ALL TARGETS COMPLETED! Signaling graceful exit "
                       f"(consecutive_no_tool={self.loop_state.consecutive_no_tool_calls})")
