@@ -1,0 +1,9 @@
+Command: nvidia-smi -L
+CWD: /kaggle/working
+Exit code: 0
+
+STDOUT:
+GPU 0: Tesla P100-PCIE-16GB (UUID: GPU-efbe3362-393a-0b05-4957-d9e0a5259622)
+
+
+STDERR:

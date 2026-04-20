@@ -3,11 +3,11 @@ CWD: /kaggle/working/gpu_profiling_system
 Exit code: 1
 
 STDOUT:
-[session] Created session: sess_e2b7d607
+[session] Created session: sess_bc4f5dfc
 [sandbox] Using LocalSandbox (dev mode)
 [Sandbox] Kaggle environment detected (KAGGLE_KERNEL_RUN_TYPE=Interactive)
 [Sandbox] Using isolated sandbox: /kaggle/working/gpu_profiling_system/.kaggle_sandbox
-07:27:41 [INFO] src.application.subagents.planner: [Planner] Tool isolation active: 0 tools registered. Planner outputs pure JSON text only, no tool calls.
+08:44:13 [INFO] src.application.subagents.planner: [Planner] Tool isolation active: 0 tools registered. Planner outputs pure JSON text only, no tool calls.
 OK 加载供应商配置: 美团 LongCat API
 OK 加载供应商配置: Anthropic Claude
 OK 加载供应商配置: 阿里云百炼
@@ -22,17 +22,17 @@ OK 加载供应商配置: 阿里云百炼
 [llm] MetricAnalysisAgent -> LongCat-Flash-Chat (Provider: longcat)
 [model_caller] Using provider: longcat
 [llm] VerificationAgent -> LongCat-Flash-Chat (Provider: longcat)
-[32mPipeline mode — Session sess_e2b7d607[0m
+[32mPipeline mode — Session sess_bc4f5dfc[0m
 [model_caller] Using provider: longcat
 [llm] Model caller configured from config/api_config.json
 [Pipeline] Starting pipeline with targets: ['dram_latency_cycles', 'l2_cache_size_mb', 'actual_boost_clock_mhz']
 [Pipeline] Executing stage: plan
-07:27:41 [INFO] src.domain.stage_executor: [StageExecutor] Starting stage plan with 0 retries
-07:27:41 [INFO] src.domain.stage_executor: [StageExecutor] Using max_turns=20 for stage plan (default would be 50)
-07:27:41 [INFO] src.domain.stage_executor: [StageExecutor] Set auto-approve callback for plan stage (mode=high_autonomy)
-07:27:41 [INFO] src.domain.stage_executor: [StageExecutor] Auto-approving request: tool=test_tool, id=test_001
-07:27:41 [INFO] src.domain.stage_executor: [StageExecutor] Starting AgentLoop for plan
-[AgentLoop] Turn 1/20 (session: pipeline_plan_949adb)
+08:44:13 [INFO] src.domain.stage_executor: [StageExecutor] Starting stage plan with 0 retries
+08:44:13 [INFO] src.domain.stage_executor: [StageExecutor] Using max_turns=20 for stage plan (default would be 50)
+08:44:13 [INFO] src.domain.stage_executor: [StageExecutor] Set auto-approve callback for plan stage (mode=high_autonomy)
+08:44:13 [INFO] src.domain.stage_executor: [StageExecutor] Auto-approving request: tool=test_tool, id=test_001
+08:44:13 [INFO] src.domain.stage_executor: [StageExecutor] Starting AgentLoop for plan
+[AgentLoop] Turn 1/20 (session: pipeline_plan_2af5f9)
 [AgentLoop] Calling model with 3 messages
 [model_caller] Trying current provider: longcat
 [model_caller] Calling longcat: model=LongCat-Flash-Chat, url=https://api.longcat.chat/openai/v1/chat/completions
@@ -45,50 +45,31 @@ OK 加载供应商配置: 阿里云百炼
 [model_caller] Sending request to: https://api.longcat.chat/openai/v1/chat/completions
 [model_caller] Attempt 1/2
 [model_caller] Response status: 200
-[model_caller] Got text response: 2256 chars
-[AgentLoop] Model response: 2256 chars
+[model_caller] Got text response: 1834 chars
+[AgentLoop] Model response: 1834 chars
 [AgentLoop] ⚠️ NO TOOL CALL in Turn 1 (consecutive: 1)
-[AgentLoop] Turn 2/20 (session: pipeline_plan_949adb)
-[AgentLoop] Triggering C-02 state sync (Turn 2)
-[AgentLoop] C-02 SYNC: No targets found anywhere, skipping sync
-[AgentLoop] Calling model with 4 messages
-[model_caller] Trying current provider: longcat
-[model_caller] Calling longcat: model=LongCat-Flash-Chat, url=https://api.longcat.chat/openai/v1/chat/completions
-[model_caller] Messages: 4, Tools: 0
-[model_caller]   Msg 0: role=system, content_type=str, len=3148, is_none=False
-[model_caller]   Msg 1: role=user, content_type=str, len=441, is_none=False
-[model_caller]   Msg 2: role=system, content_type=str, len=356, is_none=False
-[model_caller]   Msg 3: role=assistant, content_type=str, len=2256, is_none=False
-[model_caller] Debug: Saved messages to debug_messages_longcat_4msg_0tool.json
-[model_caller] POST https://api.longcat.chat/openai/v1/chat/completions model=LongCat-Flash-Chat msgs=4 tools=0
-[model_caller] Sending request to: https://api.longcat.chat/openai/v1/chat/completions
-[model_caller] Attempt 1/2
-[model_caller] Response status: 200
-[model_caller] Got text response: 2256 chars
-[AgentLoop] Model response: 2256 chars
-[AgentLoop] ⚠️ NO TOOL CALL in Turn 2 (consecutive: 2)
-[AgentLoop] 🚨 STALL DETECTED: 2 consecutive turns without tool calls (MAX=2) - triggering FORCED RECOVERY
-07:28:00 [INFO] src.domain.stage_executor: [StageExecutor] AgentLoop finished for plan (turns=2)
-07:28:00 [INFO] src.domain.stage_executor: [StageExecutor] Found valid tasks in assistant output #1 (2256 chars)
-07:28:00 [INFO] src.domain.stage_executor: [StageExecutor] Extracted 3 tasks from Planner LLM output
-07:28:00 [INFO] src.domain.stage_executor: [StageExecutor] Attempt status: success
-07:28:00 [INFO] src.domain.stage_executor: [StageExecutor] Stage plan finished: success
-[Pipeline] Stage plan completed in 19.2s with status: success
+[AgentLoop] ✅ ALL TARGETS COMPLETED! Signaling graceful exit (consecutive_no_tool=1)
+08:44:39 [INFO] src.domain.stage_executor: [StageExecutor] AgentLoop finished for plan (turns=1)
+08:44:39 [INFO] src.domain.stage_executor: [StageExecutor] Found valid tasks in assistant output #1 (1834 chars)
+08:44:39 [INFO] src.domain.stage_executor: [StageExecutor] Extracted 3 tasks from Planner LLM output
+08:44:39 [INFO] src.domain.stage_executor: [StageExecutor] Attempt status: success
+08:44:39 [INFO] src.domain.stage_executor: [StageExecutor] Stage plan finished: success
+[Pipeline] Stage plan completed in 25.59s with status: success
 [Pipeline] Executing stage: code_gen
-07:28:00 [INFO] src.domain.stage_executor: [StageExecutor] Starting stage code_gen with 0 retries
-07:28:00 [INFO] src.domain.stage_executor: [StageExecutor] Using max_turns=50 for stage code_gen (default would be 50)
+08:44:39 [INFO] src.domain.stage_executor: [StageExecutor] Starting stage code_gen with 0 retries
+08:44:39 [INFO] src.domain.stage_executor: [StageExecutor] Using max_turns=50 for stage code_gen (default would be 50)
 [AgentLoop] Target state initialized: current=dram_latency_cycles, total=3
-07:28:00 [INFO] src.domain.stage_executor: [StageExecutor] Target state machine initialized for CodeGen stage
-07:28:00 [INFO] src.domain.stage_executor: [StageExecutor] Set auto-approve callback for code_gen stage (mode=high_autonomy)
-07:28:00 [INFO] src.domain.stage_executor: [StageExecutor] Auto-approving request: tool=test_tool, id=test_001
-07:28:00 [INFO] src.domain.stage_executor: [StageExecutor] Starting AgentLoop for code_gen
-[AgentLoop] Turn 1/50 (session: pipeline_code_gen_365387)
+08:44:39 [INFO] src.domain.stage_executor: [StageExecutor] Target state machine initialized for CodeGen stage
+08:44:39 [INFO] src.domain.stage_executor: [StageExecutor] Set auto-approve callback for code_gen stage (mode=high_autonomy)
+08:44:39 [INFO] src.domain.stage_executor: [StageExecutor] Auto-approving request: tool=test_tool, id=test_001
+08:44:39 [INFO] src.domain.stage_executor: [StageExecutor] Starting AgentLoop for code_gen
+[AgentLoop] Turn 1/50 (session: pipeline_code_gen_d7fef5)
 [AgentLoop] Calling model with 3 messages
 [model_caller] Trying current provider: longcat
 [model_caller] Calling longcat: model=LongCat-Flash-Chat, url=https://api.longcat.chat/openai/v1/chat/completions
 [model_caller] Messages: 3, Tools: 3
 [model_caller]   Msg 0: role=system, content_type=str, len=20132, is_none=False
-[model_caller]   Msg 1: role=user, content_type=str, len=13057, is_none=False
+[model_caller]   Msg 1: role=user, content_type=str, len=12248, is_none=False
 [model_caller]   Msg 2: role=system, content_type=str, len=356, is_none=False
 [model_caller] Debug: Saved messages to debug_messages_longcat_3msg_3tool.json
 [model_caller] POST https://api.longcat.chat/openai/v1/chat/completions model=LongCat-Flash-Chat msgs=3 tools=3
@@ -96,15 +77,15 @@ OK 加载供应商配置: 阿里云百炼
 [model_caller] Attempt 1/2
 [model_caller] Response status: 200
 [model_caller] Got tool_call: compile_cuda
-[AgentLoop] Model response: 3009 chars
+[AgentLoop] Model response: 2680 chars
 [AgentLoop] _find_unmeasured: Found 3 targets from user message
 [AgentLoop] _find_unmeasured: CACHING complete target list (3 targets): ['dram_latency_cycles', 'l2_cache_size_mb', 'actual_boost_clock_mhz']
 [AgentLoop] _find_unmeasured: total=3, measured=0, unmeasured=3, all_targets=['dram_latency_cycles', 'l2_cache_size_mb', 'actual_boost_clock_mhz'], cache=HIT
 [AgentLoop] Tool call: compile_cuda(['source', 'flags', 'target'])
 [detect_gpu_arch] Detected via nvidia-smi: sm_60 (Tesla P100-PCIE-16GB)
-[AgentLoop] Tool result: compile_cuda -> {'success': True, 'status': 'success_with_warning', 'output': '', 'errors': 'source.cu(40): warning #177-D: variable "iterations" was declared but never referenced\n      const uint64_t iterations = 1
+[AgentLoop] Tool result: compile_cuda -> {'success': True, 'status': 'success', 'output': '', 'errors': '', 'binary_path': '/kaggle/working/gpu_profiling_system/.kaggle_sandbox/bin/benchmark_dram_latency_cycles', 'source_path': '/kaggle/work
 [AgentLoop] Forced execute_binary guidance after successful compilation
-[AgentLoop] Turn 2/50 (session: pipeline_code_gen_365387)
+[AgentLoop] Turn 2/50 (session: pipeline_code_gen_d7fef5)
 [AgentLoop] Triggering C-02 state sync (Turn 2)
 [AgentLoop] C-02 SYNC: Status 0/3 measured, 3 remaining, current='dram_latency_cycles'
 [AgentLoop] Calling model with 6 messages
@@ -112,10 +93,10 @@ OK 加载供应商配置: 阿里云百炼
 [model_caller] Calling longcat: model=LongCat-Flash-Chat, url=https://api.longcat.chat/openai/v1/chat/completions
 [model_caller] Messages: 6, Tools: 3
 [model_caller]   Msg 0: role=system, content_type=str, len=20132, is_none=False
-[model_caller]   Msg 1: role=user, content_type=str, len=13057, is_none=False
+[model_caller]   Msg 1: role=user, content_type=str, len=12248, is_none=False
 [model_caller]   Msg 2: role=system, content_type=str, len=453, is_none=False
 [model_caller]   Msg 3: role=system, content_type=str, len=723, is_none=False
-[model_caller]   Msg 4: role=assistant, content_type=str, len=646, is_none=False
+[model_caller]   Msg 4: role=assistant, content_type=str, len=390, is_none=False
 [model_caller]   Msg 5: role=system, content_type=str, len=400, is_none=False
 [model_caller] Debug: Saved messages to debug_messages_longcat_6msg_3tool.json
 [model_caller] POST https://api.longcat.chat/openai/v1/chat/completions model=LongCat-Flash-Chat msgs=6 tools=3
@@ -127,7 +108,7 @@ OK 加载供应商配置: 阿里云百炼
 [AgentLoop] _already_executed_binary: path=/kaggle/working/gpu_profiling_system/.kaggle_sandbox/bin/benchmark_dram_latency_cycles, last_compile_idx=4, no exec after, result=False
 [AgentLoop] P2 auto-inject: binary_path=/kaggle/working/gpu_profiling_system/.kaggle_sandbox/bin/benchmark_dram_latency_cycles (reason: latest compile not yet executed)
 [AgentLoop] Tool call: execute_binary(['binary_path'])
-[AgentLoop] Tool result: execute_binary -> {'success': True, 'status': 'success', 'stdout': 'dram_latency_cycles: 506\n', 'stderr': '', 'return_code': 0}
+[AgentLoop] Tool result: execute_binary -> {'success': True, 'status': 'success', 'stdout': 'dram_latency_cycles: 487\n', 'stderr': '', 'return_code': 0}
 [AgentLoop] Parsed 1 measurements from stdout: ['dram_latency_cycles']
 [AgentLoop] _find_unmeasured: Using CACHED target list (3 targets)
 [AgentLoop] _find_unmeasured: total=3, measured=1, unmeasured=2, all_targets=['dram_latency_cycles', 'l2_cache_size_mb', 'actual_boost_clock_mhz'], cache=HIT
@@ -135,16 +116,16 @@ OK 加载供应商配置: 阿里云百炼
 [AgentLoop] _find_unmeasured: Using CACHED target list (3 targets)
 [AgentLoop] _find_unmeasured: total=3, measured=1, unmeasured=2, all_targets=['dram_latency_cycles', 'l2_cache_size_mb', 'actual_boost_clock_mhz'], cache=HIT
 [AgentLoop] Switching to target: l2_cache_size_mb
-[AgentLoop] Turn 3/50 (session: pipeline_code_gen_365387)
+[AgentLoop] Turn 3/50 (session: pipeline_code_gen_d7fef5)
 [AgentLoop] Calling model with 9 messages
 [model_caller] Trying current provider: longcat
 [model_caller] Calling longcat: model=LongCat-Flash-Chat, url=https://api.longcat.chat/openai/v1/chat/completions
 [model_caller] Messages: 9, Tools: 3
 [model_caller]   Msg 0: role=system, content_type=str, len=20132, is_none=False
-[model_caller]   Msg 1: role=user, content_type=str, len=13057, is_none=False
+[model_caller]   Msg 1: role=user, content_type=str, len=12248, is_none=False
 [model_caller]   Msg 2: role=system, content_type=str, len=453, is_none=False
 [model_caller]   Msg 3: role=system, content_type=str, len=723, is_none=False
-[model_caller]   Msg 4: role=assistant, content_type=str, len=646, is_none=False
+[model_caller]   Msg 4: role=assistant, content_type=str, len=390, is_none=False
 [model_caller]   Msg 5: role=system, content_type=str, len=400, is_none=False
 [model_caller]   Msg 6: role=assistant, content_type=str, len=274, is_none=False
 [model_caller]   Msg 7: role=system, content_type=str, len=93, is_none=False
@@ -155,13 +136,13 @@ OK 加载供应商配置: 阿里云百炼
 [model_caller] Attempt 1/2
 [model_caller] Response status: 200
 [model_caller] Got tool_call: compile_cuda
-[AgentLoop] Model response: 2873 chars
+[AgentLoop] Model response: 2875 chars
 [AgentLoop] _find_unmeasured: Using CACHED target list (3 targets)
 [AgentLoop] _find_unmeasured: total=3, measured=1, unmeasured=2, all_targets=['dram_latency_cycles', 'l2_cache_size_mb', 'actual_boost_clock_mhz'], cache=HIT
 [AgentLoop] Tool call: compile_cuda(['source', 'flags', 'target'])
 [detect_gpu_arch] Detected via nvidia-smi: sm_60 (Tesla P100-PCIE-16GB)
-[AgentLoop] Tool result: compile_cuda -> {'success': True, 'status': 'success_with_warning', 'output': '', 'errors': 'source.cu(29): warning #177-D: variable "min_size" was declared but never referenced\n      const size_t min_size = 128 * 1
-[AgentLoop] Turn 4/50 (session: pipeline_code_gen_365387)
+[AgentLoop] Tool result: compile_cuda -> {'success': True, 'status': 'success', 'output': '', 'errors': '', 'binary_path': '/kaggle/working/gpu_profiling_system/.kaggle_sandbox/bin/benchmark_l2_cache_size_mb', 'source_path': '/kaggle/working
+[AgentLoop] Turn 4/50 (session: pipeline_code_gen_d7fef5)
 [AgentLoop] Triggering C-02 state sync (Turn 4)
 [AgentLoop] C-02 SYNC: Status 1/2 measured, 1 remaining, current='l2_cache_size_mb'
 [AgentLoop] Calling model with 11 messages
@@ -169,27 +150,27 @@ OK 加载供应商配置: 阿里云百炼
 [model_caller] Calling longcat: model=LongCat-Flash-Chat, url=https://api.longcat.chat/openai/v1/chat/completions
 [model_caller] Messages: 11, Tools: 3
 [model_caller]   Msg 0: role=system, content_type=str, len=20132, is_none=False
-[model_caller]   Msg 1: role=user, content_type=str, len=13057, is_none=False
+[model_caller]   Msg 1: role=user, content_type=str, len=12248, is_none=False
 [model_caller]   Msg 2: role=system, content_type=str, len=453, is_none=False
 [model_caller]   Msg 3: role=system, content_type=str, len=723, is_none=False
-[model_caller]   Msg 4: role=assistant, content_type=str, len=646, is_none=False
+[model_caller]   Msg 4: role=assistant, content_type=str, len=390, is_none=False
 [model_caller]   Msg 5: role=system, content_type=str, len=400, is_none=False
 [model_caller]   Msg 6: role=assistant, content_type=str, len=274, is_none=False
 [model_caller]   Msg 7: role=system, content_type=str, len=93, is_none=False
 [model_caller]   Msg 8: role=system, content_type=str, len=1222, is_none=False
-[model_caller]   Msg 9: role=assistant, content_type=str, len=634, is_none=False
+[model_caller]   Msg 9: role=assistant, content_type=str, len=384, is_none=False
 [model_caller]   Msg 10: role=system, content_type=str, len=394, is_none=False
 [model_caller] Debug: Saved messages to debug_messages_longcat_11msg_3tool.json
 [model_caller] POST https://api.longcat.chat/openai/v1/chat/completions model=LongCat-Flash-Chat msgs=11 tools=3
 [model_caller] Sending request to: https://api.longcat.chat/openai/v1/chat/completions
 [model_caller] Attempt 1/2
 [model_caller] Response status: 200
-[model_caller] Got text response: 346 chars
-[AgentLoop] Model response: 346 chars
+[model_caller] Got text response: 263 chars
+[AgentLoop] Model response: 263 chars
 [AgentLoop] _already_executed_binary: path=/kaggle/working/gpu_profiling_system/.kaggle_sandbox/bin/benchmark_l2_cache_size_mb, last_compile_idx=9, no exec after, result=False
 [AgentLoop] P2 auto-inject: binary_path=/kaggle/working/gpu_profiling_system/.kaggle_sandbox/bin/benchmark_l2_cache_size_mb (reason: latest compile not yet executed)
 [AgentLoop] Tool call: execute_binary(['binary_path'])
-[AgentLoop] Tool result: execute_binary -> {'success': True, 'status': 'success', 'stdout': 'l2_cache_size_mb: 0.1\n', 'stderr': '', 'return_code': 0}
+[AgentLoop] Tool result: execute_binary -> {'success': True, 'status': 'success', 'stdout': 'l2_cache_size_mb: 64\n', 'stderr': '', 'return_code': 0}
 [AgentLoop] Parsed 1 measurements from stdout: ['l2_cache_size_mb']
 [AgentLoop] _find_unmeasured: Using CACHED target list (3 targets)
 [AgentLoop] _find_unmeasured: total=3, measured=2, unmeasured=1, all_targets=['dram_latency_cycles', 'l2_cache_size_mb', 'actual_boost_clock_mhz'], cache=HIT
@@ -197,28 +178,27 @@ OK 加载供应商配置: 阿里云百炼
 [AgentLoop] _find_unmeasured: Using CACHED target list (3 targets)
 [AgentLoop] _find_unmeasured: total=3, measured=2, unmeasured=1, all_targets=['dram_latency_cycles', 'l2_cache_size_mb', 'actual_boost_clock_mhz'], cache=HIT
 [AgentLoop] Switching to target: actual_boost_clock_mhz
-[AgentLoop] Turn 5/50 (session: pipeline_code_gen_365387)
-[AgentLoop] Calling model with 15 messages
+[AgentLoop] Turn 5/50 (session: pipeline_code_gen_d7fef5)
+[AgentLoop] Calling model with 14 messages
 [model_caller] Trying current provider: longcat
 [model_caller] Calling longcat: model=LongCat-Flash-Chat, url=https://api.longcat.chat/openai/v1/chat/completions
-[model_caller] Messages: 15, Tools: 3
+[model_caller] Messages: 14, Tools: 3
 [model_caller]   Msg 0: role=system, content_type=str, len=20132, is_none=False
-[model_caller]   Msg 1: role=user, content_type=str, len=13057, is_none=False
+[model_caller]   Msg 1: role=user, content_type=str, len=12248, is_none=False
 [model_caller]   Msg 2: role=system, content_type=str, len=453, is_none=False
 [model_caller]   Msg 3: role=system, content_type=str, len=723, is_none=False
-[model_caller]   Msg 4: role=assistant, content_type=str, len=646, is_none=False
+[model_caller]   Msg 4: role=assistant, content_type=str, len=390, is_none=False
 [model_caller]   Msg 5: role=system, content_type=str, len=400, is_none=False
 [model_caller]   Msg 6: role=assistant, content_type=str, len=274, is_none=False
 [model_caller]   Msg 7: role=system, content_type=str, len=93, is_none=False
 [model_caller]   Msg 8: role=system, content_type=str, len=1222, is_none=False
-[model_caller]   Msg 9: role=assistant, content_type=str, len=634, is_none=False
+[model_caller]   Msg 9: role=assistant, content_type=str, len=384, is_none=False
 [model_caller]   Msg 10: role=system, content_type=str, len=394, is_none=False
-[model_caller]   Msg 11: role=assistant, content_type=str, len=265, is_none=False
-[model_caller]   Msg 12: role=system, content_type=str, len=88, is_none=False
-[model_caller]   Msg 13: role=system, content_type=str, len=524, is_none=False
-[model_caller]   Msg 14: role=system, content_type=str, len=1214, is_none=False
-[model_caller] Debug: Saved messages to debug_messages_longcat_15msg_3tool.json
-[model_caller] POST https://api.longcat.chat/openai/v1/chat/completions model=LongCat-Flash-Chat msgs=15 tools=3
+[model_caller]   Msg 11: role=assistant, content_type=str, len=264, is_none=False
+[model_caller]   Msg 12: role=system, content_type=str, len=89, is_none=False
+[model_caller]   Msg 13: role=system, content_type=str, len=1214, is_none=False
+[model_caller] Debug: Saved messages to debug_messages_longcat_14msg_3tool.json
+[model_caller] POST https://api.longcat.chat/openai/v1/chat/completions model=LongCat-Flash-Chat msgs=14 tools=3
 [model_caller] Sending request to: https://api.longcat.chat/openai/v1/chat/completions
 [model_caller] Attempt 1/2
 [model_caller] Response status: 200
@@ -226,222 +206,116 @@ OK 加载供应商配置: 阿里云百炼
 [AgentLoop] Model response: 396 chars
 [AgentLoop] _find_unmeasured: Using CACHED target list (3 targets)
 [AgentLoop] _find_unmeasured: total=3, measured=2, unmeasured=1, all_targets=['dram_latency_cycles', 'l2_cache_size_mb', 'actual_boost_clock_mhz'], cache=HIT
-[AgentLoop] Turn 6/50 (session: pipeline_code_gen_365387)
+[AgentLoop] Turn 6/50 (session: pipeline_code_gen_d7fef5)
 [AgentLoop] Triggering C-02 state sync (Turn 6)
 [AgentLoop] C-02 SYNC: Status 2/3 measured, 1 remaining, current='actual_boost_clock_mhz'
-[AgentLoop] Calling model with 17 messages
+[AgentLoop] Calling model with 16 messages
 [model_caller] Trying current provider: longcat
 [model_caller] Calling longcat: model=LongCat-Flash-Chat, url=https://api.longcat.chat/openai/v1/chat/completions
-[model_caller] Messages: 17, Tools: 3
+[model_caller] Messages: 16, Tools: 3
 [model_caller]   Msg 0: role=system, content_type=str, len=20132, is_none=False
-[model_caller]   Msg 1: role=user, content_type=str, len=13057, is_none=False
+[model_caller]   Msg 1: role=user, content_type=str, len=12248, is_none=False
 [model_caller]   Msg 2: role=system, content_type=str, len=453, is_none=False
 [model_caller]   Msg 3: role=system, content_type=str, len=723, is_none=False
-[model_caller]   Msg 4: role=assistant, content_type=str, len=646, is_none=False
+[model_caller]   Msg 4: role=assistant, content_type=str, len=390, is_none=False
 [model_caller]   Msg 5: role=system, content_type=str, len=400, is_none=False
 [model_caller]   Msg 6: role=assistant, content_type=str, len=274, is_none=False
 [model_caller]   Msg 7: role=system, content_type=str, len=93, is_none=False
 [model_caller]   Msg 8: role=system, content_type=str, len=1222, is_none=False
-[model_caller]   Msg 9: role=assistant, content_type=str, len=634, is_none=False
+[model_caller]   Msg 9: role=assistant, content_type=str, len=384, is_none=False
 [model_caller]   Msg 10: role=system, content_type=str, len=394, is_none=False
-[model_caller]   Msg 11: role=assistant, content_type=str, len=265, is_none=False
-[model_caller]   Msg 12: role=system, content_type=str, len=88, is_none=False
-[model_caller]   Msg 13: role=system, content_type=str, len=524, is_none=False
-[model_caller]   Msg 14: role=system, content_type=str, len=1214, is_none=False
-[model_caller]   Msg 15: role=assistant, content_type=str, len=147, is_none=False
-[model_caller]   Msg 16: role=system, content_type=str, len=571, is_none=False
-[model_caller] Debug: Saved messages to debug_messages_longcat_17msg_3tool.json
-[model_caller] POST https://api.longcat.chat/openai/v1/chat/completions model=LongCat-Flash-Chat msgs=17 tools=3
+[model_caller]   Msg 11: role=assistant, content_type=str, len=264, is_none=False
+[model_caller]   Msg 12: role=system, content_type=str, len=89, is_none=False
+[model_caller]   Msg 13: role=system, content_type=str, len=1214, is_none=False
+[model_caller]   Msg 14: role=assistant, content_type=str, len=147, is_none=False
+[model_caller]   Msg 15: role=system, content_type=str, len=571, is_none=False
+[model_caller] Debug: Saved messages to debug_messages_longcat_16msg_3tool.json
+[model_caller] POST https://api.longcat.chat/openai/v1/chat/completions model=LongCat-Flash-Chat msgs=16 tools=3
+[model_caller] Sending request to: https://api.longcat.chat/openai/v1/chat/completions
+[model_caller] Attempt 1/2
+[model_caller] Response status: 200
+[model_caller] Got text response: 147 chars
+[AgentLoop] Model response: 147 chars
+[AgentLoop] _find_unmeasured: Using CACHED target list (3 targets)
+[AgentLoop] _find_unmeasured: total=3, measured=2, unmeasured=1, all_targets=['dram_latency_cycles', 'l2_cache_size_mb', 'actual_boost_clock_mhz'], cache=HIT
+[AgentLoop] Turn 7/50 (session: pipeline_code_gen_d7fef5)
+[AgentLoop] Calling model with 18 messages
+[model_caller] Trying current provider: longcat
+[model_caller] Calling longcat: model=LongCat-Flash-Chat, url=https://api.longcat.chat/openai/v1/chat/completions
+[model_caller] Messages: 18, Tools: 3
+[model_caller]   Msg 0: role=system, content_type=str, len=20132, is_none=False
+[model_caller]   Msg 1: role=user, content_type=str, len=12248, is_none=False
+[model_caller]   Msg 2: role=system, content_type=str, len=453, is_none=False
+[model_caller]   Msg 3: role=system, content_type=str, len=723, is_none=False
+[model_caller]   Msg 4: role=assistant, content_type=str, len=390, is_none=False
+[model_caller]   Msg 5: role=system, content_type=str, len=400, is_none=False
+[model_caller]   Msg 6: role=assistant, content_type=str, len=274, is_none=False
+[model_caller]   Msg 7: role=system, content_type=str, len=93, is_none=False
+[model_caller]   Msg 8: role=system, content_type=str, len=1222, is_none=False
+[model_caller]   Msg 9: role=assistant, content_type=str, len=384, is_none=False
+[model_caller]   Msg 10: role=system, content_type=str, len=394, is_none=False
+[model_caller]   Msg 11: role=assistant, content_type=str, len=264, is_none=False
+[model_caller]   Msg 12: role=system, content_type=str, len=89, is_none=False
+[model_caller]   Msg 13: role=system, content_type=str, len=1214, is_none=False
+[model_caller]   Msg 14: role=assistant, content_type=str, len=147, is_none=False
+[model_caller]   Msg 15: role=system, content_type=str, len=571, is_none=False
+[model_caller]   Msg 16: role=assistant, content_type=str, len=147, is_none=False
+[model_caller]   Msg 17: role=system, content_type=str, len=571, is_none=False
+[model_caller] Debug: Saved messages to debug_messages_longcat_18msg_3tool.json
+[model_caller] POST https://api.longcat.chat/openai/v1/chat/completions model=LongCat-Flash-Chat msgs=18 tools=3
 [model_caller] Sending request to: https://api.longcat.chat/openai/v1/chat/completions
 [model_caller] Attempt 1/2
 [model_caller] Response status: 200
 [model_caller] Got tool_call: compile_cuda
-[AgentLoop] Model response: 2043 chars
+[AgentLoop] Model response: 2290 chars
 [AgentLoop] _find_unmeasured: Using CACHED target list (3 targets)
 [AgentLoop] _find_unmeasured: total=3, measured=2, unmeasured=1, all_targets=['dram_latency_cycles', 'l2_cache_size_mb', 'actual_boost_clock_mhz'], cache=HIT
-[AgentLoop] Tool call: compile_cuda(['source', 'flags', 'target'])
-[detect_gpu_arch] Detected via nvidia-smi: sm_60 (Tesla P100-PCIE-16GB)
-[AgentLoop] Tool result: compile_cuda -> {'success': True, 'status': 'success', 'output': '', 'errors': '', 'binary_path': '/kaggle/working/gpu_profiling_system/.kaggle_sandbox/bin/benchmark_actual_boost_clock_mhz', 'source_path': '/kaggle/w
-[AgentLoop] Forced execute_binary guidance after successful compilation
-[AgentLoop] Turn 7/50 (session: pipeline_code_gen_365387)
-[AgentLoop] Calling model with 20 messages
-[model_caller] Trying current provider: longcat
-[model_caller] Calling longcat: model=LongCat-Flash-Chat, url=https://api.longcat.chat/openai/v1/chat/completions
-[model_caller] Messages: 20, Tools: 3
-[model_caller]   Msg 0: role=system, content_type=str, len=20132, is_none=False
-[model_caller]   Msg 1: role=user, content_type=str, len=13057, is_none=False
-[model_caller]   Msg 2: role=system, content_type=str, len=453, is_none=False
-[model_caller]   Msg 3: role=system, content_type=str, len=723, is_none=False
-[model_caller]   Msg 4: role=assistant, content_type=str, len=646, is_none=False
-[model_caller]   Msg 5: role=system, content_type=str, len=400, is_none=False
-[model_caller]   Msg 6: role=assistant, content_type=str, len=274, is_none=False
-[model_caller]   Msg 7: role=system, content_type=str, len=93, is_none=False
-[model_caller]   Msg 8: role=system, content_type=str, len=1222, is_none=False
-[model_caller]   Msg 9: role=assistant, content_type=str, len=634, is_none=False
-[model_caller]   Msg 10: role=system, content_type=str, len=394, is_none=False
-[model_caller]   Msg 11: role=assistant, content_type=str, len=265, is_none=False
-[model_caller]   Msg 12: role=system, content_type=str, len=88, is_none=False
-[model_caller]   Msg 13: role=system, content_type=str, len=524, is_none=False
-[model_caller]   Msg 14: role=system, content_type=str, len=1214, is_none=False
-[model_caller]   Msg 15: role=assistant, content_type=str, len=147, is_none=False
-[model_caller]   Msg 16: role=system, content_type=str, len=571, is_none=False
-[model_caller]   Msg 17: role=system, content_type=str, len=729, is_none=False
-[model_caller]   Msg 18: role=assistant, content_type=str, len=396, is_none=False
-[model_caller]   Msg 19: role=system, content_type=str, len=406, is_none=False
-[model_caller] Debug: Saved messages to debug_messages_longcat_20msg_3tool.json
-[model_caller] POST https://api.longcat.chat/openai/v1/chat/completions model=LongCat-Flash-Chat msgs=20 tools=3
-[model_caller] Sending request to: https://api.longcat.chat/openai/v1/chat/completions
-[model_caller] Attempt 1/2
-[model_caller] Response status: 200
-[model_caller] Got text response: 284 chars
-[AgentLoop] Model response: 284 chars
-[AgentLoop] _already_executed_binary: path=/kaggle/working/gpu_profiling_system/.kaggle_sandbox/bin/benchmark_actual_boost_clock_mhz, last_compile_idx=18, no exec after, result=False
-[AgentLoop] P2 auto-inject: binary_path=/kaggle/working/gpu_profiling_system/.kaggle_sandbox/bin/benchmark_actual_boost_clock_mhz (reason: latest compile not yet executed)
-[AgentLoop] Tool call: execute_binary(['binary_path'])
-[AgentLoop] Tool result: execute_binary -> {'success': True, 'status': 'success', 'stdout': 'actual_boost_clock_mhz: 1316\n', 'stderr': '', 'return_code': 0}
-[AgentLoop] Parsed 1 measurements from stdout: ['actual_boost_clock_mhz']
-[AgentLoop] _find_unmeasured: Using CACHED target list (3 targets)
-[AgentLoop] _find_unmeasured: total=3, measured=3, unmeasured=0, all_targets=['dram_latency_cycles', 'l2_cache_size_mb', 'actual_boost_clock_mhz'], cache=HIT
-[AgentLoop] Recorded 1 new measurements: ['actual_boost_clock_mhz']
-[AgentLoop] _find_unmeasured: Using CACHED target list (3 targets)
-[AgentLoop] _find_unmeasured: total=3, measured=3, unmeasured=0, all_targets=['dram_latency_cycles', 'l2_cache_size_mb', 'actual_boost_clock_mhz'], cache=HIT
-[AgentLoop] Turn 8/50 (session: pipeline_code_gen_365387)
+[AgentLoop] FORCE SWITCH: actual_boost_clock_mhz -> actual_boost_clock_mhz (reason: max retries (2), attempts: 2)
+[AgentLoop] Turn 8/50 (session: pipeline_code_gen_d7fef5)
 [AgentLoop] Triggering C-02 state sync (Turn 8)
-[AgentLoop] C-02 SYNC: Status 3/3 measured, 0 remaining, current='actual_boost_clock_mhz'
-[AgentLoop] Calling model with 22 messages
+[AgentLoop] C-02 SYNC: Status 2/3 measured, 1 remaining, current='actual_boost_clock_mhz'
+[AgentLoop] Calling model with 19 messages
 [model_caller] Trying current provider: longcat
 [model_caller] Calling longcat: model=LongCat-Flash-Chat, url=https://api.longcat.chat/openai/v1/chat/completions
-[model_caller] Messages: 22, Tools: 3
+[model_caller] Messages: 19, Tools: 3
 [model_caller]   Msg 0: role=system, content_type=str, len=20132, is_none=False
-[model_caller]   Msg 1: role=user, content_type=str, len=13057, is_none=False
+[model_caller]   Msg 1: role=user, content_type=str, len=12248, is_none=False
 [model_caller]   Msg 2: role=system, content_type=str, len=453, is_none=False
 [model_caller]   Msg 3: role=system, content_type=str, len=723, is_none=False
-[model_caller]   Msg 4: role=assistant, content_type=str, len=646, is_none=False
+[model_caller]   Msg 4: role=assistant, content_type=str, len=390, is_none=False
 [model_caller]   Msg 5: role=system, content_type=str, len=400, is_none=False
 [model_caller]   Msg 6: role=assistant, content_type=str, len=274, is_none=False
 [model_caller]   Msg 7: role=system, content_type=str, len=93, is_none=False
 [model_caller]   Msg 8: role=system, content_type=str, len=1222, is_none=False
-[model_caller]   Msg 9: role=assistant, content_type=str, len=634, is_none=False
+[model_caller]   Msg 9: role=assistant, content_type=str, len=384, is_none=False
 [model_caller]   Msg 10: role=system, content_type=str, len=394, is_none=False
-[model_caller]   Msg 11: role=assistant, content_type=str, len=265, is_none=False
-[model_caller]   Msg 12: role=system, content_type=str, len=88, is_none=False
-[model_caller]   Msg 13: role=system, content_type=str, len=524, is_none=False
-[model_caller]   Msg 14: role=system, content_type=str, len=1214, is_none=False
-[model_caller]   Msg 15: role=assistant, content_type=str, len=147, is_none=False
-[model_caller]   Msg 16: role=system, content_type=str, len=571, is_none=False
-[model_caller]   Msg 17: role=system, content_type=str, len=729, is_none=False
-[model_caller]   Msg 18: role=assistant, content_type=str, len=396, is_none=False
-[model_caller]   Msg 19: role=system, content_type=str, len=406, is_none=False
-[model_caller]   Msg 20: role=assistant, content_type=str, len=284, is_none=False
-[model_caller]   Msg 21: role=system, content_type=str, len=97, is_none=False
-[model_caller] Debug: Saved messages to debug_messages_longcat_22msg_3tool.json
-[model_caller] POST https://api.longcat.chat/openai/v1/chat/completions model=LongCat-Flash-Chat msgs=22 tools=3
+[model_caller]   Msg 11: role=assistant, content_type=str, len=264, is_none=False
+[model_caller]   Msg 12: role=system, content_type=str, len=89, is_none=False
+[model_caller]   Msg 13: role=system, content_type=str, len=1214, is_none=False
+[model_caller]   Msg 14: role=assistant, content_type=str, len=147, is_none=False
+[model_caller]   Msg 15: role=system, content_type=str, len=571, is_none=False
+[model_caller]   Msg 16: role=assistant, content_type=str, len=147, is_none=False
+[model_caller]   Msg 17: role=system, content_type=str, len=571, is_none=False
+[model_caller]   Msg 18: role=system, content_type=str, len=841, is_none=False
+[model_caller] Debug: Saved messages to debug_messages_longcat_19msg_3tool.json
+[model_caller] POST https://api.longcat.chat/openai/v1/chat/completions model=LongCat-Flash-Chat msgs=19 tools=3
 [model_caller] Sending request to: https://api.longcat.chat/openai/v1/chat/completions
 [model_caller] Attempt 1/2
 [model_caller] Response status: 200
-[model_caller] Got text response: 75 chars
-[AgentLoop] Model response: 75 chars
-[AgentLoop] ⚠️ NO TOOL CALL in Turn 8 (consecutive: 1)
+[model_caller] Got text response: 147 chars
+[AgentLoop] Model response: 147 chars
 [AgentLoop] _find_unmeasured: Using CACHED target list (3 targets)
-[AgentLoop] _find_unmeasured: total=3, measured=3, unmeasured=0, all_targets=['dram_latency_cycles', 'l2_cache_size_mb', 'actual_boost_clock_mhz'], cache=HIT
-[AgentLoop] Turn 9/50 (session: pipeline_code_gen_365387)
-[AgentLoop] Calling model with 24 messages
-[model_caller] Trying current provider: longcat
-[model_caller] Calling longcat: model=LongCat-Flash-Chat, url=https://api.longcat.chat/openai/v1/chat/completions
-[model_caller] Messages: 24, Tools: 3
-[model_caller]   Msg 0: role=system, content_type=str, len=20132, is_none=False
-[model_caller]   Msg 1: role=user, content_type=str, len=13057, is_none=False
-[model_caller]   Msg 2: role=system, content_type=str, len=453, is_none=False
-[model_caller]   Msg 3: role=system, content_type=str, len=723, is_none=False
-[model_caller]   Msg 4: role=assistant, content_type=str, len=646, is_none=False
-[model_caller]   Msg 5: role=system, content_type=str, len=400, is_none=False
-[model_caller]   Msg 6: role=assistant, content_type=str, len=274, is_none=False
-[model_caller]   Msg 7: role=system, content_type=str, len=93, is_none=False
-[model_caller]   Msg 8: role=system, content_type=str, len=1222, is_none=False
-[model_caller]   Msg 9: role=assistant, content_type=str, len=634, is_none=False
-[model_caller]   Msg 10: role=system, content_type=str, len=394, is_none=False
-[model_caller]   Msg 11: role=assistant, content_type=str, len=265, is_none=False
-[model_caller]   Msg 12: role=system, content_type=str, len=88, is_none=False
-[model_caller]   Msg 13: role=system, content_type=str, len=524, is_none=False
-[model_caller]   Msg 14: role=system, content_type=str, len=1214, is_none=False
-[model_caller]   Msg 15: role=assistant, content_type=str, len=147, is_none=False
-[model_caller]   Msg 16: role=system, content_type=str, len=571, is_none=False
-[model_caller]   Msg 17: role=system, content_type=str, len=729, is_none=False
-[model_caller]   Msg 18: role=assistant, content_type=str, len=396, is_none=False
-[model_caller]   Msg 19: role=system, content_type=str, len=406, is_none=False
-[model_caller]   Msg 20: role=assistant, content_type=str, len=284, is_none=False
-[model_caller]   Msg 21: role=system, content_type=str, len=97, is_none=False
-[model_caller]   Msg 22: role=assistant, content_type=str, len=75, is_none=False
-[model_caller]   Msg 23: role=system, content_type=str, len=162, is_none=False
-[model_caller] Debug: Saved messages to debug_messages_longcat_24msg_3tool.json
-[model_caller] POST https://api.longcat.chat/openai/v1/chat/completions model=LongCat-Flash-Chat msgs=24 tools=3
-[model_caller] Sending request to: https://api.longcat.chat/openai/v1/chat/completions
-[model_caller] Attempt 1/2
-[model_caller] Response status: 200
-[model_caller] Got text response: 75 chars
-[AgentLoop] Model response: 75 chars
-[AgentLoop] ⚠️ NO TOOL CALL in Turn 9 (consecutive: 2)
-[AgentLoop] 🚨 STALL DETECTED: 2 consecutive turns without tool calls (MAX=2) - triggering FORCED RECOVERY
-[AgentLoop] _find_unmeasured: Using CACHED target list (3 targets)
-[AgentLoop] _find_unmeasured: total=3, measured=3, unmeasured=0, all_targets=['dram_latency_cycles', 'l2_cache_size_mb', 'actual_boost_clock_mhz'], cache=HIT
-[AgentLoop] _find_unmeasured: Using CACHED target list (3 targets)
-[AgentLoop] _find_unmeasured: total=3, measured=3, unmeasured=0, all_targets=['dram_latency_cycles', 'l2_cache_size_mb', 'actual_boost_clock_mhz'], cache=HIT
-[AgentLoop] Turn 10/50 (session: pipeline_code_gen_365387)
-[AgentLoop] Triggering C-02 state sync (Turn 10)
-[AgentLoop] C-02 SYNC: Status 3/3 measured, 0 remaining, current='actual_boost_clock_mhz'
-[AgentLoop] Calling model with 26 messages
-[model_caller] Trying current provider: longcat
-[model_caller] Calling longcat: model=LongCat-Flash-Chat, url=https://api.longcat.chat/openai/v1/chat/completions
-[model_caller] Messages: 26, Tools: 3
-[model_caller]   Msg 0: role=system, content_type=str, len=20132, is_none=False
-[model_caller]   Msg 1: role=user, content_type=str, len=13057, is_none=False
-[model_caller]   Msg 2: role=system, content_type=str, len=453, is_none=False
-[model_caller]   Msg 3: role=system, content_type=str, len=723, is_none=False
-[model_caller]   Msg 4: role=assistant, content_type=str, len=646, is_none=False
-[model_caller]   Msg 5: role=system, content_type=str, len=400, is_none=False
-[model_caller]   Msg 6: role=assistant, content_type=str, len=274, is_none=False
-[model_caller]   Msg 7: role=system, content_type=str, len=93, is_none=False
-[model_caller]   Msg 8: role=system, content_type=str, len=1222, is_none=False
-[model_caller]   Msg 9: role=assistant, content_type=str, len=634, is_none=False
-[model_caller]   Msg 10: role=system, content_type=str, len=394, is_none=False
-[model_caller]   Msg 11: role=assistant, content_type=str, len=265, is_none=False
-[model_caller]   Msg 12: role=system, content_type=str, len=88, is_none=False
-[model_caller]   Msg 13: role=system, content_type=str, len=524, is_none=False
-[model_caller]   Msg 14: role=system, content_type=str, len=1214, is_none=False
-[model_caller]   Msg 15: role=assistant, content_type=str, len=147, is_none=False
-[model_caller]   Msg 16: role=system, content_type=str, len=571, is_none=False
-[model_caller]   Msg 17: role=system, content_type=str, len=729, is_none=False
-[model_caller]   Msg 18: role=assistant, content_type=str, len=396, is_none=False
-[model_caller]   Msg 19: role=system, content_type=str, len=406, is_none=False
-[model_caller]   Msg 20: role=assistant, content_type=str, len=284, is_none=False
-[model_caller]   Msg 21: role=system, content_type=str, len=97, is_none=False
-[model_caller]   Msg 22: role=assistant, content_type=str, len=75, is_none=False
-[model_caller]   Msg 23: role=system, content_type=str, len=162, is_none=False
-[model_caller]   Msg 24: role=assistant, content_type=str, len=75, is_none=False
-[model_caller]   Msg 25: role=system, content_type=str, len=162, is_none=False
-[model_caller] Debug: Saved messages to debug_messages_longcat_26msg_3tool.json
-[model_caller] POST https://api.longcat.chat/openai/v1/chat/completions model=LongCat-Flash-Chat msgs=26 tools=3
-[model_caller] Sending request to: https://api.longcat.chat/openai/v1/chat/completions
-[model_caller] Attempt 1/2
-[model_caller] Response status: 200
-[model_caller] Got text response: 75 chars
-[AgentLoop] Model response: 75 chars
-[AgentLoop] ⚠️ NO TOOL CALL in Turn 10 (consecutive: 3)
-[AgentLoop] 🚨 STALL DETECTED: 3 consecutive turns without tool calls (MAX=2) - triggering FORCED RECOVERY
-[AgentLoop] _find_unmeasured: Using CACHED target list (3 targets)
-[AgentLoop] _find_unmeasured: total=3, measured=3, unmeasured=0, all_targets=['dram_latency_cycles', 'l2_cache_size_mb', 'actual_boost_clock_mhz'], cache=HIT
-[AgentLoop] _find_unmeasured: Using CACHED target list (3 targets)
-[AgentLoop] _find_unmeasured: total=3, measured=3, unmeasured=0, all_targets=['dram_latency_cycles', 'l2_cache_size_mb', 'actual_boost_clock_mhz'], cache=HIT
-07:30:50 [INFO] src.domain.stage_executor: [StageExecutor] AgentLoop finished for code_gen (turns=10)
-07:30:50 [INFO] src.domain.stage_executor: [StageExecutor] Attempt status: failed
-07:30:50 [INFO] src.domain.stage_executor: [StageExecutor] Stage code_gen finished: failed
-[Pipeline] Stage code_gen completed in 170.35s with status: failed
+[AgentLoop] _find_unmeasured: total=3, measured=2, unmeasured=1, all_targets=['dram_latency_cycles', 'l2_cache_size_mb', 'actual_boost_clock_mhz'], cache=HIT
+08:47:17 [INFO] src.domain.stage_executor: [StageExecutor] AgentLoop finished for code_gen (turns=8)
+08:47:17 [INFO] src.domain.stage_executor: [StageExecutor] Attempt status: failed
+08:47:17 [INFO] src.domain.stage_executor: [StageExecutor] Stage code_gen finished: failed
+[Pipeline] Stage code_gen completed in 158.46s with status: failed
 [Pipeline] Stage code_gen failed: CodeGen compiled but NEVER executed the binary. Measurements are missing. The pipeline requires both compile_cuda AND execute_binary.
 [Pipeline] Executing stage: metric_analysis
 [Pipeline] Handoff validation BLOCKED transition code_gen→metric_analysis: 1 error(s), 0 warning(s)
   - [error] status: Stage code_gen failed: CodeGen compiled but NEVER executed the binary. Measurements are missing. The pipeline requires both compile_cuda AND execute_binary.
 
-[31m[FAIL][0m  (706.6s)
+[31m[FAIL][0m  (1070.6s)
 
 [31m[pipeline] ERROR[0m
   [36mmessage[0m: Stage code_gen failed: CodeGen compiled but NEVER executed the binary. Measurements are missing. The pipeline requires both compile_cuda AND execute_binary.

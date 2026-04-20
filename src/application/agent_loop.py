@@ -659,57 +659,108 @@ class AgentLoop:
                                             and _safe_get_tool(e) == "compile_cuda"
                                             and _safe_get_success(e))
 
-                        # BUG#2 FIX: Detect repeated compilation of already-measured target
-                        if current_target and current_target in self.loop_state.completed_targets:
-                            print(f"[AgentLoop] ⚠️ BUG#2 DETECTED: Re-compiling already-measured target '{current_target}' "
-                                  f"(compile #{compile_count})")
+                        # BUG#7 FIX: Check retry count BEFORE allowing compilation
+                        current_retry = self.loop_state.target_retry_count.get(current_target, 0)
+                        MAX_RETRIES = 2  # Same as max_retries_per_target in TargetStateMachine
 
+                        if current_retry >= MAX_RETRIES:
+                            print(f"[AgentLoop] ⚠️ BUG#7 BLOCKED: Target '{current_target}' has reached "
+                                  f"max retries ({current_retry}/{MAX_RETRIES}), refusing to process compilation")
+                            
+                            # Force mark as completed to prevent infinite loop
+                            if current_target and current_target not in self.loop_state.completed_targets:
+                                self.loop_state.completed_targets.append(current_target)
+                                print(f"[AgentLoop] Force-marked '{current_target}' as completed "
+                                      f"(retry limit reached)")
+                            
+                            # Switch to next target or signal completion
                             unmeasured = self._find_unmeasured_targets()
-                            if unmeasured:
+                            if not unmeasured:
+                                print(f"[AgentLoop] ✅ All targets processed (including force-marked)")
+                                self._emit(EventKind.STOP, {"reason": "all_targets_processed"})
+                                self.stop()
+                                return
+                            else:
                                 next_target = unmeasured[0]
                                 from src.domain.design_principles import get_design_principle
                                 next_principle = get_design_principle(next_target)
-                                next_brief = next_principle[:400] if len(next_principle) > 400 else next_principle
-
-                                force_switch_msg = (
-                                    f"🚨🚨🚨 FORCED TARGET SWITCH 🚨🚨🚨\n\n"
-                                    f"⛔ STOP! You are RE-COMPILING an already-measured target!\n"
-                                    f"✅ Target '{current_target}' was ALREADY measured successfully.\n\n"
+                                
+                                block_msg = (
+                                    f"🚫 TARGET '{current_target}' REACHED RETRY LIMIT ({MAX_RETRIES})\n\n"
+                                    f"It has been force-marked as completed.\n\n"
                                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                    f"👉 FORCED: Switch to NEXT UNMEASURED TARGET\n"
+                                    f"👉 SWITCH TO: **{next_target}**\n"
                                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                                    f"You MUST now measure: **{next_target}**\n\n"
-                                    f"Remaining unmeasured targets: {unmeasured}\n\n"
-                                    f"STEP 1 (MANDATORY): Call compile_cuda with NEW code:\n"
-                                    f'  {{"tool": "compile_cuda", "args": {{"source": "...new kernel for {next_target}...", "flags": ["-O3"]}}}}\n\n'
-                                    f"⚠️ ABSOLUTELY FORBIDDEN:\n"
-                                    f"  • Do NOT compile '{current_target}' again - it's DONE\n"
-                                    f"  • Do NOT output text explanations\n"
-                                    f"  • Do NOT reuse old CUDA code\n\n"
-                                    f"Design principle for '{next_target}':\n{next_brief}"
+                                    f"You MUST now call compile_cuda with NEW code for {next_target}.\n"
+                                    f"Do NOT attempt to fix {current_target} again.\n\n"
+                                    f"Design principle:\n{next_principle[:400]}"
                                 )
                                 self.context_manager.add_entry(
                                     Role.SYSTEM,
-                                    force_switch_msg,
-                                    token_count=120,
+                                    block_msg,
+                                    token_count=100,
                                 )
-                                # Force switch the state machine
                                 self.loop_state.current_target = next_target
                                 self.loop_state.target_retry_count[next_target] = 0
-                                print(f"[AgentLoop] Force-switched from '{current_target}' to '{next_target}' "
-                                      f"(reason: repeated compilation of measured target)")
+                        else:
+                            # BUG#2 FIX: Detect repeated compilation of already-measured target
+                            if current_target and current_target in self.loop_state.completed_targets:
+                                print(f"[AgentLoop] ⚠️ BUG#2 DETECTED: Re-compiling already-measured target '{current_target}' "
+                                      f"(compile #{compile_count})")
 
-                        auto_hint = (
-                            f"✅ Compilation #{compile_count} succeeded! Binary saved to: {bp}\n"
-                            f"👉 IMMEDIATELY call execute_binary to run this binary:\n"
-                            f'{{"tool": "execute_binary", "args": {{"binary_path": "{bp}"}}}}\n\n'
-                            f"⚠️ Do NOT output text. Do NOT write more code. CALL execute_binary NOW."
-                        )
-                        self.context_manager.add_entry(
-                            Role.SYSTEM,
-                            auto_hint,
-                            token_count=50,
-                        )
+                                unmeasured = self._find_unmeasured_targets()
+                                if unmeasured:
+                                    next_target = unmeasured[0]
+                                    from src.domain.design_principles import get_design_principle
+                                    next_principle = get_design_principle(next_target)
+                                    next_brief = next_principle[:400] if len(next_principle) > 400 else next_principle
+
+                                    force_switch_msg = (
+                                        f"🚨🚨🚨 FORCED TARGET SWITCH 🚨🚨🚨\n\n"
+                                        f"⛔ STOP! You are RE-COMPILING an already-measured target!\n"
+                                        f"✅ Target '{current_target}' was ALREADY measured successfully.\n\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                        f"👉 FORCED: Switch to NEXT UNMEASURED TARGET\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                                        f"You MUST now measure: **{next_target}**\n\n"
+                                        f"Remaining unmeasured targets: {unmeasured}\n\n"
+                                        f"STEP 1 (MANDATORY): Call compile_cuda with NEW code:\n"
+                                        f'  {{"tool": "compile_cuda", "args": {{"source": "...new kernel for {next_target}...", "flags": ["-O3"]}}}}\n\n'
+                                        f"⚠️ ABSOLUTELY FORBIDDEN:\n"
+                                        f"  • Do NOT compile '{current_target}' again - it's DONE\n"
+                                        f"  • Do NOT output text explanations\n"
+                                        f"  • Do NOT reuse old CUDA code\n\n"
+                                        f"Design principle for '{next_target}':\n{next_brief}"
+                                    )
+                                    self.context_manager.add_entry(
+                                        Role.SYSTEM,
+                                        force_switch_msg,
+                                        token_count=120,
+                                    )
+                                    # Force switch the state machine
+                                    self.loop_state.current_target = next_target
+                                    self.loop_state.target_retry_count[next_target] = 0
+                                    print(f"[AgentLoop] Force-switched from '{current_target}' to '{next_target}' "
+                                          f"(reason: repeated compilation of measured target)")
+                            else:
+                                # Normal case: successful compilation, need to execute
+                                # BUG#7 FIX: Enhanced execute_binary guidance with higher urgency
+                                auto_hint = (
+                                    f"✅ Compilation #{compile_count} succeeded! Binary saved to: {bp}\n\n"
+                                    f"🔥🔥🔥 CRITICAL NEXT STEP 🔥🔥🔥\n\n"
+                                    f"You MUST now execute this binary to get the measurement!\n\n"
+                                    f'{{"tool": "execute_binary", "args": {{"binary_path": "{bp}"}}}}\n\n'
+                                    f"⛔ ABSOLUTELY FORBIDDEN:\n"
+                                    f"  • Do NOT output any text explanation\n"
+                                    f"  • Do NOT write more CUDA code\n"
+                                    f"  • Do NOT say 'I will now...' - JUST CALL THE TOOL!\n\n"
+                                    f"💥 FAILURE TO CALL execute_binary WILL CAUSE PIPELINE FAILURE!"
+                                )
+                                self.context_manager.add_entry(
+                                    Role.SYSTEM,
+                                    auto_hint,
+                                    token_count=80,  # Increased from 50 to 80
+                                )
                     # Detect implausible measurements (all zeros) after execute_binary
                     if tool_call.name == "execute_binary":
                         stdout = result.get("stdout", "")
