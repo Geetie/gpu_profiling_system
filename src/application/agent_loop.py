@@ -566,8 +566,33 @@ class AgentLoop:
                     token_count=100,  # High visibility
                 )
 
-                # Process as normal tool result (but with blocked status)
-                self._process_tool_result(blocked_response)
+                # 🔧 BUG#6 FIX: Process blocked response using standard tool result flow
+                # (NOT the non-existent _process_tool_result method)
+                import json as _json
+
+                print(f"[AgentLoop] Tool result: {tool_call.name} -> [BLOCKED] {str(blocked_response)[:200]}")
+
+                # Emit tool result event
+                self._emit(EventKind.TOOL_RESULT, {
+                    "tool": tool_call.name,
+                    "status": "blocked",
+                    "reason": block_reason,
+                })
+
+                # Add metadata to response for traceability
+                blocked_response["tool"] = tool_call.name
+                if self.loop_state.current_target:
+                    blocked_response["target"] = self.loop_state.current_target
+
+                # Add to context as assistant message (simulating normal tool result flow)
+                result_str = _json.dumps(blocked_response, ensure_ascii=False)
+                self.context_manager.add_entry(
+                    Role.ASSISTANT,
+                    f"[Tool Result: {tool_call.name}]\n{result_str}",
+                    token_count=min(len(result_str) // 4, 500),  # Cap at 500 tokens
+                )
+
+                # Persist state
                 self._persist_state()
                 return  # Skip actual tool execution
 

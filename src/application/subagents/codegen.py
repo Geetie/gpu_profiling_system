@@ -342,7 +342,18 @@ class CodeGenAgent(BaseSubAgent):
                         "💡 **Performance Target:**\n"
                         "  • Total execution time: <30 seconds\n"
                         "  • Number of test points: ≤10 (focused search)\n"
-                        "  • Precision: ±0.5 MB (sufficient for L2 detection)\n"
+                        "  • Precision: ±0.5 MB (sufficient for L2 detection)\n\n"
+
+                        "🚨🚨🚨 MANDATORY OUTPUT REQUIREMENT (NON-NEGOTIABLE):\n\n"
+                        'Your FINAL print statement MUST be exactly this format:\n'
+                        '  printf("l2_cache_size_mb: %.1f\\n", YOUR_CLIFF_VARIABLE);\n\n'
+                        'Where YOUR_CLIFF_VARIABLE is the detected cliff point (NOT max tested size!)\n\n'
+                        '⚠️ If you output any value outside [0.25, 100], VERIFICATION WILL FAIL!\n'
+                        '⚠️ If you output the maximum tested size instead of cliff point, IT IS WRONG!\n\n'
+                        '**EXAMPLES:**\n'
+                        '✅ Correct: printf("l2_cache_size_mb: 4.0\\n", detected_cliff);  // P100\n'
+                        '❌ Wrong:   printf("l2_cache_size_mb: 16.0\\n", max_tested);    // This is NOT the answer!\n'
+                        '❌ Wrong:   printf("l2_cache_size_mb: 51.0\\n", something);     // Outside valid range!\n'
                     )
                     gpu_context_parts.append(l2_guidance)
 
@@ -463,19 +474,32 @@ class CodeGenAgent(BaseSubAgent):
                         '  printf("DEBUG: raw_freq_hz=%.1f, final_freq_mhz=%.1f\\n",\n'
                         "         host_cycles/elapsed_sec, clock_freq_mhz);\n\n"
 
-                        "🚨 **ANTI-CHEAT SANITY CHECK (MANDATORY):**\n"
-                        "Before printing the final answer, you MUST verify:\n\n"
-                        '  if (clock_freq_mhz < 100 || clock_freq_mhz > 5000) {\n'
-                        '      printf("ERROR: Invalid clock frequency: %.1f MHz\\n", clock_freq_mhz);\n'
-                        '      printf("Expected range: 500-4000 MHz for any NVIDIA GPU\\n");\n'
-                        '      printf("Check your formula! Did you forget to divide by 1000?\\n");\n'
-                        '      // Recalculate with corrected formula:\n'
-                        '      float elapsed_sec_corrected = elapsed_ms / 1000.0f;\n'
-                        '      float freq_corrected = (float)host_cycles / elapsed_sec_corrected / 1e6f;\n'
-                        '      printf("CORRECTED: actual_boost_clock_mhz: %.1f\\n", freq_corrected);\n'
-                        '  } else {\n'
-                        '      printf("actual_boost_clock_mhz: %.1f\\n", clock_freq_mhz);\n'
-                        '  }\n'
+                        "🚨 **ANTI-CHEAT SANITY CHECK (MANDATORY - MUST INCLUDE IN YOUR CODE):**\n\n"
+                        "⚠️⚠️⚠️ WARNING: The following code block is MANDATORY!\n"
+                        "You MUST copy-paste this EXACTLY into your main() function BEFORE the final printf:\n\n"
+
+                        '═════════════════════════════════════════════\n'
+                        '// MANDATORY ANTI-CHEAT BLOCK (DO NOT MODIFY):\n'
+                        'if (clock_freq_mhz < 100 || clock_freq_mhz > 5000) {\n'
+                        '    printf("ERROR: Invalid frequency: %.1f MHz (expected 500-4000 MHz)\\n", clock_freq_mhz);\n'
+                        '    printf("Auto-correcting...\\n");\n'
+                        '    float sec = elapsed_ms / 1000.0f;\n'
+                        '    float corrected = (float)host_cycles / sec / 1e6f;\n'
+                        '    if (corrected > 200 && corrected < 5000) {\n'
+                        '        printf("actual_boost_clock_mhz: %.1f\\n", corrected);\n'
+                        '    } else {\n'
+                        '        printf("FATAL: Cannot auto-correct. Raw cycles=%llu, ms=%.2f\\n", host_cycles, elapsed_ms);\n'
+                        '    }\n'
+                        '} else {\n'
+                        '    printf("actual_boost_clock_mhz: %.1f\\n", clock_freq_mhz);\n'
+                        '}\n'
+                        '═════════════════════════════════════════════\n\n'
+
+                        "**WHY THIS IS MANDATORY:**\n"
+                        "• T8 test output: 26MHz (forgot to divide by 1000 AND 1e6)\n"
+                        "• T9 test output: 38073144MHz (completely wrong formula)\n"
+                        "• Without this check, your measurement WILL fail verification\n\n"
+                        "⚠️ If you skip this code, you are GUARANTEED to output a wrong value!"
                     )
                     gpu_context_parts.append(clock_guidance)
 
