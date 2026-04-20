@@ -1,0 +1,7 @@
+{
+  "targets": [
+    "launch__sm_count",
+    "dram__bytes_read.sum.per_second",
+    "dram__bytes_write.sum.per_second"
+  ]
+}
