@@ -383,88 +383,71 @@ class AgentLoop:
             if tool_call.name == "execute_binary":
                 bp_arg = tool_call.arguments.get("binary_path", "")
                 
-                DEFAULT_BINARY_PATHS = {
-                    "bin/benchmark", "./benchmark", "benchmark",
-                    "/bin/benchmark", "./bin/benchmark", "output/benchmark"
-                }
+                last_bp = self._find_last_binary_path()
+                last_tool_was_compile = self._last_tool_was_compile()
+                already_ran = self._already_executed_binary(last_bp) if last_bp else False
                 
-                should_inject = False
-                inject_reason = ""
+                if not last_bp:
+                    self.context_manager.add_entry(
+                        Role.SYSTEM,
+                        "⚠️ execute_binary requires a 'binary_path' parameter, but no compiled binary exists.\n"
+                        "You MUST call compile_cuda FIRST to compile your CUDA code, then execute_binary.",
+                        token_count=40,
+                    )
+                    empty_exec_pattern = "execute_binary_no_path"
+                    self._failure_tracker.record_failure(empty_exec_pattern)
+                    if self._failure_tracker.should_terminate(empty_exec_pattern):
+                        self._emit(EventKind.STOP, {
+                            "reason": "M4_repeated_empty_exec",
+                            "pattern": empty_exec_pattern,
+                        })
+                        self.stop()
+                    return
                 
-                if not bp_arg or (isinstance(bp_arg, str) and not bp_arg.strip()):
-                    should_inject = True
-                    inject_reason = "empty path"
-                elif isinstance(bp_arg, str) and bp_arg.strip() in DEFAULT_BINARY_PATHS:
-                    should_inject = True
-                    inject_reason = f"default value '{bp_arg}' detected (will be replaced)"
-                
-                if should_inject:
-                    last_bp = self._find_last_binary_path()
-                    last_tool_was_compile = self._last_tool_was_compile()
-                    already_ran = self._already_executed_binary(last_bp) if last_bp else False
-
-                    if last_bp and (not already_ran or last_tool_was_compile):
-                        tool_call.arguments["binary_path"] = last_bp
-                        reason = ("latest compile not yet executed" if last_tool_was_compile else f"replaced {inject_reason}")
-                        print(f"[AgentLoop] P2 auto-inject: binary_path={last_bp} (reason: {reason})")
-                    elif last_bp and already_ran and not last_tool_was_compile:
-                        print(f"[AgentLoop] P2 auto-inject SKIPPED: {last_bp} already executed after latest compile")
-                        unmeasured = self._find_unmeasured_targets()
-                        if unmeasured:
-                            from src.domain.design_principles import get_design_principle
-                            next_target = unmeasured[0]
-                            next_principle = get_design_principle(next_target)
-                            next_brief = next_principle[:300] if len(next_principle) > 300 else next_principle
-                            guidance = (
-                                f"⚠️ You already executed {last_bp} after its latest compilation.\n"
-                                f"But you have NOT measured all targets! Remaining: {unmeasured}\n\n"
-                                f"👉 NEXT TARGET: '{next_target}'\n"
-                                f"You MUST write NEW CUDA code for '{next_target}' and call compile_cuda.\n\n"
-                                f"Design principle for '{next_target}':\n{next_brief}\n\n"
-                                f"WORKFLOW:\n"
-                                f'  1. compile_cuda(source="...full .cu source for {next_target}...", flags=["-O3"])\n'
-                                f"  2. execute_binary(binary_path='<from compile>')\n\n"
-                                f"Do NOT call execute_binary again with the old binary."
-                            )
-                        else:
-                            guidance = (
-                                f"⚠️ You already executed {last_bp} after its latest compilation.\n"
-                                f"All targets have been measured. Output your final results as: target_name: value"
-                            )
-                        self.context_manager.add_entry(
-                            Role.SYSTEM,
-                            guidance,
-                            token_count=60,
+                if already_ran and not last_tool_was_compile:
+                    print(f"[AgentLoop] P2 auto-inject SKIPPED: {last_bp} already executed after latest compile")
+                    unmeasured = self._find_unmeasured_targets()
+                    if unmeasured:
+                        from src.domain.design_principles import get_design_principle
+                        next_target = unmeasured[0]
+                        next_principle = get_design_principle(next_target)
+                        next_brief = next_principle[:300] if len(next_principle) > 300 else next_principle
+                        guidance = (
+                            f"⚠️ You already executed {last_bp} after its latest compilation.\n"
+                            f"But you have NOT measured all targets! Remaining: {unmeasured}\n\n"
+                            f"👉 NEXT TARGET: '{next_target}'\n"
+                            f"You MUST write NEW CUDA code for '{next_target}' and call compile_cuda.\n\n"
+                            f"Design principle for '{next_target}':\n{next_brief}\n\n"
+                            f"WORKFLOW:\n"
+                            f'  1. compile_cuda(source="...full .cu source for {next_target}...", flags=["-O3"])\n'
+                            f"  2. execute_binary(binary_path='<from compile>')\n\n"
+                            f"Do NOT call execute_binary again with the old binary."
                         )
-                        already_ran_pattern = "execute_binary_already_ran"
-                        self._failure_tracker.record_failure(already_ran_pattern)
-                        if self._failure_tracker.should_terminate(already_ran_pattern):
-                            self._emit(EventKind.STOP, {
-                                "reason": "M4_repeated_already_ran",
-                                "pattern": already_ran_pattern,
-                            })
-                            self.stop()
-                            return
-                        self._persist_state()
-                        return
                     else:
-                        self.context_manager.add_entry(
-                            Role.SYSTEM,
-                            "⚠️ execute_binary requires a 'binary_path' parameter, but no compiled binary exists.\n"
-                            "You MUST call compile_cuda FIRST to compile your CUDA code, then execute_binary.",
-                            token_count=40,
+                        guidance = (
+                            f"⚠️ You already executed {last_bp} after its latest compilation.\n"
+                            f"All targets have been measured. Output your final results as: target_name: value"
                         )
-                        empty_exec_pattern = "execute_binary_no_path"
-                        self._failure_tracker.record_failure(empty_exec_pattern)
-                        if self._failure_tracker.should_terminate(empty_exec_pattern):
-                            self._emit(EventKind.STOP, {
-                                "reason": "M4_repeated_empty_exec",
-                                "pattern": empty_exec_pattern,
-                            })
-                            self.stop()
+                    self.context_manager.add_entry(
+                        Role.SYSTEM,
+                        guidance,
+                        token_count=60,
+                    )
+                    already_ran_pattern = "execute_binary_already_ran"
+                    self._failure_tracker.record_failure(already_ran_pattern)
+                    if self._failure_tracker.should_terminate(already_ran_pattern):
+                        self._emit(EventKind.STOP, {
+                            "reason": "M4_repeated_already_ran",
+                            "pattern": already_ran_pattern,
+                        })
+                        self.stop()
                         return
-                else:
-                    print(f"[AgentLoop] Using LLM-provided binary_path: {bp_arg}")
+                    self._persist_state()
+                    return
+                
+                tool_call.arguments["binary_path"] = last_bp
+                reason = "latest compile not yet executed" if last_tool_was_compile else "auto-replaced with actual compiled binary_path"
+                print(f"[AgentLoop] P2 auto-inject: binary_path={last_bp} (reason: {reason})")
             print(f"[AgentLoop] Tool call: {tool_call.name}({list(tool_call.arguments.keys())})")
             self._emit(EventKind.TOOL_CALL, {
                 "tool": tool_call.name,
