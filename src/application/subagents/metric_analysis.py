@@ -519,14 +519,6 @@ class MetricAnalysisAgent(BaseSubAgent):
 
         return {"error": f"Tool '{tool_name}' handler not available"}
 
-        if self.tool_registry.has_tool(tool_name):
-            self._persister.log_entry(
-                action="tool_call_unsupported",
-                details={"tool": tool_name, "error": "No handler registered"},
-            )
-
-        return {"error": f"Tool '{tool_name}' handler not available"}
-
     def _select_metrics_for_target(self, target: str) -> list[str]:
         """Select appropriate NCU metrics based on measurement target.
 
