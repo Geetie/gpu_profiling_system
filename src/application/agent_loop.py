@@ -48,6 +48,9 @@ class LoopState:
     last_tool_call_turn: int = 0
     stall_recovery_triggered: bool = False
 
+    # BUG#4 FIX: Complete target list cache to prevent future targets from being lost
+    all_targets_cache: list[str] | None = None
+
     def to_dict(self) -> dict[str, Any]:
         pt = None
         if self.pending_tool_call:
@@ -69,6 +72,8 @@ class LoopState:
             "consecutive_no_tool_calls": self.consecutive_no_tool_calls,
             "last_tool_call_turn": self.last_tool_call_turn,
             "stall_recovery_triggered": self.stall_recovery_triggered,
+            # BUG#4 FIX: Include complete target list cache
+            "all_targets_cache": self.all_targets_cache,
         }
 
     @classmethod
@@ -94,6 +99,8 @@ class LoopState:
             consecutive_no_tool_calls=data.get("consecutive_no_tool_calls", 0),
             last_tool_call_turn=data.get("last_tool_call_turn", 0),
             stall_recovery_triggered=data.get("stall_recovery_triggered", False),
+            # BUG#4 FIX: Restore complete target list cache
+            all_targets_cache=data.get("all_targets_cache"),
         )
 
 
@@ -1170,23 +1177,21 @@ class AgentLoop:
         - Direct text output with 'key: value' format
         - Various numeric formats (int, float, scientific notation)
 
-        BUG#1 FIX: Now extracts targets from MULTIPLE sources to ensure completeness:
-        1. LoopState initialization data (most reliable)
+        BUG#4 FIX: Now uses CACHED complete target list to prevent future targets from being lost.
+        Priority order:
+        1. Cached target list from previous successful extraction (MOST RELIABLE)
         2. User messages (target_spec from Planner)
         3. System messages (progress reports)
+        4. LoopState reconstruction (last resort - may be incomplete)
         """
         all_targets = []
         measured = set()
         entries = self.context_manager.get_entries()
 
-        # P0 FIX: Extract from LoopState first (if initialized via _init_target_state)
-        if self.loop_state.completed_targets or self.loop_state.current_target:
-            # Try to reconstruct full target list from completed + current + unmeasured
-            known_targets = set(self.loop_state.completed_targets)
-            if self.loop_state.current_target:
-                known_targets.add(self.loop_state.current_target)
-            if len(known_targets) >= 2:  # At least 2 targets suggests we have the list
-                all_targets = list(known_targets)
+        # BUG#4 FIX: P0 - Use cached target list if available (prevents future target loss)
+        if self.loop_state.all_targets_cache and len(self.loop_state.all_targets_cache) >= 2:
+            all_targets = self.loop_state.all_targets_cache.copy()
+            print(f"[AgentLoop] _find_unmeasured: Using CACHED target list ({len(all_targets)} targets)")
 
         # Extract all requested targets from user messages (contains target_spec from Planner)
         if not all_targets:
@@ -1240,11 +1245,30 @@ class AgentLoop:
                         if m:
                             all_targets = re.findall(r'"([^"]+)"', m.group(1))
 
+        # Last resort: Reconstruct from LoopState (may miss future unmeasured targets!)
+        if not all_targets and (self.loop_state.completed_targets or self.loop_state.current_target):
+            known_targets = set(self.loop_state.completed_targets)
+            if self.loop_state.current_target:
+                known_targets.add(self.loop_state.current_target)
+            if len(known_targets) >= 2:
+                all_targets = list(known_targets)
+                print(f"[AgentLoop] _find_unmeasured WARNING: Using LoopState reconstruction "
+                      f"({len(all_targets)} targets) - may miss future targets!")
+
         # CRITICAL: If still no targets found but we have measurements, use measurements as reference
         if not all_targets and self.loop_state.completed_targets:
             print(f"[AgentLoop] _find_unmeasured WARNING: No target list found, "
                   f"using {len(self.loop_state.completed_targets)} completed targets as baseline")
             all_targets = list(self.loop_state.completed_targets)
+
+        # BUG#4 FIX: Cache the complete target list if we successfully extracted one
+        if len(all_targets) >= 2 and self.loop_state.all_targets_cache != all_targets:
+            old_cache = self.loop_state.all_targets_cache
+            self.loop_state.all_targets_cache = all_targets.copy()
+            if old_cache is None:
+                print(f"[AgentLoop] _find_unmeasured: CACHING complete target list ({len(all_targets)} targets): {all_targets}")
+            elif len(old_cache) < len(all_targets):
+                print(f"[AgentLoop] _find_unmeasured: UPDATING cache ({len(old_cache)} -> {len(all_targets)} targets): {all_targets}")
 
         # Enhanced measurement detection with multiple format support
         for entry in entries:
@@ -1285,7 +1309,7 @@ class AgentLoop:
         if all_targets:
             print(f"[AgentLoop] _find_unmeasured: total={len(all_targets)}, "
                   f"measured={len(measured & set(all_targets))}, unmeasured={len(unmeasured)}, "
-                  f"all_targets={all_targets}")
+                  f"all_targets={all_targets}, cache={'HIT' if self.loop_state.all_targets_cache else 'MISS'}")
 
         return unmeasured
 
