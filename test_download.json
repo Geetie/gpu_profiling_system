@@ -1,0 +1,124 @@
+{
+  "agent_version": "memxlife-agent-framework-0.2",
+  "spec": {
+    "targets": [
+      "physical_sm_count",
+      "actual_core_clock_mhz",
+      "peak_fp32_tflops",
+      "dram_bandwidth_gbps",
+      "l2_cache_size_kb",
+      "l1_latency_cycles",
+      "l2_latency_cycles"
+    ]
+  },
+  "resolved_executable": null,
+  "binary_origin": "none",
+  "model": "gpt-5.4",
+  "per_target": [
+    {
+      "target": "physical_sm_count",
+      "kind": "hardware_probe",
+      "success": false,
+      "message": "RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+      "metric_value": null,
+      "source_path": null,
+      "program_log_excerpt": "",
+      "ncu_excerpt": ""
+    },
+    {
+      "target": "actual_core_clock_mhz",
+      "kind": "hardware_probe",
+      "success": false,
+      "message": "RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+      "metric_value": null,
+      "source_path": null,
+      "program_log_excerpt": "",
+      "ncu_excerpt": ""
+    },
+    {
+      "target": "peak_fp32_tflops",
+      "kind": "hardware_probe",
+      "success": false,
+      "message": "RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+      "metric_value": null,
+      "source_path": null,
+      "program_log_excerpt": "",
+      "ncu_excerpt": ""
+    },
+    {
+      "target": "dram_bandwidth_gbps",
+      "kind": "hardware_probe",
+      "success": false,
+      "message": "RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+      "metric_value": null,
+      "source_path": null,
+      "program_log_excerpt": "",
+      "ncu_excerpt": ""
+    },
+    {
+      "target": "l2_cache_size_kb",
+      "kind": "hardware_probe",
+      "success": false,
+      "message": "RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+      "metric_value": null,
+      "source_path": null,
+      "program_log_excerpt": "",
+      "ncu_excerpt": ""
+    },
+    {
+      "target": "l1_latency_cycles",
+      "kind": "hardware_probe",
+      "success": false,
+      "message": "RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+      "metric_value": null,
+      "source_path": null,
+      "program_log_excerpt": "",
+      "ncu_excerpt": ""
+    },
+    {
+      "target": "l2_latency_cycles",
+      "kind": "hardware_probe",
+      "success": false,
+      "message": "RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+      "metric_value": null,
+      "source_path": null,
+      "program_log_excerpt": "",
+      "ncu_excerpt": ""
+    }
+  ],
+  "build_log": [
+    "Loaded 7 targets; model='gpt-5.4'",
+    "=== [1/7] physical_sm_count ===",
+    "hardware probe physical_sm_count attempt 1: RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+    "hardware probe physical_sm_count attempt 2: RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+    "hardware probe physical_sm_count attempt 3: RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+    "=== [2/7] actual_core_clock_mhz ===",
+    "hardware probe actual_core_clock_mhz attempt 1: RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+    "hardware probe actual_core_clock_mhz attempt 2: RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+    "hardware probe actual_core_clock_mhz attempt 3: RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+    "=== [3/7] peak_fp32_tflops ===",
+    "hardware probe peak_fp32_tflops attempt 1: RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+    "hardware probe peak_fp32_tflops attempt 2: RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+    "hardware probe peak_fp32_tflops attempt 3: RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+    "=== [4/7] dram_bandwidth_gbps ===",
+    "hardware probe dram_bandwidth_gbps attempt 1: RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+    "hardware probe dram_bandwidth_gbps attempt 2: RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+    "hardware probe dram_bandwidth_gbps attempt 3: RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+    "=== [5/7] l2_cache_size_kb ===",
+    "hardware probe l2_cache_size_kb attempt 1: RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+    "hardware probe l2_cache_size_kb attempt 2: RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+    "hardware probe l2_cache_size_kb attempt 3: RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+    "=== [6/7] l1_latency_cycles ===",
+    "hardware probe l1_latency_cycles attempt 1: RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+    "hardware probe l1_latency_cycles attempt 2: RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+    "hardware probe l1_latency_cycles attempt 3: RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+    "=== [7/7] l2_latency_cycles ===",
+    "hardware probe l2_latency_cycles attempt 1: RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+    "hardware probe l2_latency_cycles attempt 2: RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+    "hardware probe l2_latency_cycles attempt 3: RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')"
+  ],
+  "synthesis": {
+    "error": "RuntimeError('LLM chat failed after 3 attempts: Error code: 400 - {\\'error\\': {\\'message\\': \"Unsupported parameter: \\'max_tokens\\' is not supported with this model. Use \\'max_completion_tokens\\' instead.\", \\'type\\': \\'invalid_request_error\\', \\'param\\': \\'max_tokens\\', \\'code\\': \\'unsupported_parameter\\'}}')",
+    "raw_excerpt": ""
+  }
+}

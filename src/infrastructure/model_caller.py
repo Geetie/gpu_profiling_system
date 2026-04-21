@@ -403,7 +403,7 @@ def _call_openai_compatible(
     payload = {
         "model": model,
         "messages": cleaned_messages,
-        "max_tokens": max_tokens,
+        "max_completion_tokens": max_tokens,
         "stream": False,
     }
     if tools:
