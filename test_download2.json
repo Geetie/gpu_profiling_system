@@ -1,0 +1,9 @@
+{
+  "physical_sm_count": null,
+  "actual_core_clock_mhz": null,
+  "peak_fp32_tflops": null,
+  "dram_bandwidth_gbps": null,
+  "l2_cache_size_kb": null,
+  "l1_latency_cycles": null,
+  "l2_latency_cycles": null
+}

@@ -1444,6 +1444,59 @@ class AgentLoop:
             print(f"[AgentLoop] ⚠️ NO TOOL CALL in Turn {self.loop_state.turn_count} "
                   f"(consecutive: {self.loop_state.consecutive_no_tool_calls})")
 
+            # CRITICAL FIX: Auto-execute binary if pending_execute_binary is set
+            # This fixes the issue where LLM compiles but never executes
+            if (self.loop_state.pending_execute_binary and 
+                self.loop_state.last_compiled_binary and
+                self.loop_state.consecutive_no_tool_calls >= 1):
+                
+                binary_path = self.loop_state.last_compiled_binary
+                print(f"[AgentLoop] 🚨 AUTO-EXECUTE: LLM failed to call execute_binary after compile_cuda")
+                print(f"[AgentLoop] 🚨 AUTO-EXECUTE: Automatically executing binary: {binary_path}")
+                
+                # Create auto-execute tool call
+                auto_tool_call = ToolCall(
+                    name="execute_binary",
+                    arguments={"binary_path": binary_path}
+                )
+                self._model_tool_call = auto_tool_call
+                
+                # Execute the binary
+                try:
+                    result = self._execute_tool_call(auto_tool_call)
+                    print(f"[AgentLoop] ✅ AUTO-EXECUTE SUCCESS: {result}")
+                    
+                    # Clear pending state
+                    self.loop_state.pending_execute_binary = False
+                    self.loop_state.last_compiled_binary = None
+                    self.loop_state.consecutive_no_tool_calls = 0
+                    
+                    # Add result to context
+                    result_str = json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result)
+                    self.context_manager.add_entry(
+                        Role.ASSISTANT,
+                        result_str,
+                        token_count=50,
+                    )
+                    
+                    # Emit tool result event
+                    self._emit(EventKind.TOOL_RESULT, {
+                        "tool": "execute_binary",
+                        "status": "success",
+                        "auto_executed": True,
+                    })
+                    
+                    # Update progress
+                    if isinstance(result, dict):
+                        self._update_control_plane_progress(result)
+                    
+                    self._persist_state()
+                    return  # Exit this turn after auto-execution
+                    
+                except Exception as e:
+                    print(f"[AgentLoop] ❌ AUTO-EXECUTE FAILED: {e}")
+                    # Continue with normal stall handling
+            
             self.context_manager.add_entry(
                 Role.ASSISTANT,
                 self._model_output,
