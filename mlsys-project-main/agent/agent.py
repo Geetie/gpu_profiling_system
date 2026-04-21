@@ -7,7 +7,7 @@ from llm.openai_client import client
 ROOT = Path(__file__).resolve().parents[1]
 PROMPT_DIR = ROOT / "agent" / "prompts"
 STATE_FILE = ROOT / "output.json"
-FIRST_ITERATION_METRICS_FILE = "/target/target_spec.json"
+FIRST_ITERATION_METRICS_FILE = Path("/target/target_spec.json")
 
 class ProfilingAgent:
     def __init__(self):

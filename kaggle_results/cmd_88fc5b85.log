@@ -1,9 +1,0 @@
-Command: which ncu
-CWD: /kaggle/working
-Exit code: 0
-
-STDOUT:
-/usr/local/cuda/bin/ncu
-
-
-STDERR:
