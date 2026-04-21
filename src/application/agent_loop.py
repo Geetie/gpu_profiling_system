@@ -884,16 +884,24 @@ class AgentLoop:
                 reason = "latest compile not yet executed" if last_tool_was_compile else "auto-replaced with actual compiled binary_path"
                 print(f"[AgentLoop] P2 auto-inject: binary_path={last_bp} (reason: {reason})")
             # P0 FIX #3: Check compile_cuda attempt limit BEFORE processing
+            # CRITICAL FIX: Check compile_cuda attempt limit FIRST (before any other processing)
+            # This must be checked for ALL compile_cuda calls, including blocked ones
             if tool_call.name == "compile_cuda":
                 current_target = self.loop_state.current_target
                 if current_target:
-                    current_attempts = self.loop_state.compile_attempts.get(current_target, 0)
+                    # Increment compile attempt counter for every compile_cuda call
+                    self.loop_state.compile_attempts[current_target] = self.loop_state.compile_attempts.get(current_target, 0) + 1
+                    current_attempts = self.loop_state.compile_attempts[current_target]
+                    print(f"[AgentLoop] 📝 P0-FIX#3: compile_cuda attempt #{current_attempts} for '{current_target}'")
+                    
+                    # Check if attempt limit reached
                     if current_attempts >= self.loop_state.MAX_COMPILE_ATTEMPTS_PER_TARGET:
                         print(f"[AgentLoop] 🚨 P0-FIX#3: compile_cuda attempt limit reached for '{current_target}' "
                               f"({current_attempts}/{self.loop_state.MAX_COMPILE_ATTEMPTS_PER_TARGET})")
-                        # Force switch to next target
-                        remaining = self._find_unmeasured_targets()
-                        remaining = [t for t in remaining if t != current_target]
+                        
+                        # Mark current target as failed
+                        if current_target not in self.loop_state.completed_targets:
+                            self.loop_state.completed_targets.append(current_target)
                         
                         # CRITICAL FIX: Check if all targets have reached their limit
                         all_targets_exhausted = True
@@ -911,14 +919,14 @@ class AgentLoop:
                             self.stop()
                             return
                         
+                        # Force switch to next target
+                        remaining = self._find_unmeasured_targets()
+                        remaining = [t for t in remaining if t != current_target]
+                        
                         if remaining:
                             next_target = remaining[0]
                             print(f"[AgentLoop] 🚨 P0-FIX#3: Force-switching to '{next_target}' due to compile limit")
                             self._switch_to_target(next_target, reason="compile_attempt_limit_reached")
-                            
-                            # Mark current target as failed
-                            if current_target not in self.loop_state.completed_targets:
-                                self.loop_state.completed_targets.append(current_target)
                             
                             # Inject guidance
                             force_guidance = (
@@ -933,11 +941,7 @@ class AgentLoop:
             
             # CRITICAL FIX: Enforce compile_cuda → execute_binary sequence
             if tool_call.name == "compile_cuda" and self.loop_state.pending_execute_binary:
-                # Increment compile attempt counter (P0 FIX #3)
-                current_target = self.loop_state.current_target
-                if current_target:
-                    self.loop_state.compile_attempts[current_target] = self.loop_state.compile_attempts.get(current_target, 0) + 1
-                    print(f"[AgentLoop] 📝 P0-FIX#3: compile_cuda attempt #{self.loop_state.compile_attempts[current_target]} for '{current_target}'")
+                # Note: compile attempt counter is already incremented above for ALL compile_cuda calls
                 
                 # LLM is trying to compile again without executing previous binary
                 # AUTO-EXECUTE: Instead of just blocking, automatically execute the pending binary
