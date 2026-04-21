@@ -833,11 +833,38 @@ class StageExecutor:
                     assistant_outputs.append(content)
 
         final_text = assistant_outputs[-1] if assistant_outputs else ""
+        
+        # P0 FIX #2: Extract measurements from tool_results stdout
+        # This ensures measurements are properly saved to results.json
+        measurements: dict[str, float] = {}
+        for tr in tool_results:
+            if isinstance(tr, dict):
+                stdout = tr.get("stdout", "") or tr.get("output", "")
+                if stdout:
+                    # Parse key: value format from stdout
+                    for line in stdout.splitlines():
+                        line = line.strip()
+                        if ":" in line and not line.startswith("//") and not line.startswith("#"):
+                            parts = line.split(":", 1)
+                            if len(parts) == 2:
+                                key = parts[0].strip()
+                                val_str = parts[1].strip()
+                                try:
+                                    val = float(val_str)
+                                    measurements[key] = val
+                                except ValueError:
+                                    pass
+        
         data: dict[str, Any] = {
             "tool_results": tool_results,
             "final_output": final_text,
             "num_tool_calls": len(tool_results),
         }
+        
+        # Add measurements if found
+        if measurements:
+            data["measurements"] = measurements
+            logger.info("[StageExecutor] P0-FIX#2: Extracted %d measurements from tool_results", len(measurements))
 
         _empty_placeholders = {
             "[Empty model output - will retry next turn]",

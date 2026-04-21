@@ -54,6 +54,11 @@ class LoopState:
     # CRITICAL FIX: Track if execute_binary is required after compile_cuda
     pending_execute_binary: bool = False
     last_compiled_binary: str | None = None
+    
+    # P0 FIX #3: Track compile_cuda attempts per target (including blocked attempts)
+    # This prevents infinite loops where LLM repeatedly tries compile_cuda
+    compile_attempts: dict[str, int] = field(default_factory=dict)
+    MAX_COMPILE_ATTEMPTS_PER_TARGET: int = 3  # Max 3 attempts (including blocked)
 
     def to_dict(self) -> dict[str, Any]:
         pt = None
@@ -259,6 +264,40 @@ class AgentLoop:
         self.target_start_time[new_target] = _time.time()
         self._last_turn_time = _time.time()
         print(f"[AgentLoop] ⏱️ Timer reset for '{new_target}' (budget: {self.MAX_TARGET_TIME_BUDGET}s)")
+    
+    def _switch_to_target(self, new_target: str, reason: str = "") -> None:
+        """P0 FIX #1: Unified target switching with proper state cleanup.
+        
+        This method ensures all relevant state is properly reset when switching targets,
+        preventing issues where pending state from the old target interferes with the new target.
+        
+        Args:
+            new_target: The target to switch to
+            reason: Optional reason for the switch (for logging)
+        """
+        old_target = self.loop_state.current_target
+        
+        # Clear pending execute_binary state
+        if self.loop_state.pending_execute_binary:
+            print(f"[AgentLoop] 🧹 P0-FIX#1: Clearing pending_execute_binary state when switching "
+                  f"from '{old_target}' to '{new_target}'")
+            self.loop_state.pending_execute_binary = False
+            self.loop_state.last_compiled_binary = None
+        
+        # Reset retry count for new target
+        self.loop_state.target_retry_count[new_target] = 0
+        
+        # Reset stall detection
+        self.loop_state.consecutive_no_tool_calls = 0
+        
+        # Update current target
+        self.loop_state.current_target = new_target
+        
+        # Reset timer for new target
+        self._reset_target_timer(new_target)
+        
+        reason_str = f" (reason: {reason})" if reason else ""
+        print(f"[AgentLoop] 🎯 Switched from '{old_target}' to '{new_target}'{reason_str}")
     
     def _should_block_tool(self, tool_name: str) -> bool:
         """Check if a tool should be blocked by the Interceptor (BUG#5 FIX)."""
@@ -646,6 +685,14 @@ class AgentLoop:
                             print(f"[AgentLoop] 🔧 BUG#1 FIX: Cleared time tracker for "
                                   f"'{current_target_for_check}' (was accumulating)")
 
+                        # P0 FIX #1: Clear pending_execute_binary state when switching targets
+                        # This prevents the new target from being blocked by old target's pending state
+                        if self.loop_state.pending_execute_binary:
+                            print(f"[AgentLoop] 🧹 P0-FIX#1: Clearing pending_execute_binary state "
+                                  f"(was: {self.loop_state.last_compiled_binary})")
+                            self.loop_state.pending_execute_binary = False
+                            self.loop_state.last_compiled_binary = None
+                        
                         self.loop_state.consecutive_no_tool_calls = 0
                         self._reset_target_timer(next_target)
                         
@@ -836,8 +883,45 @@ class AgentLoop:
                 tool_call.arguments["binary_path"] = last_bp
                 reason = "latest compile not yet executed" if last_tool_was_compile else "auto-replaced with actual compiled binary_path"
                 print(f"[AgentLoop] P2 auto-inject: binary_path={last_bp} (reason: {reason})")
+            # P0 FIX #3: Check compile_cuda attempt limit BEFORE processing
+            if tool_call.name == "compile_cuda":
+                current_target = self.loop_state.current_target
+                if current_target:
+                    current_attempts = self.loop_state.compile_attempts.get(current_target, 0)
+                    if current_attempts >= self.loop_state.MAX_COMPILE_ATTEMPTS_PER_TARGET:
+                        print(f"[AgentLoop] 🚨 P0-FIX#3: compile_cuda attempt limit reached for '{current_target}' "
+                              f"({current_attempts}/{self.loop_state.MAX_COMPILE_ATTEMPTS_PER_TARGET})")
+                        # Force switch to next target
+                        remaining = self._find_unmeasured_targets()
+                        remaining = [t for t in remaining if t != current_target]
+                        if remaining:
+                            next_target = remaining[0]
+                            print(f"[AgentLoop] 🚨 P0-FIX#3: Force-switching to '{next_target}' due to compile limit")
+                            self._switch_to_target(next_target, reason="compile_attempt_limit_reached")
+                            
+                            # Mark current target as failed
+                            if current_target not in self.loop_state.completed_targets:
+                                self.loop_state.completed_targets.append(current_target)
+                            
+                            # Inject guidance
+                            force_guidance = (
+                                f"🚨 COMPILE ATTEMPT LIMIT REACHED for '{current_target}'!\n\n"
+                                f"You have attempted compile_cuda {current_attempts} times.\n"
+                                f"The system is FORCING you to move to the next target.\n\n"
+                                f"👉 NEXT TARGET: **{next_target}**\n"
+                                f"Generate CUDA code for '{next_target}' NOW."
+                            )
+                            self.context_manager.add_entry(Role.SYSTEM, force_guidance, token_count=80)
+                            return
+            
             # CRITICAL FIX: Enforce compile_cuda → execute_binary sequence
             if tool_call.name == "compile_cuda" and self.loop_state.pending_execute_binary:
+                # Increment compile attempt counter (P0 FIX #3)
+                current_target = self.loop_state.current_target
+                if current_target:
+                    self.loop_state.compile_attempts[current_target] = self.loop_state.compile_attempts.get(current_target, 0) + 1
+                    print(f"[AgentLoop] 📝 P0-FIX#3: compile_cuda attempt #{self.loop_state.compile_attempts[current_target]} for '{current_target}'")
+                
                 # LLM is trying to compile again without executing previous binary
                 # AUTO-EXECUTE: Instead of just blocking, automatically execute the pending binary
                 binary_path = self.loop_state.last_compiled_binary
