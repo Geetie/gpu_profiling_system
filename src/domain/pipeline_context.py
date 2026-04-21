@@ -174,18 +174,36 @@ class PipelineContext:
 
         Ensures MetricAnalysis and Verification can see the full chain
         of CodeGen measurements even if they don't produce their own.
+        
+        CRITICAL FIX: Always propagate measurements, even if downstream stage failed.
+        This ensures measurements are available for final results even when
+        MetricAnalysis or Verification fails.
         """
-        if not self.code_gen_data or not result.is_success():
+        if not self.code_gen_data:
             return result
 
-        carry_keys = [
-            "measurements", "code_gen_output", "tool_results",
-            "code_gen_final_output",
-        ]
-        for key in carry_keys:
-            src_key = "final_output" if key == "code_gen_final_output" else key
-            if key not in result.data and src_key in self.code_gen_data:
-                result.data[key] = self.code_gen_data[src_key]
+        # Always propagate measurements, regardless of result status
+        # This is critical for ensuring measurements appear in final output
+        if "measurements" in self.code_gen_data:
+            existing = result.data.get("measurements", {})
+            if isinstance(existing, dict):
+                for k, v in self.code_gen_data["measurements"].items():
+                    if k not in existing:
+                        existing[k] = v
+                result.data["measurements"] = existing
+            else:
+                result.data["measurements"] = dict(self.code_gen_data["measurements"])
+
+        # Only propagate other data if result is successful
+        if result.is_success():
+            carry_keys = [
+                "code_gen_output", "tool_results",
+                "code_gen_final_output",
+            ]
+            for key in carry_keys:
+                src_key = "final_output" if key == "code_gen_final_output" else key
+                if key not in result.data and src_key in self.code_gen_data:
+                    result.data[key] = self.code_gen_data[src_key]
 
         return result
 
