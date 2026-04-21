@@ -839,31 +839,83 @@ class AgentLoop:
             # CRITICAL FIX: Enforce compile_cuda → execute_binary sequence
             if tool_call.name == "compile_cuda" and self.loop_state.pending_execute_binary:
                 # LLM is trying to compile again without executing previous binary
-                error_msg = (
-                    f"❌ SEQUENCE ERROR: You MUST call execute_binary BEFORE compile_cuda again!\n\n"
-                    f"You compiled a binary but never executed it.\n"
-                    f"Pending binary: {self.loop_state.last_compiled_binary}\n\n"
-                    f"👉 REQUIRED ACTION: Call execute_binary first:\n"
-                    f'  {{"tool": "execute_binary", "args": {{"binary_path": "{self.loop_state.last_compiled_binary}"}}}}\n\n'
-                    f"After execute_binary returns results, you can compile the next target."
+                # AUTO-EXECUTE: Instead of just blocking, automatically execute the pending binary
+                binary_path = self.loop_state.last_compiled_binary
+                print(f"[AgentLoop] 🚨 AUTO-EXECUTE TRIGGERED: compile_cuda blocked, executing pending binary: {binary_path}")
+                
+                # Create and execute auto-execute tool call
+                auto_tool_call = ToolCall(
+                    name="execute_binary",
+                    arguments={"binary_path": binary_path}
                 )
-                self.context_manager.add_entry(Role.SYSTEM, error_msg, token_count=80)
-                print(f"[AgentLoop] BLOCKED: compile_cuda called while execute_binary is pending")
-                # Return error result instead of executing
-                result = {
-                    "success": False,
-                    "status": "error",
-                    "error": "SEQUENCE_ERROR: Must call execute_binary before compile_cuda",
-                    "pending_binary": self.loop_state.last_compiled_binary,
-                    "hint": f'Call execute_binary with binary_path="{self.loop_state.last_compiled_binary}" first'
-                }
-                self.context_manager.add_entry(
-                    Role.ASSISTANT,
-                    json.dumps(result, ensure_ascii=False),
-                    token_count=40,
-                )
-                self._persist_state()
-                return
+                
+                try:
+                    auto_result = self._execute_tool_call(auto_tool_call)
+                    print(f"[AgentLoop] ✅ AUTO-EXECUTE SUCCESS: {auto_result}")
+                    
+                    # Clear pending state
+                    self.loop_state.pending_execute_binary = False
+                    self.loop_state.last_compiled_binary = None
+                    
+                    # Add auto-execute result to context
+                    auto_result_str = json.dumps(auto_result, ensure_ascii=False) if isinstance(auto_result, dict) else str(auto_result)
+                    self.context_manager.add_entry(
+                        Role.ASSISTANT,
+                        auto_result_str,
+                        token_count=50,
+                    )
+                    
+                    # Emit tool result event
+                    self._emit(EventKind.TOOL_RESULT, {
+                        "tool": "execute_binary",
+                        "status": "success",
+                        "auto_executed": True,
+                    })
+                    
+                    # Update progress
+                    if isinstance(auto_result, dict):
+                        self._update_control_plane_progress(auto_result)
+                    
+                    # Now add guidance about the blocked compile_cuda
+                    error_msg = (
+                        f"✅ AUTO-EXECUTED: Your pending binary was automatically executed!\n\n"
+                        f"⚠️ WARNING: You tried to call compile_cuda again without executing.\n"
+                        f"The system AUTO-EXECUTED the pending binary for you.\n\n"
+                        f"📋 NEXT STEP: You can now compile for the NEXT target.\n"
+                        f'Call compile_cuda with NEW code for the next target.'
+                    )
+                    self.context_manager.add_entry(Role.SYSTEM, error_msg, token_count=60)
+                    
+                    self._persist_state()
+                    return
+                    
+                except Exception as e:
+                    print(f"[AgentLoop] ❌ AUTO-EXECUTE FAILED: {e}")
+                    # Fall back to original blocking behavior
+                    error_msg = (
+                        f"❌ SEQUENCE ERROR: You MUST call execute_binary BEFORE compile_cuda again!\n\n"
+                        f"You compiled a binary but never executed it.\n"
+                        f"Pending binary: {binary_path}\n\n"
+                        f"👉 REQUIRED ACTION: Call execute_binary first:\n"
+                        f'  {{"tool": "execute_binary", "args": {{"binary_path": "{binary_path}"}}}}\n\n'
+                        f"After execute_binary returns results, you can compile the next target."
+                    )
+                    self.context_manager.add_entry(Role.SYSTEM, error_msg, token_count=80)
+                    
+                    result = {
+                        "success": False,
+                        "status": "error",
+                        "error": "SEQUENCE_ERROR: Must call execute_binary before compile_cuda",
+                        "pending_binary": binary_path,
+                        "hint": f'Call execute_binary with binary_path="{binary_path}" first'
+                    }
+                    self.context_manager.add_entry(
+                        Role.ASSISTANT,
+                        json.dumps(result, ensure_ascii=False),
+                        token_count=40,
+                    )
+                    self._persist_state()
+                    return
 
             print(f"[AgentLoop] Tool call: {tool_call.name}({list(tool_call.arguments.keys())})")
             self._emit(EventKind.TOOL_CALL, {
