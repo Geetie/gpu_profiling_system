@@ -7,7 +7,13 @@
 # Example format (replace with your actual value after submission):
 # output_file=7f3d6d3b0d4f0b2f7a6d6d43b4b9fabc
 
+# Previous test
 OUTPUT_FILE="a09e2b623f7ff8f596bd658a140c77e3"
 SUBMISSION_TIME="2026-04-21 15:50:00"
 SERVER_URL="http://10.176.37.31:8080"
 MISSION_ID="a09e2b623f7ff8f596bd658a140c77e3"
+
+# Latest test with measurement propagation fixes
+LATEST_OUTPUT_FILE="757bc2866dcaaff9a4204406b57266f4"
+LATEST_SUBMISSION_TIME="2026-04-21 23:15:00"
+LATEST_MISSION_ID="757bc2866dcaaff9a4204406b57266f4"
