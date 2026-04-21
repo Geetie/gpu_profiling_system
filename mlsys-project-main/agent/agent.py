@@ -7,7 +7,7 @@ from llm.openai_client import client
 ROOT = Path(__file__).resolve().parents[1]
 PROMPT_DIR = ROOT / "agent" / "prompts"
 STATE_FILE = ROOT / "output.json"
-FIRST_ITERATION_METRICS_FILE = Path("/target/target_spec.json")  # FIX: 改为Path对象
+FIRST_ITERATION_METRICS_FILE = "/target/target_spec.json"
 
 class ProfilingAgent:
     def __init__(self):
@@ -73,25 +73,19 @@ class ProfilingAgent:
         return text.strip()
 
     def load_first_iteration_metrics(self) -> list[str]:
-        # FIX: 使用os.path.exists检查字符串路径，或先用Path转换
         if not FIRST_ITERATION_METRICS_FILE.exists():
-            # 如果文件不存在，返回默认指标
-            print(f"Warning: {FIRST_ITERATION_METRICS_FILE} not found, using default metrics")
-            return [
-                "sm__throughput.avg.pct_of_peak_sustained_elapsed",
-                "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed",
-                "dram__throughput.avg.pct_of_peak_sustained_elapsed"
-            ]
+            raise FileNotFoundError(
+                f"First-iteration metrics file not found: {FIRST_ITERATION_METRICS_FILE}"
+            )
 
         with open(FIRST_ITERATION_METRICS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        # FIX: 处理target_spec.json格式 {"targets": [...]}
-        metrics = data.get("targets", data.get("metrics", []))
+        metrics = data.get("metrics", [])
         if not isinstance(metrics, list) or not all(isinstance(m, str) and m.strip() for m in metrics):
             raise ValueError(
                 f"Invalid metrics format in {FIRST_ITERATION_METRICS_FILE}, expected "
-                f'{{"targets": ["metric1", "metric2", ...]}}'
+                f'{{"metrics": ["metric1", "metric2", ...]}}'
             )
 
         return [m.strip() for m in metrics]
@@ -195,8 +189,7 @@ class ProfilingAgent:
         return new_version
 
     def iterate(self):
-        # FIX: 增加迭代次数，确保能完成工作
-        while not self.state["done"] and self.state["iteration"] < 3:  # 改为3次迭代
+        while not self.state["done"] and self.state["iteration"] < 1:  # Max 3 iterations for demo
             self.state["iteration"] += 1
             print(f"Iteration {self.state['iteration']}")
 
@@ -207,14 +200,7 @@ class ProfilingAgent:
                     print(f"Using recommended metrics for this iteration: {metrics}")
 
             try:
-                # FIX: 只在有描述时生成新benchmark，第一次使用现有的
-                if self.state["iteration"] == 1:
-                    # 第一次迭代使用现有的gemm.cu
-                    print("Using existing gemm benchmark for first iteration")
-                else:
-                    description = self.state.get("last_description", "Generate optimized matrix multiplication kernel")
-                    self.generate_new_benchmark(description)
-                
+                self.generate_new_benchmark("")
                 profile_output = self.run_profile(metrics=metrics)
                 print(profile_output)
             except RuntimeError as exc:
@@ -253,14 +239,10 @@ class ProfilingAgent:
             recommended_metrics = self._parse_metrics(analysis.get("recommended_metrics"))
             self.state.setdefault("recommended_metrics_history", []).append(recommended_metrics)
             self.state["analysis_history"][-1]["recommended_metrics"] = recommended_metrics
-            
-            # 保存描述用于下次迭代
-            self.state["last_description"] = analysis["new_benchmark_description"]
 
             try:
-                if self.state["iteration"] < 3:  # 不是最后一次迭代才生成新benchmark
-                    self.generate_new_benchmark(analysis["new_benchmark_description"])
-                    self.state["new_benchmarks"].append(analysis["new_benchmark_description"])
+                self.generate_new_benchmark(analysis["new_benchmark_description"])
+                self.state["new_benchmarks"].append(analysis["new_benchmark_description"])
             except RuntimeError as exc:
                 error_info = str(exc)
                 self.state["error_history"].append({
@@ -274,23 +256,7 @@ class ProfilingAgent:
 
             self.save_state()
 
-        # FIX: 生成输出文件
-        self._generate_output()
         print("Agent finished.")
-    
-    def _generate_output(self):
-        """Generate output file for evaluation system"""
-        output_data = {
-            "iterations": self.state["iteration"],
-            "bottleneck": self.state.get("current_bottleneck"),
-            "analysis_history": self.state["analysis_history"],
-            "error_history": self.state["error_history"]
-        }
-        
-        output_file = ROOT / "output.json"
-        with open(output_file, 'w') as f:
-            json.dump(output_data, f, indent=2)
-        print(f"Output written to {output_file}")
 
 if __name__ == "__main__":
     agent = ProfilingAgent()

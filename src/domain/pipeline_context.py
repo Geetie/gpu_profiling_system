@@ -11,10 +11,13 @@ This is a pure data holder with no business logic.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 from src.domain.subagent import PipelineStage, SubAgentResult, SubAgentStatus
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass

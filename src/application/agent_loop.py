@@ -13,10 +13,13 @@ Refactored with Strategy pattern:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 from src.application.completion_detector import CompletionDetector
 from src.application.control_plane import ControlPlane, InjectedContext
@@ -286,6 +289,9 @@ class AgentLoop:
         
         # Reset retry count for new target
         self.loop_state.target_retry_count[new_target] = 0
+        
+        # Reset compile attempts for new target (CRITICAL FIX: prevents compile attempt accumulation)
+        self.loop_state.compile_attempts[new_target] = 0
         
         # Reset stall detection
         self.loop_state.consecutive_no_tool_calls = 0
@@ -2450,7 +2456,8 @@ class AgentLoop:
             if line.startswith("//") or line.startswith("#"):
                 continue
             # Match patterns like "dram_latency_cycles: 450.5" or "sm_count = 56"
-            m = re.match(r'\s*([\w_]+)\s*[:=]\s*[\d.]+[eE]?[\d]*', line)
+            # FIXED: Use [\w_.]+ to match metric names with dots (e.g., dram__bytes_read.sum.per_second)
+            m = re.match(r'\s*([\w_.]+)\s*[:=]\s*[\d.]+[eE]?[\d]*', line)
             if m:
                 measurements.add(m.group(1))
 

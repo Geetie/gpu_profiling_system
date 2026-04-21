@@ -10,10 +10,13 @@ Performs active tool-based analysis:
 """
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
 from src.application.context import ContextManager, Role
+
+logger = logging.getLogger(__name__)
 from src.domain.permission import PermissionMode
 from src.domain.subagent import (
     AgentRole,
