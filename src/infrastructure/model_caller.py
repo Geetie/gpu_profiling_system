@@ -410,9 +410,11 @@ def _call_openai_compatible(
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
 
-    print(f"[model_caller] POST {base_url} model={model} msgs={len(cleaned_messages)} tools={len(tools) if tools else 0}")
+    # Ensure URL has the correct endpoint path for OpenAI-compatible APIs
+    chat_url = base_url if base_url.endswith("/chat/completions") else f"{base_url.rstrip('/')}/chat/completions"
+    print(f"[model_caller] POST {chat_url} model={model} msgs={len(cleaned_messages)} tools={len(tools) if tools else 0}")
 
-    response = _retry_request(base_url, headers=headers, json_payload=payload, timeout=120)
+    response = _retry_request(chat_url, headers=headers, json_payload=payload, timeout=120)
 
     if response.status_code != 200:
         print(f"[model_caller] API error: {response.status_code} - {response.text[:300]}")

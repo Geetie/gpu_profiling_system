@@ -151,7 +151,7 @@ class ProfilingAgent:
             prompt += f"\nThe previous code generation or profiling step failed with this error:\n{error_context}\nPlease fix the CUDA code and return valid CUDA source only."
 
         response = client.chat.completions.create(
-            model=os.getenv("BASE_MODEL", "")
+            model=os.getenv("BASE_MODEL", ""),
             messages=[{"role": "user", "content": prompt}]
         )
         new_code = response.choices[0].message.content

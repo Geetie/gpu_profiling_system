@@ -233,11 +233,14 @@ def _parse_fuzzy_args(arg_text: str, tool_name: str, tool_registry: ToolRegistry
             contract = tool_registry.get(tool_name)
         except KeyError:
             pass
-        if contract and "source" in contract.input_schema:
-            args["source"] = arg_text
-        elif contract and "executable" in contract.input_schema:
-            args["executable"] = arg_text.strip().strip("'\"")
-        elif contract and "file_path" in contract.input_schema:
-            args["file_path"] = arg_text.strip().strip("'\"")
+        if contract:
+            # Handle both new JSON Schema format and legacy string format
+            input_schema = contract.input_schema
+            if "source" in input_schema:
+                args["source"] = arg_text
+            elif "executable" in input_schema:
+                args["executable"] = arg_text.strip().strip("'\"")
+            elif "file_path" in input_schema:
+                args["file_path"] = arg_text.strip().strip("'\"")
 
     return args

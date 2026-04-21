@@ -163,7 +163,7 @@ def _get_fallback_source(size: int) -> str:
     IMPROVEMENT: Uses clock64() in kernel with host-side cudaEvent
     fallback when clock64 returns 0 (handles GPU/driver edge cases).
     """
-    return f"""
+    return """
 #include <stdio.h>
 #include <cuda_runtime.h>
 

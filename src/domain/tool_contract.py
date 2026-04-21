@@ -145,7 +145,10 @@ def build_agent_registry(
         ToolContract(
             name="run_ncu",
             description="Execute NVIDIA Nsight Compute analysis on a target binary",
-            input_schema={"executable": "string", "metrics": ["string"]},
+            input_schema={
+                "executable": {"type": "string", "description": "Path to the executable binary to profile"},
+                "metrics": {"type": "array", "items": {"type": "string"}, "description": "List of NCU metrics to collect"}
+            },
             output_schema={
                 "success": "boolean",
                 "status": "string",
@@ -158,8 +161,12 @@ def build_agent_registry(
         ),
         ToolContract(
             name="compile_cuda",
-            description="Compile CUDA source code via nvcc",
-            input_schema={"source": "string", "flags": ["string"], "target": "string"},
+            description="Compile CUDA source code via nvcc. After successful compilation, you MUST call execute_binary immediately.",
+            input_schema={
+                "source": {"type": "string", "description": "Complete CUDA C++ source code as a string"},
+                "flags": {"type": "array", "items": {"type": "string"}, "description": "Compiler flags like ['-O3', '-arch=sm_80']"},
+                "target": {"type": "string", "description": "Target metric name for tracking (optional)"}
+            },
             output_schema={
                 "success": "boolean",
                 "status": "string",
@@ -176,8 +183,11 @@ def build_agent_registry(
         ),
         ToolContract(
             name="execute_binary",
-            description="Run a compiled binary and capture output",
-            input_schema={"binary_path": "string", "args": ["string"]},
+            description="Run a compiled binary and capture output. Call this AFTER compile_cuda to get measurements.",
+            input_schema={
+                "binary_path": {"type": "string", "description": "Path to the compiled binary from compile_cuda"},
+                "args": {"type": "array", "items": {"type": "string"}, "description": "Command line arguments (optional)"}
+            },
             output_schema={
                 "success": "boolean",
                 "status": "string",
@@ -192,7 +202,10 @@ def build_agent_registry(
         ToolContract(
             name="write_file",
             description="Write content to a file (restricted paths only)",
-            input_schema={"file_path": "string", "content": "string"},
+            input_schema={
+                "file_path": {"type": "string", "description": "Path where to write the file"},
+                "content": {"type": "string", "description": "Content to write to the file"}
+            },
             output_schema={"bytes_written": "integer"},
             permissions=["file:write"],
             requires_approval=True,
@@ -201,7 +214,9 @@ def build_agent_registry(
         ToolContract(
             name="read_file",
             description="Read a file from disk",
-            input_schema={"file_path": "string"},
+            input_schema={
+                "file_path": {"type": "string", "description": "Path to the file to read"}
+            },
             output_schema={"content": "string", "lines": "integer"},
             permissions=["file:read"],
             requires_approval=False,
@@ -210,7 +225,10 @@ def build_agent_registry(
         ToolContract(
             name="generate_microbenchmark",
             description="Auto-generate pointer-chasing or probe CUDA kernels",
-            input_schema={"benchmark_type": "string", "parameters": "object"},
+            input_schema={
+                "benchmark_type": {"type": "string", "description": "Type of benchmark to generate"},
+                "parameters": {"type": "object", "description": "Benchmark-specific parameters"}
+            },
             output_schema={"source_code": "string", "file_path": "string"},
             permissions=["file:write"],
             requires_approval=False,
@@ -220,17 +238,17 @@ def build_agent_registry(
             name="kaggle_push",
             description="Push kernel source to Kaggle and optionally monitor execution",
             input_schema={
-                "kernel_text": "string",
-                "kernel_id": "integer (optional, for updates)",
-                "kernel_title": "string",
-                "kernel_slug": "string",
-                "language": "string (default: python3)",
-                "kernel_type": "string (default: notebook)",
-                "enable_gpu": "boolean (default: true)",
-                "enable_internet": "boolean (default: true)",
-                "is_private": "boolean (default: true)",
-                "monitor": "boolean (default: false) — wait for completion",
-                "timeout_min": "integer (default: 90) — monitor timeout",
+                "kernel_text": {"type": "string", "description": "Kernel source code"},
+                "kernel_id": {"type": "integer", "description": "Optional kernel ID for updates"},
+                "kernel_title": {"type": "string", "description": "Title for the kernel"},
+                "kernel_slug": {"type": "string", "description": "URL slug for the kernel"},
+                "language": {"type": "string", "description": "Programming language (default: python3)"},
+                "kernel_type": {"type": "string", "description": "Kernel type (default: notebook)"},
+                "enable_gpu": {"type": "boolean", "description": "Enable GPU (default: true)"},
+                "enable_internet": {"type": "boolean", "description": "Enable internet (default: true)"},
+                "is_private": {"type": "boolean", "description": "Make kernel private (default: true)"},
+                "monitor": {"type": "boolean", "description": "Wait for completion (default: false)"},
+                "timeout_min": {"type": "integer", "description": "Monitor timeout in minutes (default: 90)"},
             },
             output_schema={
                 "success": "boolean",

@@ -566,19 +566,42 @@ class StageExecutor:
                 "to the next unmeasured target. Do NOT stop and output text.\n"
                 "The system will tell you which targets remain. Keep going until ALL are done.\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "✅ MANDATORY REQUIREMENT\n"
+                "✅ MANDATORY REQUIREMENT — FOLLOW THIS EXACT SEQUENCE\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "You MUST call compile_cuda and execute_binary for EACH target.\n"
-                "The pipeline will FAIL if you do not call compile_cuda.\n\n"
+                "For EACH target, you MUST follow this EXACT 3-step sequence:\n\n"
+                "  Step 1: Call compile_cuda with the CUDA source code\n"
+                "  Step 2: IMMEDIATELY call execute_binary with the binary_path from Step 1\n"
+                "  Step 3: Record the measurement result from stdout\n\n"
+                "⚠️  CRITICAL: After compile_cuda returns success,\n"
+                "    your NEXT action MUST be execute_binary.\n"
+                "    Do NOT call compile_cuda again for the same target.\n"
+                "    Do NOT output text descriptions — CALL THE TOOL.\n\n"
+                "❌ WRONG: compile_cuda → compile_cuda (again) → compile_cuda (again)\n"
+                "✅ CORRECT: compile_cuda → execute_binary → (next target)\n\n"
+                "The pipeline will FAIL if you do not call execute_binary after compile_cuda.\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 "🛡️  ANTI-CHEAT AWARENESS\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 "- ❌ Do NOT rely solely on cudaGetDeviceProperties — may return virtualized data\n"
                 "- ✅ Use clock64() + cudaEventElapsedTime to measure actual hardware behavior\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "📊 OUTPUT FORMAT\n"
+                "📊 OUTPUT FORMAT — CRITICAL FOR CORRECT MEASUREMENT\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "After all targets, list results as:\n"
+                "Your CUDA code MUST print the measurement in this EXACT format:\n\n"
+                "  printf(\"TARGET_NAME: %.2f\\n\", measured_value);\n\n"
+                "Where TARGET_NAME is the exact target string passed to compile_cuda.\n\n"
+                "✅ CORRECT examples:\n"
+                '  printf("launch__sm_count: %d\\n", sm_count);\n'
+                '  printf("dram__bytes_read.sum.per_second: %.2f\\n", bandwidth);\n'
+                '  printf("sm__throughput.avg.pct_of_peak_sustained_elapsed: %.2f\\n", throughput);\n\n'
+                "❌ WRONG examples:\n"
+                '  printf("Result: %f\\n", value);  // Missing target name!\n'
+                '  printf("sm_count: %d\\n", sm_count);  // Wrong target name!\n'
+                '  printf("DRAM bandwidth: %.2f\\n", bw);  // Descriptive name, not target!\n\n'
+                "⚠️  CRITICAL: The target name in printf MUST match the target parameter exactly.\n"
+                "    The system parses stdout looking for 'TARGET_NAME: value' pattern.\n"
+                "    If the target name doesn't match, the measurement will be IGNORED.\n\n"
+                "After all targets are measured, list final results as:\n"
                 "target_name: numeric_value\n"
                 "for each target measured.\n"
             )
@@ -691,6 +714,13 @@ class StageExecutor:
         
         Only includes tools that are both in handlers AND registered in tool_registry.
         This ensures agents only see tools they are allowed to use per their role.
+        
+        The input_schema in ToolContract is now in JSON Schema format with:
+        - {"type": "string", "description": "..."} for string parameters
+        - {"type": "array", "items": {"type": "string"}, "description": "..."} for array parameters
+        - {"type": "object", "description": "..."} for object parameters
+        - {"type": "integer", "description": "..."} for integer parameters
+        - {"type": "boolean", "description": "..."} for boolean parameters
         """
         tools: list[dict] = []
         for name in handlers:
@@ -701,8 +731,27 @@ class StageExecutor:
             try:
                 contract = tool_registry.get(name)
                 properties = {}
-                for key, type_str in contract.input_schema.items():
-                    properties[key] = {"type": type_str}
+                required = []
+                
+                for key, schema in contract.input_schema.items():
+                    if isinstance(schema, dict):
+                        # New JSON Schema format - use directly
+                        properties[key] = schema
+                        # Add to required if it doesn't have a default (assume all are required for now)
+                        required.append(key)
+                    else:
+                        # Legacy string format - convert to JSON Schema
+                        type_mapping = {
+                            "string": "string",
+                            "integer": "integer",
+                            "boolean": "boolean",
+                            "object": "object",
+                            "array": "array",
+                        }
+                        json_type = type_mapping.get(schema, "string")
+                        properties[key] = {"type": json_type}
+                        required.append(key)
+                
                 tools.append({
                     "type": "function",
                     "function": {
@@ -711,7 +760,7 @@ class StageExecutor:
                         "parameters": {
                             "type": "object",
                             "properties": properties,
-                            "required": list(contract.input_schema.keys()),
+                            "required": required,
                         },
                     },
                 })

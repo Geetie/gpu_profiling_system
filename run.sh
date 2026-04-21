@@ -55,10 +55,12 @@ echo "=========================================="
 cd /workspace
 
 python3 -m src.main \
-    --profile-gpu \
+    --pipeline \
     --target-spec "$TARGET_SPEC" \
     --output-dir /workspace \
-    --output-file output_results.json \
+    --max-turns 30 \
+    --mode high_autonomy \
+    "Profile GPU metrics according to target specification" \
     2>&1 | tee /workspace/results.log
 
 EXIT_CODE=${?}
@@ -69,6 +71,14 @@ echo "  Agent Execution Completed!"
 echo "  Exit code: $EXIT_CODE"
 echo "  $(date '+%Y-%m-%d %H:%M:%S')"
 echo "=========================================="
+
+# Convert results.json to output.* format for evaluation system
+if [ -f "/workspace/results.json" ]; then
+    echo ""
+    echo "✅ Converting results.json to output_results.json for evaluation system..."
+    cp /workspace/results.json /workspace/output_results.json
+    echo "✅ Output file created at /workspace/output_results.json"
+fi
 
 # Verify output file was generated
 OUTPUT_FILE="/workspace/output_results.json"

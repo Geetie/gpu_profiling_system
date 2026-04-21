@@ -166,9 +166,9 @@ class SubAgentFactory:
 
     _ROLE_TOOLS = {
         "planner": {"read_file", "write_file"},
-        "code_gen": {"compile_cuda", "execute_binary", "read_file"},
-        "metric_analysis": {"run_ncu"},
-        "verification": set(),
+        "code_gen": {"compile_cuda", "execute_binary", "read_file", "write_file"},
+        "metric_analysis": {"run_ncu", "read_file"},
+        "verification": {"read_file"},
     }
 
     @classmethod

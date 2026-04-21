@@ -144,9 +144,16 @@ def _coerce_type(value: Any, expected_type: str) -> Any:
 
 
 class SchemaValidator:
-    """Lightweight validator for the simplified schema format used in ToolContract.
+    """Lightweight validator for the JSON Schema format used in ToolContract.
 
-    Schema format:
+    Schema format (JSON Schema):
+    - {"type": "string", "description": "..."} -> must be str (or convertable to str)
+    - {"type": "integer", "description": "..."} -> must be int (or convertable to int)
+    - {"type": "boolean", "description": "..."} -> must be bool (or convertable to bool)
+    - {"type": "object", "description": "..."} -> must be dict
+    - {"type": "array", "items": {"type": "string"}, "description": "..."} -> must be list[str]
+    
+    Legacy format (also supported for backward compatibility):
     - "string" -> must be str (or convertable to str)
     - "integer" -> must be int (or convertable to int)
     - "boolean" -> must be bool (or convertable to bool)
@@ -203,7 +210,36 @@ class SchemaValidator:
         coerced: dict[str, Any],
         field_name: str | None = None,
     ) -> None:
-        """Validate a single field against its expected type and coerce if possible."""
+        """Validate a single field against its expected type and coerce if possible.
+        
+        Supports both JSON Schema format and legacy string format.
+        """
+        # Handle JSON Schema format: {"type": "string", ...}
+        if isinstance(expected, dict):
+            json_type = expected.get("type")
+            if json_type == "array":
+                # Array type with items schema
+                items_schema = expected.get("items", {})
+                self._validate_array(items_schema, value, path, errors, coerced, field_name)
+            elif json_type:
+                # Scalar type
+                if not _check_type(value, json_type):
+                    errors.append(ValidationError(
+                        field=path,
+                        expected=json_type,
+                        actual=_python_type_name(value),
+                        message=f"Field '{path}': expected {json_type}, got {_python_type_name(value)}",
+                    ))
+                else:
+                    if field_name is not None:
+                        coerced[field_name] = _coerce_type(value, json_type)
+            else:
+                # No type specified, accept any value
+                if field_name is not None:
+                    coerced[field_name] = value
+            return
+        
+        # Handle legacy string format: "string", "integer", etc.
         if isinstance(expected, str):
             # Scalar type: "string", "integer", etc.
             if not _check_type(value, expected):
@@ -216,27 +252,45 @@ class SchemaValidator:
             else:
                 if field_name is not None:
                     coerced[field_name] = _coerce_type(value, expected)
-        elif isinstance(expected, list):
-            # Array type: ["string"], ["integer"], etc.
-            if not isinstance(value, list):
-                # Try to coerce to list
-                if isinstance(value, (str, dict, int, float, bool)):
-                    value = [value]
-                else:
-                    errors.append(ValidationError(
-                        field=path,
-                        expected=f"array[{expected[0] if expected else 'any'}]",
-                        actual=_python_type_name(value),
-                        message=f"Field '{path}': expected array, got {_python_type_name(value)}",
-                    ))
-                    return
+            return
+        
+        # Handle legacy array format: ["string"], ["integer"], etc.
+        if isinstance(expected, list):
+            self._validate_array(expected[0] if expected else None, value, path, errors, coerced, field_name)
+            return
+    
+    def _validate_array(
+        self,
+        element_schema: Any,
+        value: Any,
+        path: str,
+        errors: list[ValidationError],
+        coerced: dict[str, Any],
+        field_name: str | None = None,
+    ) -> None:
+        """Validate an array field against its element schema."""
+        if not isinstance(value, list):
+            # Try to coerce to list
+            if isinstance(value, (str, dict, int, float, bool)):
+                value = [value]
+            else:
+                errors.append(ValidationError(
+                    field=path,
+                    expected="array",
+                    actual=_python_type_name(value),
+                    message=f"Field '{path}': expected array, got {_python_type_name(value)}",
+                ))
+                return
 
-            element_type = expected[0] if expected else None
-            coerced_array = []
-            if element_type is not None:
-                for i, item in enumerate(value):
-                    item_path = f"{path}[{i}]"
-                    if isinstance(element_type, str):
+        coerced_array = []
+        if element_schema is not None:
+            for i, item in enumerate(value):
+                item_path = f"{path}[{i}]"
+                
+                # Handle JSON Schema element type
+                if isinstance(element_schema, dict):
+                    element_type = element_schema.get("type")
+                    if element_type:
                         if not _check_type(item, element_type):
                             errors.append(ValidationError(
                                 field=item_path,
@@ -248,8 +302,21 @@ class SchemaValidator:
                             coerced_array.append(_coerce_type(item, element_type))
                     else:
                         coerced_array.append(item)
-            else:
-                coerced_array = value
+                # Handle legacy string element type
+                elif isinstance(element_schema, str):
+                    if not _check_type(item, element_schema):
+                        errors.append(ValidationError(
+                            field=item_path,
+                            expected=element_schema,
+                            actual=_python_type_name(item),
+                            message=f"Field '{item_path}': expected {element_schema}, got {_python_type_name(item)}",
+                        ))
+                    else:
+                        coerced_array.append(_coerce_type(item, element_schema))
+                else:
+                    coerced_array.append(item)
+        else:
+            coerced_array = value
 
-            if field_name is not None:
-                coerced[field_name] = coerced_array
+        if field_name is not None:
+            coerced[field_name] = coerced_array

@@ -51,6 +51,10 @@ class LoopState:
     # BUG#4 FIX: Complete target list cache to prevent future targets from being lost
     all_targets_cache: list[str] | None = None
 
+    # CRITICAL FIX: Track if execute_binary is required after compile_cuda
+    pending_execute_binary: bool = False
+    last_compiled_binary: str | None = None
+
     def to_dict(self) -> dict[str, Any]:
         pt = None
         if self.pending_tool_call:
@@ -158,7 +162,7 @@ class AgentLoop:
         # T5 FIX #1: Per-target time budget control (prevent 308s black hole)
         self.target_time_budget: dict[str, float] = {}
         self.target_start_time: dict[str, float] = {}
-        self.MAX_TARGET_TIME_BUDGET = 120.0  # seconds per target
+        self.MAX_TARGET_TIME_BUDGET = 180.0  # seconds per target (increased from 120s)
         self.MAX_CODE_GEN_TOTAL = 400.0  # total CodeGen stage limit
         self.code_gen_start_time: float | None = None
         self._last_turn_time: float | None = None  # T5 FIX #2: Time-based stall detection
@@ -832,6 +836,35 @@ class AgentLoop:
                 tool_call.arguments["binary_path"] = last_bp
                 reason = "latest compile not yet executed" if last_tool_was_compile else "auto-replaced with actual compiled binary_path"
                 print(f"[AgentLoop] P2 auto-inject: binary_path={last_bp} (reason: {reason})")
+            # CRITICAL FIX: Enforce compile_cuda → execute_binary sequence
+            if tool_call.name == "compile_cuda" and self.loop_state.pending_execute_binary:
+                # LLM is trying to compile again without executing previous binary
+                error_msg = (
+                    f"❌ SEQUENCE ERROR: You MUST call execute_binary BEFORE compile_cuda again!\n\n"
+                    f"You compiled a binary but never executed it.\n"
+                    f"Pending binary: {self.loop_state.last_compiled_binary}\n\n"
+                    f"👉 REQUIRED ACTION: Call execute_binary first:\n"
+                    f'  {{"tool": "execute_binary", "args": {{"binary_path": "{self.loop_state.last_compiled_binary}"}}}}\n\n'
+                    f"After execute_binary returns results, you can compile the next target."
+                )
+                self.context_manager.add_entry(Role.SYSTEM, error_msg, token_count=80)
+                print(f"[AgentLoop] BLOCKED: compile_cuda called while execute_binary is pending")
+                # Return error result instead of executing
+                result = {
+                    "success": False,
+                    "status": "error",
+                    "error": "SEQUENCE_ERROR: Must call execute_binary before compile_cuda",
+                    "pending_binary": self.loop_state.last_compiled_binary,
+                    "hint": f'Call execute_binary with binary_path="{self.loop_state.last_compiled_binary}" first'
+                }
+                self.context_manager.add_entry(
+                    Role.ASSISTANT,
+                    json.dumps(result, ensure_ascii=False),
+                    token_count=40,
+                )
+                self._persist_state()
+                return
+
             print(f"[AgentLoop] Tool call: {tool_call.name}({list(tool_call.arguments.keys())})")
             self._emit(EventKind.TOOL_CALL, {
                 "tool": tool_call.name,
@@ -841,22 +874,13 @@ class AgentLoop:
                 result = self._execute_tool_call(tool_call)
                 print(f"[AgentLoop] Tool result: {tool_call.name} -> {str(result)[:200]}")
 
-                # CRITICAL FIX: After successful compile_cuda, FORCE execute_binary before next compile
+                # CRITICAL FIX: After successful compile_cuda, set pending state and FORCE execute_binary
                 if (tool_call.name == "compile_cuda" and isinstance(result, dict)
                     and result.get("success") == True):
 
-                    # Check if we already executed binary after last compilation
-                    entries = self.context_manager.get_entries()
-                    has_recent_execute = False
-                    for entry in reversed(entries[-5:]):  # Check last 5 entries
-                        if (entry.role.value == "assistant"
-                            and '"tool": "execute_binary"' in entry.content):
-                            has_recent_execute = True
-                            break
-
-                    if not has_recent_execute:
-                        # Find the compiled binary path from result
-                        binary_path = None
+                    # Extract binary path from result
+                    binary_path = result.get("binary_path", "")
+                    if not binary_path:
                         output = result.get("output", "")
                         if output and "binary_path" in output:
                             import re as re_module
@@ -864,34 +888,45 @@ class AgentLoop:
                             if bp_match:
                                 binary_path = bp_match.group(1)
 
-                        if not binary_path:
-                            # Fallback to target-specific path
-                            current_target = self.loop_state.current_target or "unknown"
-                            safe_target = current_target.replace(" ", "_").replace("-", "_").lower()
-                            binary_path = f".kaggle_sandbox/bin/benchmark_{safe_target}"
+                    if not binary_path:
+                        # Fallback to target-specific path
+                        current_target = self.loop_state.current_target or "unknown"
+                        safe_target = current_target.replace(" ", "_").replace("-", "_").lower()
+                        binary_path = f".kaggle_sandbox/bin/benchmark_{safe_target}"
 
-                        force_exec_guidance = (
-                            f"🎯 MANDATORY: EXECUTE COMPILED BINARY\n\n"
-                            f"✅ Compilation SUCCESSFUL for '{self.loop_state.current_target}'!\n"
-                            f"⚠️ You MUST now execute the compiled binary BEFORE compiling again.\n\n"
-                            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                            f"👉 IMMEDIATE ACTION: Call execute_binary NOW\n"
-                            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                            f'Step 1: Call execute_binary with:\n'
-                            f'  {{"tool": "execute_binary", "args": {{"binary_path": "{binary_path}"}}}}\n\n'
-                            f"⚠️ FORBIDDEN:\n"
-                            f"  • Do NOT call compile_cuda again without executing first\n"
-                            f"  • Do NOT modify your CUDA code - it already compiles successfully\n"
-                            f"  • Do NOT output text explanations - CALL execute_binary NOW\n\n"
-                            f"After execution, you will receive measurement results.\n"
-                            f"Then you can proceed to the next target."
-                        )
-                        self.context_manager.add_entry(
-                            Role.SYSTEM,
-                            force_exec_guidance,
-                            token_count=90,
-                        )
-                        print(f"[AgentLoop] Forced execute_binary guidance after successful compilation")
+                    # Set pending state - this will BLOCK future compile_cuda calls
+                    self.loop_state.pending_execute_binary = True
+                    self.loop_state.last_compiled_binary = binary_path
+
+                    force_exec_guidance = (
+                        f"🎯 MANDATORY: EXECUTE COMPILED BINARY\n\n"
+                        f"✅ Compilation SUCCESSFUL for '{self.loop_state.current_target}'!\n"
+                        f"⚠️ You MUST now execute the compiled binary BEFORE compiling again.\n\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"👉 IMMEDIATE ACTION: Call execute_binary NOW\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                        f'Step 1: Call execute_binary with:\n'
+                        f'  {{"tool": "execute_binary", "args": {{"binary_path": "{binary_path}"}}}}\n\n'
+                        f"⚠️ FORBIDDEN:\n"
+                        f"  • Do NOT call compile_cuda again without executing first\n"
+                        f"  • Do NOT modify your CUDA code - it already compiles successfully\n"
+                        f"  • Do NOT output text explanations - CALL execute_binary NOW\n\n"
+                        f"After execution, you will receive measurement results.\n"
+                        f"Then you can proceed to the next target."
+                    )
+                    self.context_manager.add_entry(
+                        Role.SYSTEM,
+                        force_exec_guidance,
+                        token_count=90,
+                    )
+                    print(f"[AgentLoop] Set pending_execute_binary=True, binary={binary_path}")
+
+                # CRITICAL FIX: After execute_binary, clear pending state
+                if tool_call.name == "execute_binary":
+                    if self.loop_state.pending_execute_binary:
+                        self.loop_state.pending_execute_binary = False
+                        self.loop_state.last_compiled_binary = None
+                        print(f"[AgentLoop] Cleared pending_execute_binary after execute_binary")
                 tool_status = result.get("status", "success") if isinstance(result, dict) else "success"
                 self._emit(EventKind.TOOL_RESULT, {
                     "tool": tool_call.name,
@@ -1145,7 +1180,9 @@ class AgentLoop:
                                 self.loop_state.target_retry_count[current_target] = 0
 
                             # BUG#2 FIX: Detect repeated compilation of already-measured target
-                            if current_target in self.loop_state.completed_targets:
+                            # CRITICAL FIX: Also check if target actually has valid measurement in context
+                            has_valid_measurement = self._verify_target_measurement(current_target)
+                            if current_target in self.loop_state.completed_targets and has_valid_measurement:
                                 print(f"[AgentLoop] ⚠️ BUG#2 DETECTED: Re-compiling already-measured target '{current_target}' "
                                       f"(compile #{compile_count})")
 
@@ -2208,6 +2245,47 @@ class AgentLoop:
                 measurements.add(m.group(1))
 
         return measurements
+
+    def _verify_target_measurement(self, target: str) -> bool:
+        """Verify that a target actually has a valid measurement in the context.
+
+        This is a stricter check than just looking at completed_targets list.
+        It verifies that the target name appears in execute_binary output with a numeric value.
+
+        Args:
+            target: The target name to verify
+
+        Returns:
+            bool: True if target has valid measurement, False otherwise
+        """
+        entries = self.context_manager.get_entries()
+
+        for entry in entries:
+            if entry.role.value != "assistant":
+                continue
+
+            content = entry.content
+            try:
+                data = json.loads(content)
+                if isinstance(data, dict):
+                    # Check stdout from execute_binary
+                    stdout = data.get("stdout", "")
+                    if isinstance(stdout, str) and stdout:
+                        # Look for exact target name with numeric value
+                        pattern = rf'{re.escape(target)}\s*[:=]\s*[\d.]+[eE]?[\d]*'
+                        if re.search(pattern, stdout):
+                            return True
+
+                    # Check output field
+                    output = data.get("output", "")
+                    if isinstance(output, str) and output:
+                        pattern = rf'{re.escape(target)}\s*[:=]\s*[\d.]+[eE]?[\d]*'
+                        if re.search(pattern, output):
+                            return True
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        return False
 
     def _detect_cuda_syntax_error(self, error_text: str) -> str | None:
         """Detect common CUDA compilation errors and provide targeted fix guidance.
