@@ -894,6 +894,23 @@ class AgentLoop:
                         # Force switch to next target
                         remaining = self._find_unmeasured_targets()
                         remaining = [t for t in remaining if t != current_target]
+                        
+                        # CRITICAL FIX: Check if all targets have reached their limit
+                        all_targets_exhausted = True
+                        for t in self.loop_state.all_targets_cache or []:
+                            if t not in self.loop_state.completed_targets:
+                                t_attempts = self.loop_state.compile_attempts.get(t, 0)
+                                if t_attempts < self.loop_state.MAX_COMPILE_ATTEMPTS_PER_TARGET:
+                                    all_targets_exhausted = False
+                                    break
+                        
+                        if all_targets_exhausted:
+                            print(f"[AgentLoop] 🛑 ALL TARGETS EXHAUSTED: All targets have reached compile attempt limit")
+                            print(f"[AgentLoop] 🛑 Stopping CodeGen stage with partial results")
+                            self._emit(EventKind.STOP, {"reason": "all_targets_compile_limit_exhausted"})
+                            self.stop()
+                            return
+                        
                         if remaining:
                             next_target = remaining[0]
                             print(f"[AgentLoop] 🚨 P0-FIX#3: Force-switching to '{next_target}' due to compile limit")
