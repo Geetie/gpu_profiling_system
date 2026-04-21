@@ -566,6 +566,15 @@ def _assemble_final_results(output_dir, hardware_results, pipeline_data, target_
                 if k not in output:
                     output[k] = v
 
+        # CRITICAL FIX: Also extract measurements from key_measurements if available
+        # This ensures measurements are captured even if pipeline failed at later stages
+        key_measurements = pipeline_data.get("key_measurements", {})
+        if isinstance(key_measurements, dict):
+            for k, v in key_measurements.items():
+                if k not in output:
+                    output[k] = v
+                    print(f"[pipeline] Added measurement from key_measurements: {k}={v}")
+
         tool_results = pipeline_data.get("tool_results", [])
         if isinstance(tool_results, list):
             for tr in tool_results:

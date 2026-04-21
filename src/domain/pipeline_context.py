@@ -61,10 +61,14 @@ class PipelineContext:
         """
         if stage == PipelineStage.CODE_GEN:
             self.code_gen_data = dict(result.data)
-            if result.is_success():
-                if "measurements" in result.data and isinstance(result.data["measurements"], dict):
-                    for k, v in result.data["measurements"].items():
-                        self.key_measurements[k] = v
+            # CRITICAL FIX: Always save measurements to key_measurements, regardless of status
+            # This ensures measurements are available even if CodeGen returns PARTIAL or FAILED
+            # but still produced some valid measurements
+            if "measurements" in result.data and isinstance(result.data["measurements"], dict):
+                for k, v in result.data["measurements"].items():
+                    self.key_measurements[k] = v
+                logger.info("[PipelineContext] Saved %d measurements to key_measurements", 
+                           len(result.data["measurements"]))
             if "binary_path" in result.data:
                 bp = result.data["binary_path"]
                 if isinstance(bp, str) and bp not in self.binary_paths:
@@ -264,6 +268,8 @@ class PipelineContext:
                     if k not in existing:
                         existing[k] = v
                 result.data["measurements"] = existing
+            # Also include key_measurements separately for downstream access
+            result.data["key_measurements"] = dict(self.key_measurements)
 
         # L1: Binary paths
         if self.binary_paths:

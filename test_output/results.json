@@ -1,0 +1,15 @@
+{
+  "targets_profiled": [
+    "dram_latency_cycles",
+    "l2_cache_size_mb",
+    "actual_boost_clock_mhz"
+  ],
+  "methodology": "GPU profiling pipeline targeting: dram_latency_cycles, l2_cache_size_mb, actual_boost_clock_mhz. Measurements collected via LLM-generated CUDA micro-benchmarks compiled with nvcc. Anti-optimization: volatile qualifiers, asm volatile memory barriers, #pragma unroll 1. Anti-cheat: no reliance on cudaGetDeviceProperties; all values empirically measured.",
+  "evidence": [],
+  "_quality_ok": false,
+  "_quality_warnings": [
+    "Missing requested targets (not measured or filtered): actual_boost_clock_mhz, dram_latency_cycles, l2_cache_size_mb",
+    "No evidence files or references \u2014 measurements may not be verifiable",
+    "Only 0 valid measurement(s) after quality filtering \u2014 expected more for target spec with 3 targets"
+  ]
+}

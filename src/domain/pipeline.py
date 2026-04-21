@@ -209,8 +209,11 @@ class Pipeline:
             stage_idx += 1
 
         final_result = ctx.prev_result
-        if final_result is not None and final_result.is_success():
+        # CRITICAL FIX: Always assemble final result, regardless of status
+        # This ensures measurements from CodeGen are included even if downstream stages fail
+        if final_result is not None:
             final_result = ctx.assemble_final_result(final_result)
+            print(f"[Pipeline] Final result assembled with {len(final_result.data.get('measurements', {}))} measurements")
 
         if final_result:
             self._persister.log_entry("pipeline_complete", details=final_result.to_dict())
