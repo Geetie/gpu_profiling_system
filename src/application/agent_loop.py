@@ -162,8 +162,8 @@ class AgentLoop:
         # T5 FIX #1: Per-target time budget control (prevent 308s black hole)
         self.target_time_budget: dict[str, float] = {}
         self.target_start_time: dict[str, float] = {}
-        self.MAX_TARGET_TIME_BUDGET = 180.0  # seconds per target (increased from 120s)
-        self.MAX_CODE_GEN_TOTAL = 400.0  # total CodeGen stage limit
+        self.MAX_TARGET_TIME_BUDGET = 240.0  # seconds per target (increased from 180s for complex measurements)
+        self.MAX_CODE_GEN_TOTAL = 600.0  # total CodeGen stage limit (increased for 8 targets)
         self.code_gen_start_time: float | None = None
         self._last_turn_time: float | None = None  # T5 FIX #2: Time-based stall detection
 
