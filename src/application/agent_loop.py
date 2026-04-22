@@ -185,7 +185,8 @@ class AgentLoop:
         self._target_stall_history: dict[str, int] = {}  # Per-target stall count
 
         # T11 FIX: Per-stage maximum turn limits to prevent LLM loops
-        self.MAX_METRIC_ANALYSIS_TURNS = 6  # MetricAnalysis should complete in ≤6 turns
+        # FIXED: Increased from 6 to 15 to allow proper analysis of all metrics
+        self.MAX_METRIC_ANALYSIS_TURNS = 15  # MetricAnalysis needs more turns for multiple metrics
 
     def _init_target_state(self, target_spec: dict[str, Any] | None = None) -> None:
         """Initialize the target state machine for CodeGen stage.
@@ -477,7 +478,11 @@ class AgentLoop:
 
         # C-02 FIX: Independent state machine synchronization
         # BUG#3 FIX: Reduced from every 3 turns to every 2 turns for faster detection
-        if self.loop_state.turn_count % 2 == 0:
+        # FIXED: Skip C-02 sync in MetricAnalysis stage (not applicable for analysis-only stage)
+        session_id_lower = self.session.session_id.lower() if self.session.session_id else ""
+        is_metric_analysis = "metric_analysis" in session_id_lower
+        
+        if not is_metric_analysis and self.loop_state.turn_count % 2 == 0:
             print(f"[AgentLoop] Triggering C-02 state sync (Turn {self.loop_state.turn_count})")
             self._sync_target_state_machine()
 
