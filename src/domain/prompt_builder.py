@@ -132,10 +132,31 @@ class StagePromptBuilder:
         target = target_spec.get("target", targets[0] if targets else "unknown")
         principle = get_design_principle(target)
 
+        # Check if there's a template available for this target
+        template_source = ""
+        try:
+            from src.infrastructure.probing.cuda_templates import get_template
+            tmpl = get_template(target)
+            if tmpl:
+                template_source = (
+                    f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📝 REFERENCE CUDA SOURCE CODE FOR TARGET: {target}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"Below is a reference implementation for this target.\n"
+                    f"You MUST use this EXACT code (or improve upon it) for compilation.\n\n"
+                    f"```cuda\n{tmpl.source_code}```\n\n"
+                    f"⚠️ CRITICAL: This code is verified to work correctly.\n"
+                    f"Use it directly - do NOT generate a different kernel!\n"
+                    f"Compile flags: {tmpl.compile_flags}\n"
+                )
+        except ImportError:
+            pass
+
         parts = [
             f"Write CUDA micro-benchmarks for: {target}",
             f"\nTarget specification: {target_spec}",
             f"\n{principle}",
+            template_source,
         ]
 
         if targets and len(targets) > 1:
