@@ -6,7 +6,6 @@ compiled binary, along with any compiler output or errors.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -112,6 +111,7 @@ def compile_cuda_handler(
     if used_template_name:
         binary_path = f"/workspace/.sandbox/bin/benchmark_{used_template_name}"
     else:
+        import hashlib
         output_hash = hashlib.md5(source.encode()).hexdigest()[:8]
         binary_path = f"/workspace/.sandbox/bin/benchmark_{output_hash}"
 
@@ -135,12 +135,30 @@ def compile_cuda_handler(
             pass
 
         if result.returncode == 0:
+            # Auto-execute the compiled binary to capture measurements
+            # This ensures each template binary is run immediately after compilation
+            auto_exec_output = ""
+            auto_exec_success = False
+            if os.path.exists(binary_path) and os.access(binary_path, os.X_OK):
+                try:
+                    exec_result = subprocess.run(
+                        [binary_path], capture_output=True, text=True, timeout=30
+                    )
+                    auto_exec_output = exec_result.stdout
+                    auto_exec_success = exec_result.returncode == 0
+                    if auto_exec_success and auto_exec_output:
+                        print(f"[compile_cuda] ✅ Auto-executed: {binary_path}")
+                        print(f"[compile_cuda]    stdout: {auto_exec_output.strip()[:200]}")
+                except (subprocess.TimeoutExpired, Exception) as e:
+                    print(f"[compile_cuda] ⚠️ Auto-execute failed: {e}")
+
             return {
                 "status": "ok",
                 "success": True,
-                "output": result.stdout,
+                "output": result.stdout + (f"\n[AUTO-EXEC]\n{auto_exec_output}" if auto_exec_output else ""),
                 "errors": "",
                 "binary_path": binary_path,
+                "auto_exec_stdout": auto_exec_output if auto_exec_success else "",
             }
         else:
             return {
