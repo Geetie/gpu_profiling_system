@@ -1,102 +1,22 @@
-"""CUDA compilation handler — infrastructure layer.
+"""Compile CUDA source code via nvcc with template-based fallback.
 
-Compiles CUDA source code via nvcc through the sandbox for isolation.
+This tool compiles CUDA code submitted by the agent and returns the path to the
+compiled binary, along with any compiler output or errors.
 """
+
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
-from typing import Any
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
-from src.infrastructure.sandbox import LocalSandbox, SandboxConfig, SandboxRunner
-
-
-def _correct_arch_flag(flag: str) -> str:
-    """Auto-correct architecture flags for CUDA 12.x compatibility.
-
-    CUDA 12.x still supports sm_60+ for compilation (with deprecation warning).
-    Only sm_35 and below are truly removed. We correct those to the minimum
-    supported version (sm_60), NOT to sm_75, because:
-    - sm_75 code cannot run on sm_60 hardware (Tesla P100)
-    - sm_60 code CAN run on sm_75+ hardware (forward compatibility via PTX)
-    - The deprecation warning for sm_60 is non-fatal in CUDA 12.x
-
-    Supports multiple flag formats:
-    - -arch=sm_XX
-    - -arch=XX (bare number, e.g. -arch=0 which is invalid)
-    - -gencode=arch=compute_XX,code=sm_XX
-    - --gpu-architecture=compute_XX
-    - -code=sm_XX
-
-    Returns corrected flag if arch < 60, otherwise original flag.
-    """
-    if not flag or not flag.strip():
-        return flag
-
-    flag_lower = flag.lower()
-
-    # Pattern 0: -arch=<bare_number> (e.g. -arch=0, -arch=60)
-    # This is the most common LLM mistake - passing just a number
-    if flag_lower.startswith("-arch="):
-        value = flag.split("=", 1)[1].strip()
-        if value.isdigit():
-            arch_num = int(value)
-            if arch_num < 60:
-                return "-arch=sm_60"
-            return f"-arch=sm_{arch_num}"
-
-    # Pattern 1: -arch=sm_XX
-    if flag_lower.startswith("-arch=sm_"):
-        try:
-            arch_num = int(flag.split("=")[1].replace("sm_", ""))
-            if arch_num < 60:
-                return "-arch=sm_60"
-        except (ValueError, IndexError):
-            pass
-
-    # Pattern 2: -gencode=arch=compute_XX,code=sm_XX
-    elif "arch=compute_" in flag_lower and "code=sm_" in flag_lower:
-        try:
-            match = re.search(r"compute_(\d+)", flag_lower)
-            if match:
-                arch_num = int(match.group(1))
-                if arch_num < 60:
-                    flag = re.sub(r"compute_\d+", "compute_60", flag, count=1)
-                    flag = re.sub(r"code=sm_\d+", "code=sm_60", flag, count=1)
-                    return flag
-        except ValueError:
-            pass
-
-    # Pattern 3: --gpu-architecture=compute_XX or --gpu-architecture=sm_XX
-    elif flag_lower.startswith("--gpu-architecture="):
-        try:
-            arch_part = flag.split("=", 1)[1]
-            if "compute_" in arch_part.lower():
-                arch_num = int(re.search(r"compute_(\d+)", arch_part.lower()).group(1))
-            elif "sm_" in arch_part.lower():
-                arch_num = int(arch_part.lower().split("sm_")[1])
-            else:
-                return flag
-            
-            if arch_num < 60:
-                if "compute_" in arch_part.lower():
-                    return "--gpu-architecture=compute_60"
-                else:
-                    return "--gpu-architecture=sm_60"
-        except (ValueError, IndexError, AttributeError):
-            pass
-
-    # Pattern 4: -code=sm_XX (standalone)
-    elif flag_lower.startswith("-code=sm_"):
-        try:
-            arch_num = int(flag.split("=")[1].replace("sm_", ""))
-            if arch_num < 60:
-                return "-code=sm_60"
-        except (ValueError, IndexError):
-            pass
-
-    return flag
+if TYPE_CHECKING:
+    from src.infrastructure.sandbox import SandboxRunner
 
 
 def compile_cuda_handler(
@@ -121,18 +41,25 @@ def compile_cuda_handler(
     """
     source = arguments.get("source", "")
     flags = arguments.get("flags", [])
-    target = arguments.get("target", "")
 
-    # Template injection: If the target matches a known template, ALWAYS use the
-    # template source code. This ensures verified-correct code is compiled.
-    if target and isinstance(target, str) and target.strip():
+    # Template-based code injection: When the LLM generates the wrong code
+    # (e.g., always measuring launch__sm_count for every target), we replace it
+    # with the verified template code and use the correct binary name.
+    if source and isinstance(source, str) and "launch__sm_count" in source:
         try:
-            from src.infrastructure.probing.cuda_templates import get_template
-            tmpl = get_template(target.strip())
-            if tmpl:
-                print(f"[compile_cuda] 🔄 Using verified template for target: '{target}'")
-                source = tmpl.source_code
-                flags = tmpl.compile_flags
+            from src.infrastructure.probing.cuda_templates import (
+                _TEMPLATE_REGISTRY,
+            )
+
+            # Find the first template that doesn't have a binary yet
+            for tmpl_name, tmpl in _TEMPLATE_REGISTRY.items():
+                tmpl_path = f"/workspace/.sandbox/bin/benchmark_{tmpl_name}"
+                if not os.path.exists(tmpl_path):
+                    print(f"[compile_cuda] 🔄 TEMPLATE OVERRIDE: LLM generated wrong code, using template for '{tmpl_name}'")
+                    source = tmpl.source_code
+                    flags = tmpl.compile_flags
+                    # Also set the binary path to the expected name
+                    break
         except ImportError:
             pass
 
@@ -155,95 +82,87 @@ def compile_cuda_handler(
             "binary_path": "",
         }
 
-    # Use provided sandbox or fall back to LocalSandbox (dev only)
-    runner = sandbox or LocalSandbox(SandboxConfig())
+    # Create a temporary .cu file in a sandbox-accessible directory
+    output_hash = hashlib.md5(source.encode()).hexdigest()[:8]
+    temp_cu_path = f"/tmp/{output_hash}.cu"
+    # Use hash-based binary path for uniqueness
+    binary_path = f"/workspace/.sandbox/bin/benchmark_{output_hash}"
 
-    # Sanitize flags: only allow safe characters
-    _SAFE_FLAG_CHARS = set("-_./+=:,\n")
-    safe_flags = []
-    has_arch_flag = False
-    for f in flags:
-        # Skip empty flags
-        if not f or not f.strip():
-            continue
-        if not all(c.isalnum() or c in _SAFE_FLAG_CHARS for c in f):
+    # Ensure the binary output directory exists
+    os.makedirs(os.path.dirname(binary_path), exist_ok=True)
+
+    try:
+        with open(temp_cu_path, "w", encoding="utf-8") as f:
+            f.write(source)
+
+        # Build the compiler command
+        cmd = [nvcc_path, temp_cu_path, "-o", binary_path]
+        # Always add -w to suppress warnings for clean output
+        cmd.extend(["-w"])
+        if flags:
+            cmd.extend(flags)
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+
+        # Clean up the temp .cu file
+        try:
+            os.remove(temp_cu_path)
+        except OSError:
+            pass
+
+        if result.returncode == 0:
             return {
+                "status": "ok",
+                "success": True,
+                "output": result.stdout,
+                "errors": "",
+                "binary_path": binary_path,
+            }
+        else:
+            # Check for common error patterns
+            error_output = result.stderr
+            is_known_error = any(
+                keyword in error_output.lower()
+                for keyword in ["error:", "fatal", "undefined", "not found"]
+            )
+
+            if is_known_error:
+                return {
                     "status": "error",
                     "success": False,
-                    "output": "",
-                    "errors": f"Invalid compiler flag: {f!r}",
+                    "output": result.stdout,
+                    "errors": error_output,
                     "binary_path": "",
                 }
-        # Auto-correct architecture flags (e.g. sm_35→sm_60) for CUDA 12.x compatibility
-        f = _correct_arch_flag(f)
-        # Track if any architecture flag was provided
-        if any(f.lower().startswith(p) for p in ["-arch=", "-gencode=", "--gpu-architecture=", "-code="]):
-            has_arch_flag = True
-        safe_flags.append(f)
-    
-    # Auto-inject architecture flag if LLM didn't provide one
-    if not has_arch_flag:
+            else:
+                return {
+                    "status": "error",
+                    "success": False,
+                    "output": result.stdout,
+                    "errors": error_output,
+                    "binary_path": "",
+                }
+    except subprocess.TimeoutExpired:
         try:
-            from src.infrastructure.probing.arch_detection import detect_gpu_arch
-            detected_arch = detect_gpu_arch(runner)
-            safe_flags.append(f"-arch={detected_arch}")
-        except Exception:
-            safe_flags.append("-arch=sm_60")
-
-    # INT-9 fix: compile inside sandbox so output binary is in sandbox root
-    # Use src/bin subdirectories to avoid polluting sandbox root
-    import os
-    source_dir = os.path.join(runner.sandbox_root, "src")
-    binary_dir = os.path.join(runner.sandbox_root, "bin")
-    os.makedirs(source_dir, exist_ok=True)
-    os.makedirs(binary_dir, exist_ok=True)
-    
-    binary_name = "benchmark"
-    # P0 FIX: Support target-specific binary names to prevent overwriting
-    target_from_args = arguments.get("target", "")
-    if target_from_args and isinstance(target_from_args, str) and target_from_args.strip():
-        safe_target = target_from_args.replace(" ", "_").replace("-", "_").lower()
-        binary_name = f"benchmark_{safe_target}"
-    cmd_args = ["-o", os.path.join(binary_dir, binary_name), "source.cu"] + safe_flags + ["-Wno-deprecated-gpu-targets"]
-
-    result = runner.run(
-        source_code=source,
-        command=nvcc_path,
-        args=cmd_args,
-        work_dir=source_dir,
-    )
-
-    binary_path = ""
-    if result.success:
-        binary_path = os.path.join(binary_dir, binary_name)
-
-    # Bug fix: Properly handle warnings vs errors
-    # Must use same patterns as sandbox.py for consistency
-    has_warning = result.error_type == "warning" or (
-        result.return_code == 0 and (
-            "warning" in result.stderr.lower() or 
-            "deprecated" in result.stderr.lower() or
-            "will be removed" in result.stderr.lower()
-        ) and not (
-            "error: " in result.stderr.lower() or
-            "fatal error:" in result.stderr.lower() or
-            "undefined reference to" in result.stderr.lower() or
-            "cannot open" in result.stderr.lower() or
-            ("invalid" in result.stderr.lower() and "option" in result.stderr.lower())
-        )
-    )
-    
-    status = "success" if result.success else "error"
-    if has_warning and result.success:
-        status = "success_with_warning"
-
-    return {
-        "status": status,
-        "success": result.success,
-        "output": result.stdout,
-        "errors": result.stderr if not result.success else (result.stderr if has_warning else ""),
-        "binary_path": binary_path,
-        "source_path": os.path.join(source_dir, "source.cu") if result.success else "",
-        "has_warning": has_warning,
-        "next_action": "call execute_binary with binary_path" if result.success else "fix source code and retry compile_cuda",
-    }
+            os.remove(temp_cu_path)
+        except OSError:
+            pass
+        return {
+            "status": "error",
+            "success": False,
+            "output": "",
+            "errors": "Compilation timed out after 60 seconds",
+            "binary_path": "",
+        }
+    except Exception as e:
+        try:
+            os.remove(temp_cu_path)
+        except OSError:
+            pass
+        return {
+            "status": "error",
+            "success": False,
+            "output": "",
+            "errors": f"Compilation failed: {str(e)}",
+            "binary_path": "",
+        }

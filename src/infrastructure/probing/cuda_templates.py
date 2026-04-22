@@ -447,7 +447,7 @@ int main() {
     )
 
 
-# Registry of all templates
+# Registry of all templates - populated at module load time
 _TEMPLATE_REGISTRY: dict[str, CUDATemplate] = {}
 
 
@@ -501,3 +501,7 @@ def has_template(target_name: str) -> bool:
     if not _TEMPLATE_REGISTRY:
         _register_templates()
     return target_name in _TEMPLATE_REGISTRY
+
+
+# Initialize registry at module load time
+_register_templates()
