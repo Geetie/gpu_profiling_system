@@ -32,7 +32,6 @@ def _get_next_template_index() -> int:
             return idx
         except (json.JSONDecodeError, IOError):
             pass
-    # Initialize
     os.makedirs(os.path.dirname(_TEMPLATE_STATE_FILE), exist_ok=True)
     with open(_TEMPLATE_STATE_FILE, "w") as f:
         json.dump({"next_index": 1}, f)
@@ -61,9 +60,10 @@ def compile_cuda_handler(
     """
     source = arguments.get("source", "")
     flags = arguments.get("flags", [])
+    used_template_name = None
 
     # Template-based code injection: When the LLM generates wrong code
-    # (always launch__sm_count for every target), we cycle through all
+    # (always launch__sm_count for every target), cycle through all
     # verified template codes. Each compile_cuda call gets the next template.
     if source and isinstance(source, str) and "launch__sm_count" in source:
         try:
@@ -71,18 +71,17 @@ def compile_cuda_handler(
                 _TEMPLATE_REGISTRY,
             )
 
-            # Ensure registry is populated
             if not _TEMPLATE_REGISTRY:
                 from src.infrastructure.probing.cuda_templates import (
                     _register_templates,
                 )
-
                 _register_templates()
 
             tmpl_list = list(_TEMPLATE_REGISTRY.items())
             if tmpl_list:
                 idx = _get_next_template_index()
                 tmpl_name, tmpl = tmpl_list[idx % len(tmpl_list)]
+                used_template_name = tmpl_name
                 print(f"[compile_cuda] 🔄 TEMPLATE #{idx % len(tmpl_list)}: Using verified template for '{tmpl_name}'")
                 source = tmpl.source_code
                 flags = tmpl.compile_flags
@@ -109,19 +108,20 @@ def compile_cuda_handler(
             "binary_path": "",
         }
 
-    # Create a temporary .cu file
-    output_hash = hashlib.md5(source.encode()).hexdigest()[:8]
-    temp_cu_path = f"/tmp/{output_hash}.cu"
-    binary_path = f"/workspace/.sandbox/bin/benchmark_{output_hash}"
+    # Use template-name-based binary path for template code
+    if used_template_name:
+        binary_path = f"/workspace/.sandbox/bin/benchmark_{used_template_name}"
+    else:
+        output_hash = hashlib.md5(source.encode()).hexdigest()[:8]
+        binary_path = f"/workspace/.sandbox/bin/benchmark_{output_hash}"
 
-    # Ensure the binary output directory exists
+    temp_cu_path = f"/tmp/{binary_path.split('/')[-1]}.cu"
     os.makedirs(os.path.dirname(binary_path), exist_ok=True)
 
     try:
         with open(temp_cu_path, "w", encoding="utf-8") as f:
             f.write(source)
 
-        # Build the compiler command
         cmd = [nvcc_path, temp_cu_path, "-o", binary_path]
         cmd.extend(["-w"])
         if flags:
@@ -129,7 +129,6 @@ def compile_cuda_handler(
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
 
-        # Clean up the temp .cu file
         try:
             os.remove(temp_cu_path)
         except OSError:
