@@ -121,6 +121,20 @@ def compile_cuda_handler(
     """
     source = arguments.get("source", "")
     flags = arguments.get("flags", [])
+    target = arguments.get("target", "")
+
+    # Template injection: If the target matches a known template, ALWAYS use the
+    # template source code. This ensures verified-correct code is compiled.
+    if target and isinstance(target, str) and target.strip():
+        try:
+            from src.infrastructure.probing.cuda_templates import get_template
+            tmpl = get_template(target.strip())
+            if tmpl:
+                print(f"[compile_cuda] 🔄 Using verified template for target: '{target}'")
+                source = tmpl.source_code
+                flags = tmpl.compile_flags
+        except ImportError:
+            pass
 
     if not source:
         return {
