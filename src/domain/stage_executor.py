@@ -839,21 +839,39 @@ class StageExecutor:
         measurements: dict[str, float] = {}
         for tr in tool_results:
             if isinstance(tr, dict):
-                stdout = tr.get("stdout", "") or tr.get("output", "")
-                if stdout:
-                    # Parse key: value format from stdout
-                    for line in stdout.splitlines():
-                        line = line.strip()
-                        if ":" in line and not line.startswith("//") and not line.startswith("#"):
-                            parts = line.split(":", 1)
-                            if len(parts) == 2:
-                                key = parts[0].strip()
-                                val_str = parts[1].strip()
-                                try:
-                                    val = float(val_str)
+                # Check multiple possible stdout fields
+                stdout_sources = [
+                    tr.get("auto_exec_stdout", ""),  # compile_cuda auto-execute
+                    tr.get("stdout", ""),
+                    tr.get("output", ""),
+                ]
+                for stdout in stdout_sources:
+                    if not stdout:
+                        continue
+                    # Handle [AUTO-EXEC] separator
+                    for section in stdout.split("[AUTO-EXEC]"):
+                        for line in section.splitlines():
+                            line = line.strip()
+                            if not line or line.startswith("//") or line.startswith("#"):
+                                continue
+                            # Match pattern: TARGET_NAME: value
+                            # TARGET_NAME can contain letters, digits, underscores, dots, hyphens
+                            colon_pos = line.find(":")
+                            if colon_pos == -1:
+                                continue
+                            key = line[:colon_pos].strip()
+                            val_str = line[colon_pos+1:].strip()
+                            # Validate key looks like a measurement name
+                            if not key or len(key) > 200:
+                                continue
+                            # Try to parse value as float
+                            try:
+                                val = float(val_str)
+                                # Only accept reasonable numeric values
+                                if val != 0 or "zero" not in key.lower():
                                     measurements[key] = val
-                                except ValueError:
-                                    pass
+                            except ValueError:
+                                pass
         
         data: dict[str, Any] = {
             "tool_results": tool_results,
