@@ -147,6 +147,68 @@ class StagePromptBuilder:
                 all_principles.append(f"  --- {t} ---\n{brief}")
             principles_str = "\n\n".join(all_principles)
 
+            target_type_guidance = []
+            for t in targets:
+                tl = t.lower()
+                if "launch__sm_count" in t:
+                    target_type_guidance.append(
+                        f"  • {t}: Use cudaDeviceGetAttribute(cudaDevAttrMultiProcessorCount) AND block ID sweep"
+                    )
+                elif "dram__bytes_read" in t:
+                    target_type_guidance.append(
+                        f"  • {t}: Read-only STREAM kernel, 65535x256 threads, __ldg() for reads"
+                    )
+                elif "dram__bytes_write" in t:
+                    target_type_guidance.append(
+                        f"  • {t}: Write-only STREAM kernel, 65535x256 threads, volatile pointer writes"
+                    )
+                elif "device__attribute_max_gpu_frequency" in t:
+                    target_type_guidance.append(
+                        f"  • {t}: Use cudaDeviceGetAttribute(cudaDevAttrClockRate), result in kHz"
+                    )
+                elif "device__attribute_max_mem_frequency" in t:
+                    target_type_guidance.append(
+                        f"  • {t}: Use cudaDeviceGetAttribute(cudaDevAttrMemoryClockRate), result in kHz"
+                    )
+                elif "device__attribute_fb_bus_width" in t:
+                    target_type_guidance.append(
+                        f"  • {t}: Use cudaDeviceGetAttribute(cudaDevAttrMemoryBusWidth), result in bits"
+                    )
+                elif "sm__throughput" in t:
+                    target_type_guidance.append(
+                        f"  • {t}: Compute-intensive FMA kernel, 65535x256 threads, no global mem after init"
+                    )
+                elif "gpu__compute_memory_throughput" in t:
+                    target_type_guidance.append(
+                        f"  • {t}: Fused read-compute-write kernel, 65535x256 threads"
+                    )
+                elif "latency" in tl:
+                    target_type_guidance.append(
+                        f"  • {t}: Pointer-chasing kernel, clock64() timing, single thread"
+                    )
+                elif "cache_size" in tl or "l2" in tl or "l1" in tl:
+                    target_type_guidance.append(
+                        f"  • {t}: Working-set sweep kernel, clock64() timing"
+                    )
+                elif "bandwidth" in tl:
+                    target_type_guidance.append(
+                        f"  • {t}: STREAM copy kernel, cudaEventElapsedTime, 65535x256 threads"
+                    )
+                elif "clock" in tl:
+                    target_type_guidance.append(
+                        f"  • {t}: Cycle count / wall-clock time kernel"
+                    )
+                elif "sm_count" in tl:
+                    target_type_guidance.append(
+                        f"  • {t}: cudaDeviceGetAttribute + block ID sweep"
+                    )
+                else:
+                    target_type_guidance.append(
+                        f"  • {t}: See design principle above for measurement approach"
+                    )
+
+            target_type_str = "\n".join(target_type_guidance)
+
             parts.append(
                 f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"📊 TARGET ASSIGNMENT (MEASURE ALL OF THESE IN ORDER)\n"
@@ -165,22 +227,22 @@ class StagePromptBuilder:
 
             parts[-1] += (
                 f"\nWORKFLOW (repeat for EACH target):\n"
-                f"  1. Write CUDA code for ONE target (unique kernel per target)\n"
-                f"  2. compile_cuda(source=\"...\", flags=[\"-O3\"])\n"
-                f"  3. execute_binary(binary_path=\"<from compile>\")\n"
+                f"  1. Write CUDA code SPECIFICALLY for the CURRENT target (unique kernel)\n"
+                f"  2. compile_cuda(source=\"...\", flags=[\"-O3\"], target=\"CURRENT_TARGET_NAME\")\n"
+                f"  3. execute_binary(binary_path=\"<exact path from compile_cuda>\")\n"
                 f"  4. Record the measured value from stdout\n"
                 f"  5. Wait for SYSTEM message → then move to NEXT target\n\n"
                 f"⚠️ CRITICAL RULES:\n"
-                f"  • Each target needs DIFFERENT CUDA code!\n"
-                f"    - {targets[0] if 'latency' in targets[0].lower() or 'dram' in targets[0].lower() else 'N/A'} → pointer-chasing kernel\n"
-                f"    - {targets[1] if len(targets) > 1 and ('cache' in targets[1].lower() or 'l2' in targets[1].lower()) else 'N/A'} → working-set sweep kernel\n"
-                f"    - {targets[2] if len(targets) > 2 and 'clock' in targets[2].lower() else 'N/A'} → clock64() calibration kernel\n\n"
+                f"  • Each target needs DIFFERENT CUDA code! Use the guidance below:\n"
+                f"{target_type_str}\n\n"
                 f"  • compile_cuda OVERWRITES the previous binary each time.\n"
                 f"    So you MUST execute_binary IMMEDIATELY after each compile_cuda.\n"
                 f"    Do NOT compile all targets first — compile+execute one at a time.\n\n"
                 f"  • MAX 3 compilation attempts per target.\n"
                 f"    After 3 failures, MOVE ON to next target (system will force switch).\n\n"
                 f"  • Do NOT skip any target — pipeline WILL FAIL if any is missing!\n\n"
+                f"  • The printf output MUST match the target name EXACTLY:\n"
+                f"    printf(\"EXACT_TARGET_NAME: value\\n\")\n\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"📐 DESIGN PRINCIPLES FOR EACH TARGET\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -262,6 +324,42 @@ class StagePromptBuilder:
                     parts.append(f"\nDetected GPU architecture: {data['detected_arch']}")
                 if "analysis_method" in data:
                     parts.append(f"\nCodeGen methodology: {data['analysis_method'][:1000]}")
+
+        if targets and len(targets) > 1:
+            target_metric_map = {
+                "launch__sm_count": ["launch__sm_count", "sm__throughput.avg.pct_of_peak_sustained_elapsed"],
+                "dram__bytes_read.sum.per_second": ["dram__throughput.avg.pct_of_peak_sustained_elapsed", "dram__bytes_read.sum.per_second", "l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum"],
+                "dram__bytes_write.sum.per_second": ["dram__throughput.avg.pct_of_peak_sustained_elapsed", "dram__bytes_write.sum.per_second", "l1tex__t_sectors_pipe_lsu_mem_global_op_st.sum"],
+                "device__attribute_max_gpu_frequency_khz": ["sm__cycles_active.avg", "device__attribute_max_gpu_frequency_khz"],
+                "device__attribute_max_mem_frequency_khz": ["dram__throughput.avg.pct_of_peak_sustained_elapsed", "device__attribute_max_mem_frequency_khz"],
+                "device__attribute_fb_bus_width": ["dram__throughput.avg.pct_of_peak_sustained_elapsed", "device__attribute_fb_bus_width"],
+                "sm__throughput.avg.pct_of_peak_sustained_elapsed": ["sm__throughput.avg.pct_of_peak_sustained_elapsed", "sm__cycles_active.avg", "sm__warps_active.avg.pct_of_peak_sustained_elapsed"],
+                "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": ["gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed", "dram__throughput.avg.pct_of_peak_sustained_elapsed", "sm__throughput.avg.pct_of_peak_sustained_elapsed"],
+            }
+
+            metrics_for_target = target_metric_map.get(target, ["sm__throughput.avg.pct_of_peak_sustained_elapsed", "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed"])
+            metrics_str = ", ".join(metrics_for_target)
+
+            parts.append(
+                f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🎯 NCU PROFILING INSTRUCTIONS\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"Current target: {target}\n"
+                f"Use run_ncu with these metrics: [{metrics_str}]\n\n"
+                f"⚠️ CRITICAL: Profile the binary for the CURRENT target ONLY.\n"
+                f"Do NOT profile binaries from other targets — they are irrelevant.\n\n"
+                f"WORKFLOW:\n"
+                f"1. Use run_ncu(executable=\"<binary_path>\", metrics=[...]) to profile\n"
+                f"2. Parse ncu output for actual metric values\n"
+                f"3. Perform Roofline analysis\n"
+                f"4. Classify bottleneck: compute_bound, memory_bound, latency_bound, or cache_capacity\n"
+                f"5. Report confidence level with reasoning\n"
+                f"6. Provide optimization recommendations\n\n"
+                f"⚠️ If ncu returns ERR_NVGPUCTRPERM (permission denied):\n"
+                f"  - Stop calling run_ncu immediately\n"
+                f"  - Analyze the CodeGen measurements directly\n"
+                f"  - Classify bottleneck based on measured values and design principle\n"
+            )
 
         parts.append(
             "\n\nIMPORTANT: Perform Roofline analysis on the data above.\n"
