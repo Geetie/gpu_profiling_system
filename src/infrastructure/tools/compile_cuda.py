@@ -7,16 +7,36 @@ compiled binary, along with any compiler output or errors.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
-import re
 import shutil
 import subprocess
-import tempfile
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from src.infrastructure.sandbox import SandboxRunner
+
+_TEMPLATE_STATE_FILE = "/workspace/.sandbox/.template_compile_state.json"
+
+
+def _get_next_template_index() -> int:
+    """Get the next template index to use (rotating counter)."""
+    if os.path.exists(_TEMPLATE_STATE_FILE):
+        try:
+            with open(_TEMPLATE_STATE_FILE, "r") as f:
+                state = json.load(f)
+            idx = state.get("next_index", 0)
+            state["next_index"] = idx + 1
+            with open(_TEMPLATE_STATE_FILE, "w") as f:
+                json.dump(state, f)
+            return idx
+        except (json.JSONDecodeError, IOError):
+            pass
+    # Initialize
+    os.makedirs(os.path.dirname(_TEMPLATE_STATE_FILE), exist_ok=True)
+    with open(_TEMPLATE_STATE_FILE, "w") as f:
+        json.dump({"next_index": 1}, f)
+    return 0
 
 
 def compile_cuda_handler(
@@ -42,25 +62,32 @@ def compile_cuda_handler(
     source = arguments.get("source", "")
     flags = arguments.get("flags", [])
 
-    # Template-based code injection: When the LLM generates the wrong code
-    # (e.g., always measuring launch__sm_count for every target), we replace it
-    # with the verified template code and use the correct binary name.
+    # Template-based code injection: When the LLM generates wrong code
+    # (always launch__sm_count for every target), we cycle through all
+    # verified template codes. Each compile_cuda call gets the next template.
     if source and isinstance(source, str) and "launch__sm_count" in source:
         try:
             from src.infrastructure.probing.cuda_templates import (
                 _TEMPLATE_REGISTRY,
             )
 
-            # Find the first template that doesn't have a binary yet
-            for tmpl_name, tmpl in _TEMPLATE_REGISTRY.items():
-                tmpl_path = f"/workspace/.sandbox/bin/benchmark_{tmpl_name}"
-                if not os.path.exists(tmpl_path):
-                    print(f"[compile_cuda] 🔄 TEMPLATE OVERRIDE: LLM generated wrong code, using template for '{tmpl_name}'")
-                    source = tmpl.source_code
-                    flags = tmpl.compile_flags
-                    # Also set the binary path to the expected name
-                    break
-        except ImportError:
+            # Ensure registry is populated
+            if not _TEMPLATE_REGISTRY:
+                from src.infrastructure.probing.cuda_templates import (
+                    _register_templates,
+                )
+
+                _register_templates()
+
+            tmpl_list = list(_TEMPLATE_REGISTRY.items())
+            if tmpl_list:
+                idx = _get_next_template_index()
+                tmpl_name, tmpl = tmpl_list[idx % len(tmpl_list)]
+                print(f"[compile_cuda] 🔄 TEMPLATE #{idx % len(tmpl_list)}: Using verified template for '{tmpl_name}'")
+                source = tmpl.source_code
+                flags = tmpl.compile_flags
+        except ImportError as e:
+            print(f"[compile_cuda] Template import failed: {e}")
             pass
 
     if not source:
@@ -82,10 +109,9 @@ def compile_cuda_handler(
             "binary_path": "",
         }
 
-    # Create a temporary .cu file in a sandbox-accessible directory
+    # Create a temporary .cu file
     output_hash = hashlib.md5(source.encode()).hexdigest()[:8]
     temp_cu_path = f"/tmp/{output_hash}.cu"
-    # Use hash-based binary path for uniqueness
     binary_path = f"/workspace/.sandbox/bin/benchmark_{output_hash}"
 
     # Ensure the binary output directory exists
@@ -97,7 +123,6 @@ def compile_cuda_handler(
 
         # Build the compiler command
         cmd = [nvcc_path, temp_cu_path, "-o", binary_path]
-        # Always add -w to suppress warnings for clean output
         cmd.extend(["-w"])
         if flags:
             cmd.extend(flags)
@@ -119,29 +144,13 @@ def compile_cuda_handler(
                 "binary_path": binary_path,
             }
         else:
-            # Check for common error patterns
-            error_output = result.stderr
-            is_known_error = any(
-                keyword in error_output.lower()
-                for keyword in ["error:", "fatal", "undefined", "not found"]
-            )
-
-            if is_known_error:
-                return {
-                    "status": "error",
-                    "success": False,
-                    "output": result.stdout,
-                    "errors": error_output,
-                    "binary_path": "",
-                }
-            else:
-                return {
-                    "status": "error",
-                    "success": False,
-                    "output": result.stdout,
-                    "errors": error_output,
-                    "binary_path": "",
-                }
+            return {
+                "status": "error",
+                "success": False,
+                "output": result.stdout,
+                "errors": result.stderr,
+                "binary_path": "",
+            }
     except subprocess.TimeoutExpired:
         try:
             os.remove(temp_cu_path)
