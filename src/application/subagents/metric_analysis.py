@@ -486,6 +486,9 @@ class MetricAnalysisAgent(BaseSubAgent):
         T11 FIX: Enhanced with NCU permission pre-check to avoid wasted API calls.
         If NCU is already marked as unavailable, returns cached error immediately (<1ms)
         instead of attempting actual execution (which would waste ~35s per call).
+        
+        CRITICAL FIX: Added support for read_file tool which is documented in prompts
+        but was not actually implemented, causing all file read operations to fail.
         """
         from src.infrastructure.tools.run_ncu import (
             run_ncu_handler,
@@ -513,6 +516,15 @@ class MetricAnalysisAgent(BaseSubAgent):
                 }
 
             return run_ncu_handler(args, sandbox=self._sandbox)
+
+        # CRITICAL FIX: Support read_file tool which is documented in prompts
+        if tool_name == "read_file":
+            from src.infrastructure.tools.file_tools import make_read_file_handler
+            from src.infrastructure.file_ops import FileOperations
+            
+            file_ops = FileOperations(self._sandbox.root if self._sandbox else "/workspace")
+            handler = make_read_file_handler(file_ops)
+            return handler(args)
 
         if self.tool_registry.has_tool(tool_name):
             self._persister.log_entry(
@@ -564,6 +576,8 @@ class MetricAnalysisAgent(BaseSubAgent):
             merged_metrics, ncu_available=True, cross_validation=cross_validation
         )
 
+        # CRITICAL FIX: Include 'measurements' field for StageExecutor compatibility
+        # StageExecutor checks for 'measurements' to determine which targets are completed
         return SubAgentResult(
             agent_role=self.role,
             status=SubAgentStatus.SUCCESS,
@@ -571,6 +585,7 @@ class MetricAnalysisAgent(BaseSubAgent):
                 "bottleneck_type": roofline_result["bottleneck_type"],
                 "bottleneck_sub_type": roofline_result.get("bottleneck_sub_type"),
                 "parsed_metrics": merged_metrics,
+                "measurements": merged_metrics,  # CRITICAL: StageExecutor expects this field
                 "evidence": evidence,
                 "recommendations": recommendations,
                 "suggested_fixes": suggested_fixes,
@@ -603,6 +618,7 @@ class MetricAnalysisAgent(BaseSubAgent):
             parsed_metrics, ncu_available=False
         )
 
+        # CRITICAL FIX: Include 'measurements' field for StageExecutor compatibility
         return SubAgentResult(
             agent_role=self.role,
             status=SubAgentStatus.SUCCESS,
@@ -610,6 +626,7 @@ class MetricAnalysisAgent(BaseSubAgent):
                 "bottleneck_type": roofline_result["bottleneck_type"],
                 "bottleneck_sub_type": roofline_result.get("bottleneck_sub_type"),
                 "parsed_metrics": parsed_metrics,
+                "measurements": parsed_metrics,  # CRITICAL: StageExecutor expects this field
                 "evidence": evidence,
                 "recommendations": recommendations,
                 "suggested_fixes": suggested_fixes,
@@ -1173,6 +1190,7 @@ class MetricAnalysisAgent(BaseSubAgent):
                 "bottleneck_type": roofline_result["bottleneck_type"],
                 "bottleneck_sub_type": roofline_result.get("bottleneck_sub_type"),
                 "parsed_metrics": ncu_metrics,
+                "measurements": ncu_metrics,  # CRITICAL: StageExecutor expects this field
                 "evidence": roofline_result.get("evidence", {}),
                 "recommendations": roofline_result.get("recommendations", []),
                 "suggested_fixes": self._generate_suggested_fixes(
@@ -1233,6 +1251,7 @@ class MetricAnalysisAgent(BaseSubAgent):
                         "bottleneck_type": bottleneck,
                         "bottleneck_sub_type": sub_type,
                         "parsed_metrics": metrics,
+                        "measurements": metrics,  # CRITICAL: StageExecutor expects this field
                         "evidence": evidence,
                         "recommendations": recommendations,
                         "suggested_fixes": suggested_fixes,
@@ -1249,6 +1268,7 @@ class MetricAnalysisAgent(BaseSubAgent):
         parsed_metrics = self._parse_output(raw_output)
         roofline_result = self.analyze_roofline(parsed_metrics, target)
 
+        # CRITICAL FIX: Include 'measurements' field for StageExecutor compatibility
         return SubAgentResult(
             agent_role=self.role,
             status=SubAgentStatus.SUCCESS,
@@ -1256,6 +1276,7 @@ class MetricAnalysisAgent(BaseSubAgent):
                 "bottleneck_type": roofline_result["bottleneck_type"],
                 "bottleneck_sub_type": roofline_result.get("bottleneck_sub_type"),
                 "parsed_metrics": parsed_metrics,
+                "measurements": parsed_metrics,  # CRITICAL: StageExecutor expects this field
                 "evidence": roofline_result.get("evidence", {}),
                 "recommendations": roofline_result.get("recommendations", []),
                 "suggested_fixes": self._generate_suggested_fixes(
