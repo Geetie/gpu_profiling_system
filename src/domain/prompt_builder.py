@@ -132,22 +132,31 @@ class StagePromptBuilder:
         target = target_spec.get("target", targets[0] if targets else "unknown")
         principle = get_design_principle(target)
 
-        # Check if there's a template available for this target
-        template_source = ""
+        # Inject partial code patterns as guidance (NOT fully compilable code)
+        pattern_guidance = ""
         try:
-            from src.infrastructure.probing.cuda_templates import get_template
-            tmpl = get_template(target)
-            if tmpl:
-                template_source = (
+            from src.infrastructure.probing.cuda_templates import get_pattern
+            pattern = get_pattern(target)
+            if pattern:
+                pattern_guidance = (
                     f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"📝 REFERENCE CUDA SOURCE CODE FOR TARGET: {target}\n"
+                    f"📝 CODE PATTERN REFERENCE FOR TARGET: {target}\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"Below is a reference implementation for this target.\n"
-                    f"You MUST use this EXACT code (or improve upon it) for compilation.\n\n"
-                    f"```cuda\n{tmpl.source_code}```\n\n"
-                    f"⚠️ CRITICAL: This code is verified to work correctly.\n"
-                    f"Use it directly - do NOT generate a different kernel!\n"
-                    f"Compile flags: {tmpl.compile_flags}\n"
+                    f"This is a PARTIAL code pattern. You MUST complete the full implementation.\n\n"
+                    f"KEY API PATTERN (use this exact approach):\n"
+                    f"```cuda\n{pattern.key_api_pattern}```\n\n"
+                    f"CODE SKELETON (fill in the TODOs):\n"
+                    f"```cuda\n{pattern.measurement_skeleton}```\n\n"
+                    f"EXPECTED OUTPUT FORMAT: {pattern.expected_output_format}\n\n"
+                    f"METHODOLOGY: {pattern.measurement_methodology}\n\n"
+                    f"CRITICAL NOTES:\n"
+                )
+                for note in pattern.critical_notes:
+                    pattern_guidance += f"  • {note}\n"
+                pattern_guidance += (
+                    f"\n⚠️ You MUST write the COMPLETE CUDA source code.\n"
+                    f"The skeleton above has TODOs — you must fill them in with working code.\n"
+                    f"Do NOT submit code with TODOs still present!\n"
                 )
         except ImportError:
             pass
@@ -156,7 +165,7 @@ class StagePromptBuilder:
             f"Write CUDA micro-benchmarks for: {target}",
             f"\nTarget specification: {target_spec}",
             f"\n{principle}",
-            template_source,
+            pattern_guidance,
         ]
 
         if targets and len(targets) > 1:
