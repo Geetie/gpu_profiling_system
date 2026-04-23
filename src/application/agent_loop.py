@@ -2506,6 +2506,11 @@ class AgentLoop:
             entries = self.context_manager.get_entries()
             measured = set()
 
+            # CRITICAL FIX: Use loop_state.measured_values as the primary source of truth
+            # This is where AUTO-EXECUTE stores measurements, not in context messages
+            measured = set(self.loop_state.measured_values.keys())
+            
+            # Also parse from context as secondary source (for backward compatibility)
             for entry in entries:
                 if entry.role.value == "assistant":
                     content = entry.content
@@ -2516,7 +2521,7 @@ class AgentLoop:
                                 text = data.get(field, "")
                                 if text:
                                     measurements = self._parse_measurements_from_text(str(text))
-                                    measurements.update(measurements)
+                                    measured.update(measurements)
                     except (json.JSONDecodeError, TypeError):
                         pass
                     measurements = self._parse_measurements_from_text(str(content))
