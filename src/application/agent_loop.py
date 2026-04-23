@@ -159,6 +159,8 @@ class AgentLoop:
             'bytes_rread': 'bytes_read',
             'bytes_wwrite': 'bytes_write',
             'attriibute': 'attribute',
+            'deevice__attribute': 'device__attribute',
+            'deevice': 'device',
             'launch__sm_countt': 'launch__sm_count',
             'dram__bytes_rread': 'dram__bytes_read',
             'dram__bytes_wwrite': 'dram__bytes_write',
@@ -169,6 +171,8 @@ class AgentLoop:
             'launch__sm_coount': 'launch__sm_count',
             'dram__bytes_rread.sum.pper_second': 'dram__bytes_read.sum.per_second',
             'dram__bytes_wwrite.sum.pper_second': 'dram__bytes_write.sum.per_second',
+            'device__attribute_fb__bus_width': 'device__attribute_fb_bus_width',
+            'fb__bus_width': 'fb_bus_width',
         }
         
         result = name
