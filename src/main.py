@@ -314,6 +314,22 @@ def _run_pipeline_mode(args, builder: SystemBuilder):
             if result.metadata:
                 pipeline_data["_pipeline_metadata"] = result.metadata
 
+            # CRITICAL FIX: Inject measurements from agent_loop.loop_state.measured_values
+            # This ensures CodeGen measurements are included even when MetricAnalysis fails
+            if hasattr(agent_loop, 'loop_state') and hasattr(agent_loop.loop_state, 'measured_values'):
+                codegen_measurements = agent_loop.loop_state.measured_values
+                if codegen_measurements:
+                    existing = pipeline_data.get("measurements", {})
+                    if isinstance(existing, dict):
+                        for k, v in codegen_measurements.items():
+                            if k not in existing:
+                                existing[k] = v
+                        pipeline_data["measurements"] = existing
+                    else:
+                        pipeline_data["measurements"] = dict(codegen_measurements)
+                    print(f"[pipeline] Injected {len(codegen_measurements)} measurements from CodeGen stage")
+                    print(f"[pipeline] CodeGen measurements: {list(codegen_measurements.keys())}")
+
             ui.show_message("Running hardware probes for ground-truth measurements...")
             probe_results = _run_probes_no_write(builder.sandbox)
             if probe_results:

@@ -46,6 +46,9 @@ class LoopState:
     completed_targets: list[str] = field(default_factory=list)
     target_retry_count: dict[str, int] = field(default_factory=dict)
 
+    # CRITICAL FIX: Store actual measurement values (key -> value mapping)
+    measured_values: dict[str, float] = field(default_factory=dict)
+
     # C-01 FIX: LLM stall detection fields
     consecutive_no_tool_calls: int = 0
     last_tool_call_turn: int = 0
@@ -80,6 +83,8 @@ class LoopState:
             "current_target": self.current_target,
             "completed_targets": self.completed_targets,
             "target_retry_count": self.target_retry_count,
+            # CRITICAL FIX: Include measurement values
+            "measured_values": self.measured_values,
             # C-01 FIX: Include stall detection state
             "consecutive_no_tool_calls": self.consecutive_no_tool_calls,
             "last_tool_call_turn": self.last_tool_call_turn,
@@ -107,6 +112,8 @@ class LoopState:
             current_target=data.get("current_target"),
             completed_targets=data.get("completed_targets", []),
             target_retry_count=data.get("target_retry_count", {}),
+            # CRITICAL FIX: Restore measurement values
+            measured_values=data.get("measured_values", {}),
             # C-01 FIX: Restore stall detection state
             consecutive_no_tool_calls=data.get("consecutive_no_tool_calls", 0),
             last_tool_call_turn=data.get("last_tool_call_turn", 0),
@@ -1553,6 +1560,8 @@ class AgentLoop:
                                     if key not in self.loop_state.completed_targets:
                                         self.loop_state.completed_targets.append(key)
                                         newly_measured.append(key)
+                                    # CRITICAL FIX: Store measurement values
+                                    self.loop_state.measured_values[key] = val
 
                                 # Generate structured measurement summary for visibility
                                 summary_lines = ["✅ MEASUREMENTS RECORDED:"]
