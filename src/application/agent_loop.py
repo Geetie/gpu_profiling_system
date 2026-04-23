@@ -155,24 +155,32 @@ class AgentLoop:
             return name
             
         typo_map = {
+            # Common duplicated characters
             'sm_coount': 'sm_count',
             'bytes_rread': 'bytes_read',
             'bytes_wwrite': 'bytes_write',
             'attriibute': 'attribute',
             'deevice__attribute': 'device__attribute',
             'deevice': 'device',
+            'commpute': 'compute',
+            'countt': 'count',
+            'pper_second': 'per_second',
+            'sustainedd': 'sustained',
+            # Full target name typos
             'launch__sm_countt': 'launch__sm_count',
             'dram__bytes_rread': 'dram__bytes_read',
             'dram__bytes_wwrite': 'dram__bytes_write',
             'device__attriibute': 'device__attribute',
-            'pper_second': 'per_second',
-            'countt': 'count',
             'sm_coountt': 'sm_count',
             'launch__sm_coount': 'launch__sm_count',
             'dram__bytes_rread.sum.pper_second': 'dram__bytes_read.sum.per_second',
             'dram__bytes_wwrite.sum.pper_second': 'dram__bytes_write.sum.per_second',
             'device__attribute_fb__bus_width': 'device__attribute_fb_bus_width',
             'fb__bus_width': 'fb_bus_width',
+            'gpu__commpute_memory_throughput': 'gpu__compute_memory_throughput',
+            # Additional variants
+            'dram__bytes_read.sum.pper_second': 'dram__bytes_read.sum.per_second',
+            'dram__bytes_write.sum.pper_second': 'dram__bytes_write.sum.per_second',
         }
         
         result = name
@@ -1033,6 +1041,8 @@ class AgentLoop:
                             m = re.match(r'\s*([\w_]+)\s*[:=]\s*([\d.]+[eE]?[\d]*)', line)
                             if m:
                                 key, val_str = m.group(1), m.group(2)
+                                # CRITICAL FIX: Normalize key before storing
+                                key = AgentLoop.normalize_target_name(key)
                                 try:
                                     val = float(val_str)
                                     auto_measurements[key] = val
@@ -1584,6 +1594,8 @@ class AgentLoop:
                             if measurements:
                                 newly_measured = []
                                 for key, val in measurements.items():
+                                    # CRITICAL FIX: Normalize key before storing
+                                    key = AgentLoop.normalize_target_name(key)
                                     if key not in self.loop_state.completed_targets:
                                         self.loop_state.completed_targets.append(key)
                                         newly_measured.append(key)
@@ -1734,6 +1746,8 @@ class AgentLoop:
                             m = re.match(r'\s*([\w_]+)\s*[:=]\s*([\d.]+[eE]?[\d]*)', line)
                             if m:
                                 key, val_str = m.group(1), m.group(2)
+                                # CRITICAL FIX: Normalize key before storing
+                                key = AgentLoop.normalize_target_name(key)
                                 try:
                                     val = float(val_str)
                                     auto_measurements[key] = val
