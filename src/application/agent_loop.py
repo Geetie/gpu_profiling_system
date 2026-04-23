@@ -1724,6 +1724,29 @@ class AgentLoop:
                     self.loop_state.last_compiled_binary = None
                     self.loop_state.consecutive_no_tool_calls = 0
                     
+                    # CRITICAL FIX: Parse and store measurements from AUTO-EXECUTE stdout
+                    auto_stdout = result.get("stdout", "") if isinstance(result, dict) else ""
+                    if auto_stdout:
+                        auto_measurements = {}
+                        for line in auto_stdout.splitlines():
+                            if line.strip().startswith("//") or line.strip().startswith("#"):
+                                continue
+                            m = re.match(r'\s*([\w_]+)\s*[:=]\s*([\d.]+[eE]?[\d]*)', line)
+                            if m:
+                                key, val_str = m.group(1), m.group(2)
+                                try:
+                                    val = float(val_str)
+                                    auto_measurements[key] = val
+                                    # CRITICAL FIX: Store measurement values
+                                    self.loop_state.measured_values[key] = val
+                                    if key not in self.loop_state.completed_targets:
+                                        self.loop_state.completed_targets.append(key)
+                                except ValueError:
+                                    pass
+                        
+                        if auto_measurements:
+                            print(f"[AgentLoop] AUTO-EXECUTE Parsed {len(auto_measurements)} measurements: {auto_measurements}")
+                    
                     # Add result to context
                     result_str = json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result)
                     self.context_manager.add_entry(
