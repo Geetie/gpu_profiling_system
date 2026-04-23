@@ -568,56 +568,47 @@ def _assemble_final_results(output_dir, hardware_results, pipeline_data, target_
         hw_measurements = hardware_results.get("measurements", {}) if hardware_results else {}
         output = {}
 
+        # CRITICAL FIX: Extract measurements from multiple sources
+        # 1. First from pipeline_measurements (CodeGen stage output)
         pipeline_measurements = pipeline_data.get("measurements", {})
         if isinstance(pipeline_measurements, dict):
             for k, v in pipeline_measurements.items():
                 if k not in output:
                     output[k] = v
 
-        # CRITICAL FIX: Also extract measurements from key_measurements if available
-        # This ensures measurements are captured even if pipeline failed at later stages
+        # CRITICAL FIX: Also extract from key_measurements
         key_measurements = pipeline_data.get("key_measurements", {})
         if isinstance(key_measurements, dict):
             for k, v in key_measurements.items():
                 if k not in output:
                     output[k] = v
-                    print(f"[pipeline] Added measurement from key_measurements: {k}={v}")
+                    print(f"[assemble] Added measurement from key_measurements: {k}={v}")
 
+        # CRITICAL FIX: Extract measurements from tool_results execute_binary stdout
+        # This captures the actual NCU output from program execution
         tool_results = pipeline_data.get("tool_results", [])
         if isinstance(tool_results, list):
+            import re
             for tr in tool_results:
                 if not isinstance(tr, dict):
                     continue
+                tool_name = tr.get("tool_name", "")
                 stdout = tr.get("stdout", "") or tr.get("output", "")
-                if stdout:
+                if stdout and tool_name == "execute_binary":
                     for line in stdout.splitlines():
                         line = line.strip()
-                        if ":" in line and not line.startswith("//") and not line.startswith("#"):
-                            parts = line.split(":", 1)
-                            if len(parts) == 2:
-                                key = parts[0].strip()
-                                val_str = parts[1].strip()
-                                try:
-                                    val = float(val_str)
-                                    if key not in output:
-                                        output[key] = val
-                                except ValueError:
-                                    pass
-
-        final_output = pipeline_data.get("final_output", "")
-        if final_output and not pipeline_measurements:
-            import re
-            for line in final_output.splitlines():
-                line = line.strip()
-                match = re.match(r'^([\w_]+)\s*[:=]\s*([\d.]+)', line)
-                if match:
-                    key = match.group(1)
-                    try:
-                        val = float(match.group(2))
-                        if key not in output:
-                            output[key] = val
-                    except ValueError:
-                        pass
+                        # Match NCU-style output: target_name: value
+                        match = re.match(r'^([a-zA-Z_][\w_]*(?:\.\w+)*)\s*:\s*([\d.eE+-]+)', line)
+                        if match:
+                            key = match.group(1)
+                            val_str = match.group(2)
+                            try:
+                                val = float(val_str)
+                                if key not in output:
+                                    output[key] = val
+                                    print(f"[assemble] Extracted from execute_binary stdout: {key}={val}")
+                            except ValueError:
+                                pass
 
         for k, v in hw_measurements.items():
             if k not in output:

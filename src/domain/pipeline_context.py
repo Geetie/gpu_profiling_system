@@ -190,7 +190,8 @@ class PipelineContext:
             return result
 
         # Always propagate measurements, regardless of result status
-        # This is critical for ensuring measurements appear in final output
+        # Always merge measurements - CodeGen's are the primary source
+        # CRITICAL: Merge even if result is failed, measurements must be preserved
         if "measurements" in self.code_gen_data:
             existing = result.data.get("measurements", {})
             if isinstance(existing, dict):
@@ -199,7 +200,7 @@ class PipelineContext:
                         existing[k] = v
                 result.data["measurements"] = existing
             else:
-                result.data["measurements"] = dict(self.code_gen_data["measurements"])
+                result.data["measurements"] = self.code_gen_data["measurements"]
 
         # Only propagate other data if result is successful
         if result.is_success():
@@ -222,6 +223,8 @@ class PipelineContext:
         - L1: Key measurements and binary paths always included
         - L2: Stage summaries and error patterns included for debugging
         - L3: Conversation history excluded from final result (too verbose)
+        
+        CRITICAL: Measurements MUST always be included, even if pipeline failed
         """
         if not self.code_gen_data:
             # Even without CodeGen data, include L0 and L1 memory
@@ -240,6 +243,7 @@ class PipelineContext:
                 result.data["binary_paths"] = list(self.binary_paths)
             return result
 
+        # CRITICAL FIX: Always merge CodeGen data regardless of result status
         merge_keys = [
             "analysis_method", "code_gen_output",
             "tool_results", "binary_path",
@@ -248,7 +252,7 @@ class PipelineContext:
             if key in self.code_gen_data and key not in result.data:
                 result.data[key] = self.code_gen_data[key]
 
-        # Always merge measurements - CodeGen's are the primary source
+        # CRITICAL FIX: Always merge measurements from CodeGen
         if "measurements" in self.code_gen_data:
             existing = result.data.get("measurements", {})
             if isinstance(existing, dict):
