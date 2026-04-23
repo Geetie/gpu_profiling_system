@@ -7,8 +7,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.domain.subagent import PipelineStage
-
 
 class StagePromptBuilder:
     """Builds system and task prompts for each pipeline stage.
@@ -17,33 +15,35 @@ class StagePromptBuilder:
     Each method returns the exact prompt string for a given stage.
     """
 
-    def build_system_prompt(self, stage: PipelineStage) -> str:
+    def build_system_prompt(self, stage: "PipelineStage") -> str:
         """Return the system prompt for a pipeline stage."""
         builders = {
-            PipelineStage.PLAN: self._plan_system,
-            PipelineStage.CODE_GEN: self._codegen_system,
-            PipelineStage.METRIC_ANALYSIS: self._metric_system,
-            PipelineStage.VERIFICATION: self._verification_system,
+            "plan": self._plan_system,
+            "code_gen": self._codegen_system,
+            "metric_analysis": self._metric_system,
+            "verification": self._verification_system,
         }
-        builder = builders.get(stage)
+        stage_key = stage.value if hasattr(stage, "value") else str(stage)
+        builder = builders.get(stage_key)
         if builder is None:
             raise ValueError(f"Unknown pipeline stage: {stage}")
         return builder()
 
     def build_task_prompt(
         self,
-        stage: PipelineStage,
+        stage: "PipelineStage",
         target_spec: dict[str, Any],
         prev_result: Any | None = None,
     ) -> str:
         """Return the task prompt for a pipeline stage."""
         builders = {
-            PipelineStage.PLAN: self._plan_task,
-            PipelineStage.CODE_GEN: self._codegen_task,
-            PipelineStage.METRIC_ANALYSIS: self._metric_task,
-            PipelineStage.VERIFICATION: self._verification_task,
+            "plan": self._plan_task,
+            "code_gen": self._codegen_task,
+            "metric_analysis": self._metric_task,
+            "verification": self._verification_task,
         }
-        builder = builders.get(stage)
+        stage_key = stage.value if hasattr(stage, "value") else str(stage)
+        builder = builders.get(stage_key)
         if builder is None:
             raise ValueError(f"Unknown pipeline stage: {stage}")
         return builder(target_spec, prev_result)
@@ -126,123 +126,70 @@ class StagePromptBuilder:
 
     @staticmethod
     def _codegen_task(target_spec: dict[str, Any], prev_result: Any | None) -> str:
-        from src.domain.design_principles import get_design_principle
-
         targets = target_spec.get("targets", [])
         target = target_spec.get("target", targets[0] if targets else "unknown")
-        principle = get_design_principle(target)
 
-        # Inject partial code patterns as guidance (NOT fully compilable code)
-        pattern_guidance = ""
+        parts = [
+            f"Write CUDA micro-benchmarks for: {target}",
+        ]
+
+        # 1. AUTO-INVOKE METRIC DOCUMENTATION (primary guidance)
+        try:
+            from src.domain.metric_reference import format_metric_context
+            metric_context = format_metric_context(target)
+            if metric_context:
+                parts.append(f"\n{'=' * 60}")
+                parts.append(f"📊 NCU METRIC DOCUMENTATION (auto-loaded for target: {target})")
+                parts.append(f"{'=' * 60}")
+                parts.append(metric_context)
+        except (ImportError, KeyError):
+            pass
+
+        # 2. TARGET-SPECIFIC DESIGN PRINCIPLE (filtered to current target only)
+        from src.domain.design_principles import get_design_principle
+        principle = get_design_principle(target)
+        if principle:
+            parts.append(f"\n{'=' * 60}")
+            parts.append(f"🎯 DESIGN PRINCIPLE FOR TARGET: {target}")
+            parts.append(f"{'=' * 60}")
+            parts.append(principle[:1500])
+
+        # 3. PATTERN GUIDANCE (if available for this target)
         try:
             from src.infrastructure.probing.cuda_templates import get_pattern
             pattern = get_pattern(target)
             if pattern:
-                pattern_guidance = (
-                    f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"📝 CODE PATTERN REFERENCE FOR TARGET: {target}\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"This is a PARTIAL code pattern. You MUST complete the full implementation.\n\n"
-                    f"KEY API PATTERN (use this exact approach):\n"
-                    f"```cuda\n{pattern.key_api_pattern}```\n\n"
-                    f"CODE SKELETON (fill in the TODOs):\n"
-                    f"```cuda\n{pattern.measurement_skeleton}```\n\n"
-                    f"EXPECTED OUTPUT FORMAT: {pattern.expected_output_format}\n\n"
-                    f"METHODOLOGY: {pattern.measurement_methodology}\n\n"
-                    f"CRITICAL NOTES:\n"
-                )
-                for note in pattern.critical_notes:
-                    pattern_guidance += f"  • {note}\n"
-                pattern_guidance += (
+                parts.append(f"\n{'=' * 60}")
+                parts.append(f"📝 CODE PATTERN REFERENCE FOR TARGET: {target}")
+                parts.append(f"{'=' * 60}")
+                parts.append("KEY API PATTERN (use this exact approach):")
+                parts.append(f"```cuda\n{pattern.key_api_pattern}```\n")
+                parts.append("CODE SKELETON (fill in the TODOs):")
+                parts.append(f"```cuda\n{pattern.measurement_skeleton}```\n")
+                parts.append(f"EXPECTED OUTPUT FORMAT: {pattern.expected_output_format}\n")
+                parts.append(f"METHODOLOGY: {pattern.measurement_methodology}\n")
+                if pattern.critical_notes:
+                    parts.append("CRITICAL NOTES:")
+                    for note in pattern.critical_notes:
+                        parts.append(f"  • {note}")
+                parts.append(
                     f"\n⚠️ You MUST write the COMPLETE CUDA source code.\n"
                     f"The skeleton above has TODOs — you must fill them in with working code.\n"
-                    f"Do NOT submit code with TODOs still present!\n"
+                    f"Do NOT submit code with TODOs still present!"
                 )
         except ImportError:
             pass
 
-        parts = [
-            f"Write CUDA micro-benchmarks for: {target}",
-            f"\nTarget specification: {target_spec}",
-            f"\n{principle}",
-            pattern_guidance,
-        ]
+        # 4. TARGET SPEC (concise)
+        parts.append(f"\nTarget specification: {target_spec}")
 
+        # 5. MULTI-TARGET WORKFLOW (only if multiple targets)
         if targets and len(targets) > 1:
             target_list_str = "\n".join(f"  {i+1}. {t}" for i, t in enumerate(targets))
-            all_principles = []
-            for t in targets:
-                p = get_design_principle(t)
-                brief = p[:600] if len(p) > 600 else p
-                all_principles.append(f"  --- {t} ---\n{brief}")
-            principles_str = "\n\n".join(all_principles)
-
-            target_type_guidance = []
-            for t in targets:
-                tl = t.lower()
-                if "launch__sm_count" in t:
-                    target_type_guidance.append(
-                        f"  • {t}: Use cudaDeviceGetAttribute(cudaDevAttrMultiProcessorCount) AND block ID sweep"
-                    )
-                elif "dram__bytes_read" in t:
-                    target_type_guidance.append(
-                        f"  • {t}: Read-only STREAM kernel, 65535x256 threads, __ldg() for reads"
-                    )
-                elif "dram__bytes_write" in t:
-                    target_type_guidance.append(
-                        f"  • {t}: Write-only STREAM kernel, 65535x256 threads, volatile pointer writes"
-                    )
-                elif "device__attribute_max_gpu_frequency" in t:
-                    target_type_guidance.append(
-                        f"  • {t}: Use cudaDeviceGetAttribute(cudaDevAttrClockRate), result in kHz"
-                    )
-                elif "device__attribute_max_mem_frequency" in t:
-                    target_type_guidance.append(
-                        f"  • {t}: Use cudaDeviceGetAttribute(cudaDevAttrMemoryClockRate), result in kHz"
-                    )
-                elif "device__attribute_fb_bus_width" in t:
-                    target_type_guidance.append(
-                        f"  • {t}: Use cudaDeviceGetAttribute(cudaDevAttrMemoryBusWidth), result in bits"
-                    )
-                elif "sm__throughput" in t:
-                    target_type_guidance.append(
-                        f"  • {t}: Compute-intensive FMA kernel, 65535x256 threads, no global mem after init"
-                    )
-                elif "gpu__compute_memory_throughput" in t:
-                    target_type_guidance.append(
-                        f"  • {t}: Fused read-compute-write kernel, 65535x256 threads"
-                    )
-                elif "latency" in tl:
-                    target_type_guidance.append(
-                        f"  • {t}: Pointer-chasing kernel, clock64() timing, single thread"
-                    )
-                elif "cache_size" in tl or "l2" in tl or "l1" in tl:
-                    target_type_guidance.append(
-                        f"  • {t}: Working-set sweep kernel, clock64() timing"
-                    )
-                elif "bandwidth" in tl:
-                    target_type_guidance.append(
-                        f"  • {t}: STREAM copy kernel, cudaEventElapsedTime, 65535x256 threads"
-                    )
-                elif "clock" in tl:
-                    target_type_guidance.append(
-                        f"  • {t}: Cycle count / wall-clock time kernel"
-                    )
-                elif "sm_count" in tl:
-                    target_type_guidance.append(
-                        f"  • {t}: cudaDeviceGetAttribute + block ID sweep"
-                    )
-                else:
-                    target_type_guidance.append(
-                        f"  • {t}: See design principle above for measurement approach"
-                    )
-
-            target_type_str = "\n".join(target_type_guidance)
-
             parts.append(
-                f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📊 TARGET ASSIGNMENT (MEASURE ALL OF THESE IN ORDER)\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"\n{'=' * 60}"
+                f"📊 TARGET ASSIGNMENT (MEASURE ALL OF THESE IN ORDER)"
+                f"{'=' * 60}\n\n"
                 f"Targets to measure ({len(targets)} total):\n{target_list_str}\n\n"
                 f"⚠️ You MUST measure ALL targets above in SEQUENTIAL ORDER.\n"
                 f"Start with Target #1: **{targets[0]}**\n"
@@ -251,10 +198,11 @@ class StagePromptBuilder:
                 f"Current status:\n"
                 f"  ☐ Target 1: {targets[0]} ← *** START HERE ***\n"
             )
-
             for i, t in enumerate(targets[1:], start=2):
                 parts[-1] += f"  ☐ Target {i}: {t}\n"
 
+            # Only include target type guidance for CURRENT target (filter out irrelevant)
+            target_type_guidance = _get_target_type_guidance(target)
             parts[-1] += (
                 f"\nWORKFLOW (repeat for EACH target):\n"
                 f"  1. Write CUDA code SPECIFICALLY for the CURRENT target (unique kernel)\n"
@@ -264,7 +212,7 @@ class StagePromptBuilder:
                 f"  5. Wait for SYSTEM message → then move to NEXT target\n\n"
                 f"⚠️ CRITICAL RULES:\n"
                 f"  • Each target needs DIFFERENT CUDA code! Use the guidance below:\n"
-                f"{target_type_str}\n\n"
+                f"    — CURRENT TARGET ({target}): {target_type_guidance}\n\n"
                 f"  • compile_cuda OVERWRITES the previous binary each time.\n"
                 f"    So you MUST execute_binary IMMEDIATELY after each compile_cuda.\n"
                 f"    Do NOT compile all targets first — compile+execute one at a time.\n\n"
@@ -272,20 +220,17 @@ class StagePromptBuilder:
                 f"    After 3 failures, MOVE ON to next target (system will force switch).\n\n"
                 f"  • Do NOT skip any target — pipeline WILL FAIL if any is missing!\n\n"
                 f"  • The printf output MUST match the target name EXACTLY:\n"
-                f"    printf(\"EXACT_TARGET_NAME: value\\n\")\n\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📐 DESIGN PRINCIPLES FOR EACH TARGET\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"{principles_str}"
+                f"    printf(\"EXACT_TARGET_NAME: value\\n\")\n"
             )
 
+        # 6. PREVIOUS STAGE RESULT (filtered to current target only)
         if prev_result is not None:
             prev_data = prev_result.data if hasattr(prev_result, "data") else (prev_result.get("data", {}) if isinstance(prev_result, dict) else {})
-            plan_output = ""
             if prev_data:
                 plan_output = prev_data.get("final_output", "")
-
                 tasks = prev_data.get("tasks", [])
+
+                # Extract method for CURRENT target only
                 method = ""
                 for task in tasks:
                     if isinstance(task, dict) and task.get("target") == target:
@@ -294,7 +239,9 @@ class StagePromptBuilder:
 
                 if method:
                     parts.append(
-                        f"\n\n--- Measurement methodology from Planner ---\n{method}"
+                        f"\n{'=' * 60}"
+                        f"📋 MEASUREMENT METHODOLOGY (from Planner, for target: {target})"
+                        f"{'=' * 60}\n{method}"
                     )
 
                 category = ""
@@ -304,23 +251,21 @@ class StagePromptBuilder:
                         break
 
                 if category:
-                    parts.append(
-                        f"\n\nTask category: {category}"
-                    )
+                    parts.append(f"\nTask category: {category}")
 
-            if not plan_output and hasattr(prev_result, "error") and prev_result.error:
-                plan_output = prev_result.error
-            if isinstance(prev_result, dict) and not plan_output:
-                plan_output = prev_result.get("error", "")
-            if plan_output:
-                parts.append(
-                    f"\n\n--- Plan from previous stage ---\n{plan_output}"
-                )
+            if hasattr(prev_result, "error") and prev_result.error:
+                parts.append(f"\n\n--- Plan from previous stage ---\n{prev_result.error}")
+            elif isinstance(prev_result, dict) and prev_result.get("error"):
+                parts.append(f"\n\n--- Plan from previous stage ---\n{prev_result['error']}")
 
+        # 7. FINAL MANDATORY INSTRUCTION - STRONG TARGET AWARENESS
         parts.append(
-            "\n\nIMPORTANT: You MUST call compile_cuda to compile your code, "
-            "then execute_binary to run it. Text-only output without tool calls is a FAILURE."
+            f"\n\n⚠️ URGENT: You are measuring **{target}**. "
+            f"Do NOT generate code for any other target. "
+            f"Do NOT use cudaDeviceGetAttribute(cudaDevAttrMultiProcessorCount). "
+            f"Use the measurement approach described above for {target}."
         )
+
         return "\n".join(parts)
 
     @staticmethod
@@ -334,7 +279,6 @@ class StagePromptBuilder:
         parts = [
             f"Analyze the benchmark results for: {target}",
             f"\nTarget specification: {target_spec}",
-            f"\n\n--- Design Principle for this target ---\n{principle[:2000]}",
         ]
 
         if prev_result is not None:
@@ -355,6 +299,7 @@ class StagePromptBuilder:
                 if "analysis_method" in data:
                     parts.append(f"\nCodeGen methodology: {data['analysis_method'][:1000]}")
 
+        # NCU profiling instructions for current target only
         if targets and len(targets) > 1:
             target_metric_map = {
                 "launch__sm_count": ["launch__sm_count", "sm__throughput.avg.pct_of_peak_sustained_elapsed"],
@@ -371,9 +316,9 @@ class StagePromptBuilder:
             metrics_str = ", ".join(metrics_for_target)
 
             parts.append(
-                f"\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🎯 NCU PROFILING INSTRUCTIONS\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"\n\n{'=' * 60}"
+                f"🎯 NCU PROFILING INSTRUCTIONS"
+                f"{'=' * 60}\n\n"
                 f"Current target: {target}\n"
                 f"Use run_ncu with these metrics: [{metrics_str}]\n\n"
                 f"⚠️ CRITICAL: Profile the binary for the CURRENT target ONLY.\n"
@@ -446,3 +391,37 @@ class StagePromptBuilder:
             "Be specific about any concerns."
         )
         return "\n".join(parts)
+
+
+# Helper function for target-specific guidance (extracted from _codegen_task for filtering)
+def _get_target_type_guidance(target: str) -> str:
+    """Return concise code guidance for a specific target. Context-filtered."""
+    tl = target.lower()
+    if "launch__sm_count" in target:
+        return "Use cudaDeviceGetAttribute(cudaDevAttrMultiProcessorCount) AND block ID sweep"
+    elif "dram__bytes_read" in target:
+        return "Read-only STREAM kernel, 65535x256 threads, __ldg() for reads"
+    elif "dram__bytes_write" in target:
+        return "Write-only STREAM kernel, 65535x256 threads, volatile pointer writes"
+    elif "device__attribute_max_gpu_frequency" in target:
+        return "Use cudaDeviceGetAttribute(cudaDevAttrClockRate), result in kHz"
+    elif "device__attribute_max_mem_frequency" in target:
+        return "Use cudaDeviceGetAttribute(cudaDevAttrMemoryClockRate), result in kHz"
+    elif "device__attribute_fb_bus_width" in target:
+        return "Use cudaDeviceGetAttribute(cudaDevAttrMemoryBusWidth), result in bits"
+    elif "sm__throughput" in target:
+        return "Compute-intensive FMA kernel, 65535x256 threads, no global mem after init"
+    elif "gpu__compute_memory_throughput" in target:
+        return "Fused read-compute-write kernel, 65535x256 threads"
+    elif "latency" in tl:
+        return "Pointer-chasing kernel, clock64() timing, single thread"
+    elif "cache_size" in tl or "l2" in tl or "l1" in tl:
+        return "Working-set sweep kernel, clock64() timing"
+    elif "bandwidth" in tl:
+        return "STREAM copy kernel, cudaEventElapsedTime, 65535x256 threads"
+    elif "clock" in tl:
+        return "Cycle count / wall-clock time kernel"
+    elif "sm_count" in tl:
+        return "cudaDeviceGetAttribute + block ID sweep"
+    else:
+        return "See design principle and metric documentation above for measurement approach"

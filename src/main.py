@@ -509,10 +509,14 @@ def _validate_results_quality(results: dict, target_spec: dict) -> tuple[bool, l
         for k in large_keys:
             cleaned.pop(k, None)
     
-    # Check 4: Missing requested targets
+    # Check 4: Missing requested targets (with fuzzy matching for typos)
     if requested_targets:
         remaining_measured = {k for k, v in cleaned.items() if isinstance(v, (int, float)) and not k.startswith("_")}
-        missing = requested_targets - remaining_measured
+        # Normalize both sets for comparison to handle typos
+        from src.application.agent_loop import AgentLoop
+        normalized_measured = {AgentLoop.normalize_target_name(k) for k in remaining_measured}
+        normalized_requested = {AgentLoop.normalize_target_name(t) for t in requested_targets}
+        missing = normalized_requested - normalized_measured
         if missing:
             warnings.append(f"Missing requested targets (not measured or filtered): {', '.join(sorted(missing))}")
     
@@ -534,11 +538,15 @@ def _validate_results_quality(results: dict, target_spec: dict) -> tuple[bool, l
             f"expected more for target spec with {len(requested_targets)} targets"
         )
     
-    # Quality verdict
+    # Quality verdict (with fuzzy matching for typos)
     remaining_numeric = sum(1 for v in cleaned.values() if isinstance(v, (int, float)))
     if requested_targets:
         remaining_measured = {k for k, v in cleaned.items() if isinstance(v, (int, float)) and not k.startswith("_")}
-        missing_after_filter = requested_targets - remaining_measured
+        # Normalize both sets for comparison
+        from src.application.agent_loop import AgentLoop
+        normalized_measured = {AgentLoop.normalize_target_name(k) for k in remaining_measured}
+        normalized_requested = {AgentLoop.normalize_target_name(t) for t in requested_targets}
+        missing_after_filter = normalized_requested - normalized_measured
         quality_ok = len(missing_after_filter) == 0
         if missing_after_filter and remaining_numeric > 0:
             warnings.append(

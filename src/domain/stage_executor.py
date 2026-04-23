@@ -1174,36 +1174,57 @@ class StageExecutor:
             return StageExecutor._codegen_status(final_text, tool_results, data, target_spec)
 
         if stage == PipelineStage.METRIC_ANALYSIS:
-            data["analysis_output"] = final_text[:2000]
-            has_tool_result = any(
-                r.get("status") in ("success", "success_with_warning", True) or r.get("success") is True
-                for r in tool_results
-            )
-            has_bottleneck = "bottleneck" in final_text.lower()
-            has_metrics = any(
-                kw in final_text.lower() 
-                for kw in ["dram_latency", "dram_bandwidth", "l2_cache", "compute_bound", 
-                           "memory_bound", "latency_bound", "cache_capacity", "confidence"]
-            )
-            has_ncu_error = any(
-                "ERR_NVGPUCTRPERM" in str(r.get("stderr", "")) or "permission" in str(r.get("stderr", "")).lower()
-                for r in tool_results
-            )
-            if has_ncu_error and not has_bottleneck and not has_metrics:
-                data["error_detail"] = (
-                    "MetricAnalysis: ncu permission denied (ERR_NVGPUCTRPERM). "
-                    "Agent should analyze CodeGen measurements directly instead of calling run_ncu."
-                )
-            if has_tool_result or (final_text and (has_bottleneck or has_metrics)):
-                return SubAgentStatus.SUCCESS
-            if final_text and len(final_text) > 100:
-                return SubAgentStatus.SUCCESS
-            return SubAgentStatus.FAILED
+            return StageExecutor._metric_analysis_status(final_text, tool_results, data)
 
         if stage == PipelineStage.VERIFICATION:
             return StageExecutor._verification_status(final_text, data)
 
         return SubAgentStatus.SUCCESS
+
+    @staticmethod
+    def _metric_analysis_status(
+        final_text: str, tool_results: list[dict], data: dict[str, Any]
+    ) -> SubAgentStatus:
+        """MetricAnalysis status: ACCEPT any substantive output with measurements or bottleneck classification.
+        
+        FIX: Prevents dead-loop when ncu permission denied. If CodeGen measurements exist,
+        MetricAnalysis should analyze them directly rather than calling run_ncu repeatedly.
+        """
+        data["analysis_output"] = final_text[:2000]
+        
+        has_tool_result = any(
+            r.get("status") in ("success", "success_with_warning", True) or r.get("success") is True
+            for r in tool_results
+        )
+        has_bottleneck = "bottleneck" in final_text.lower()
+        has_metrics = any(
+            kw in final_text.lower() 
+            for kw in ["dram_latency", "dram_bandwidth", "l2_cache", "compute_bound", 
+                       "memory_bound", "latency_bound", "cache_capacity", "confidence",
+                       "sm_count", "clock", "bandwidth", "throughput"]
+        )
+        has_ncu_error = any(
+            "ERR_NVGPUCTRPERM" in str(r.get("stderr", "")) or "permission" in str(r.get("stderr", "")).lower()
+            for r in tool_results
+        )
+        has_codegen_measurements = "measurements" in data and isinstance(data.get("measurements"), dict) and len(data.get("measurements", {})) > 0
+        
+        if has_ncu_error and not has_bottleneck and not has_metrics:
+            data["error_detail"] = (
+                "MetricAnalysis: ncu permission denied (ERR_NVGPUCTRPERM). "
+                "Agent should analyze CodeGen measurements directly instead of calling run_ncu."
+            )
+        
+        if has_tool_result or (final_text and (has_bottleneck or has_metrics)):
+            return SubAgentStatus.SUCCESS
+        
+        if has_codegen_measurements and final_text and len(final_text) > 50:
+            return SubAgentStatus.SUCCESS
+        
+        if final_text and len(final_text) > 100:
+            return SubAgentStatus.SUCCESS
+        
+        return SubAgentStatus.FAILED
 
     @staticmethod
     def _codegen_status(

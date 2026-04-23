@@ -1,3 +1,12 @@
 {
-  "targets": ["dram_latency_cycles", "l2_cache_size_mb", "actual_boost_clock_mhz"]
+  "targets": [
+    "launch__sm_count",
+    "dram__bytes_read.sum.per_second",
+    "dram__bytes_write.sum.per_second",
+    "device__attribute_max_gpu_frequency_khz",
+    "device__attribute_max_mem_frequency_khz",
+    "device__attribute_fb_bus_width",
+    "sm__throughput.avg.pct_of_peak_sustained_elapsed",
+    "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed"
+  ]
 }

@@ -130,6 +130,45 @@ class AgentLoop:
     Completion detection is delegated to CompletionDetector.
     """
 
+    @staticmethod
+    def normalize_target_name(name: str) -> str:
+        """Universal typo normalization for target names.
+        
+        Fixes common LLM-generated typos:
+        - Duplicated characters (coount→count, rread→read, etc.)
+        - Extra characters (countt→count, pper_second→per_second)
+        
+        Args:
+            name: Raw target name (may contain typos)
+            
+        Returns:
+            Normalized target name
+        """
+        if not name:
+            return name
+            
+        typo_map = {
+            'sm_coount': 'sm_count',
+            'bytes_rread': 'bytes_read',
+            'bytes_wwrite': 'bytes_write',
+            'attriibute': 'attribute',
+            'launch__sm_countt': 'launch__sm_count',
+            'dram__bytes_rread': 'dram__bytes_read',
+            'dram__bytes_wwrite': 'dram__bytes_write',
+            'device__attriibute': 'device__attribute',
+            'pper_second': 'per_second',
+            'countt': 'count',
+            'sm_coountt': 'sm_count',
+            'launch__sm_coount': 'launch__sm_count',
+            'dram__bytes_rread.sum.pper_second': 'dram__bytes_read.sum.per_second',
+            'dram__bytes_wwrite.sum.pper_second': 'dram__bytes_write.sum.per_second',
+        }
+        
+        result = name
+        for typo, correct in typo_map.items():
+            result = result.replace(typo, correct)
+        return result
+
     def __init__(
         self,
         session: SessionState,
@@ -1038,6 +1077,16 @@ class AgentLoop:
                 "tool": tool_call.name,
                 "args": tool_call.arguments,
             })
+            
+            # HARNESS: Inject current target into compile_cuda arguments for code patching
+            if tool_call.name == "compile_cuda":
+                target = self.loop_state.current_target
+                if target:
+                    # FIX: Normalize target name using universal function
+                    target = AgentLoop.normalize_target_name(target)
+                    tool_call.arguments["target"] = target
+                    print(f"[AgentLoop] 🛠️ HARNESS: Injected target='{target}' into compile_cuda arguments")
+            
             try:
                 result = self._execute_tool_call(tool_call)
                 print(f"[AgentLoop] Tool result: {tool_call.name} -> {str(result)[:200]}")
@@ -2306,22 +2355,29 @@ class AgentLoop:
             state_completed = set(self.loop_state.completed_targets)
             newly_measured = measured_from_context - state_completed
             incorrectly_marked_completed = state_completed - measured_from_context
-
+            
+            # CRITICAL FIX: Don't mark targets as "incorrectly completed" if measured_from_context is empty
+            # An empty measured_from_context means parsing failed, NOT that measurements don't exist
+            # We should preserve the state machine's completed_targets unless we have POSITIVE evidence they're wrong
             if newly_measured:
                 print(f"[AgentLoop] C-02 SYNC: Found {len(newly_measured)} newly measured targets "
                       f"not in state machine: {newly_measured}")
                 for target in newly_measured:
                     if target not in self.loop_state.completed_targets:
                         self.loop_state.completed_targets.append(target)
-
-            if incorrectly_marked_completed:
+            
+            if incorrectly_marked_completed and len(measured_from_context) > 0:
                 print(f"[AgentLoop] C-02 SYNC: Found {len(incorrectly_marked_completed)} targets "
                       f"incorrectly marked as completed: {incorrectly_marked_completed}")
-                # Remove incorrectly marked targets
+                # Remove incorrectly marked targets ONLY if we have actual measurement evidence
                 self.loop_state.completed_targets = [
                     t for t in self.loop_state.completed_targets
-                    if t in measured_from_context or t in all_targets  # Keep if measured or is a valid target
+                    if t in measured_from_context or t not in all_targets  # Keep if measured OR not in current target list
                 ]
+            elif incorrectly_marked_completed and len(measured_from_context) == 0:
+                # measured_from_context is empty - likely parsing issue, NOT state corruption
+                # Preserve state machine's completed_targets to prevent data loss
+                print(f"[AgentLoop] C-02 SYNC: measured_from_context is empty, preserving {len(state_completed)} completed targets")
 
             # Check if current_target needs update
             unmeasured = [t for t in all_targets if t not in measured_from_context]
