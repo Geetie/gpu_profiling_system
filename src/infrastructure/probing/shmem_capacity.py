@@ -189,12 +189,16 @@ int main() {
     int device;
     cudaGetDevice(&device);
     
-    cudaDeviceProp prop;
-    cudaGetDeviceProperties(&prop, device);
+    int max_shmem_per_block = 0, max_shmem_per_sm = 0;
+    int cc_major = 0, cc_minor = 0;
+    cudaDeviceGetAttribute(&max_shmem_per_block, cudaDevAttrMaxSharedMemoryPerBlock, device);
+    cudaDeviceGetAttribute(&max_shmem_per_sm, cudaDevAttrMaxSharedMemoryPerMultiprocessor, device);
+    cudaDeviceGetAttribute(&cc_major, cudaDevAttrComputeCapabilityMajor, device);
+    cudaDeviceGetAttribute(&cc_minor, cudaDevAttrComputeCapabilityMinor, device);
     
-    printf("device_max_shared_mem_per_block: %zu\\n", prop.sharedMemPerBlock);
-    printf("device_max_shared_mem_per_sm: %zu\\n", prop.sharedMemPerMultiprocessor);
-    printf("compute_capability: %d%d\\n", prop.major, prop.minor);
+    printf("device_max_shared_mem_per_block: %d\\n", max_shmem_per_block);
+    printf("device_max_shared_mem_per_sm: %d\\n", max_shmem_per_sm);
+    printf("compute_capability: %d%d\\n", cc_major, cc_minor);
     
     int shmem_sizes_kb[] = {4, 8, 16, 24, 32, 48, 64, 96, 128, 160, 192, 224, 256};
     int num_sizes = sizeof(shmem_sizes_kb) / sizeof(shmem_sizes_kb[0]);

@@ -228,11 +228,13 @@ int main() {{
         return 1;
     }}
     
-    cudaDeviceProp prop;
-    CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
-    printf("diag_gpu_name: %s\\n", prop.name);
-    printf("diag_compute_capability: %d.%d\\n", prop.major, prop.minor);
-    printf("diag_sm_count: %d\\n", prop.multiProcessorCount);
+    int diag_sm_count = 0;
+    int diag_cc_major = 0, diag_cc_minor = 0;
+    cudaDeviceGetAttribute(&diag_sm_count, cudaDevAttrMultiProcessorCount, 0);
+    cudaDeviceGetAttribute(&diag_cc_major, cudaDevAttrComputeCapabilityMajor, 0);
+    cudaDeviceGetAttribute(&diag_cc_minor, cudaDevAttrComputeCapabilityMinor, 0);
+    printf("diag_sm_count: %d\\n", diag_sm_count);
+    printf("diag_compute_capability: %d.%d\\n", diag_cc_major, diag_cc_minor);
     
     long long* d_cycles;
     CUDA_CHECK(cudaMalloc(&d_cycles, sizeof(long long)));

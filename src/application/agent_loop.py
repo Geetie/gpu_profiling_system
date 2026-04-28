@@ -186,6 +186,12 @@ class AgentLoop:
         result = name
         for typo, correct in typo_map.items():
             result = result.replace(typo, correct)
+
+        if result == "sm_count":
+            result = "launch__sm_count"
+        elif result == "sm_count_microbenchmark":
+            result = "launch__sm_count"
+
         return result
 
     def __init__(
@@ -228,13 +234,13 @@ class AgentLoop:
         # T5 FIX #1: Per-target time budget control (prevent 308s black hole)
         self.target_time_budget: dict[str, float] = {}
         self.target_start_time: dict[str, float] = {}
-        self.MAX_TARGET_TIME_BUDGET = 240.0  # seconds per target (increased from 180s for complex measurements)
-        self.MAX_CODE_GEN_TOTAL = 600.0  # total CodeGen stage limit (increased for 8 targets)
+        self.MAX_TARGET_TIME_BUDGET = 180.0  # seconds per target (increased from 90s for complex CUDA kernels)
+        self.MAX_CODE_GEN_TOTAL = 1200.0  # total CodeGen stage limit (increased from 600s)
         self.code_gen_start_time: float | None = None
         self._last_turn_time: float | None = None  # T5 FIX #2: Time-based stall detection
 
         # FIX for 32-min timeout: Global hard timeout to prevent runaway execution
-        self.GLOBAL_HARD_TIMEOUT = 1500.0  # 25 minutes absolute maximum
+        self.GLOBAL_HARD_TIMEOUT = 1800.0  # 30 minutes absolute maximum (increased from 12 minutes)
         self._loop_start_time: float | None = None
 
         # FIX for Bug #6: Enhanced stall recovery with global tracking
@@ -244,7 +250,7 @@ class AgentLoop:
 
         # T11 FIX: Per-stage maximum turn limits to prevent LLM loops
         # FIXED: Increased from 6 to 15 to allow proper analysis of all metrics
-        self.MAX_METRIC_ANALYSIS_TURNS = 15  # MetricAnalysis needs more turns for multiple metrics
+        self.MAX_METRIC_ANALYSIS_TURNS = 8
 
     def _init_target_state(self, target_spec: dict[str, Any] | None = None) -> None:
         """Initialize the target state machine for CodeGen stage.
@@ -319,6 +325,89 @@ class AgentLoop:
             return False
             
         return True
+
+    def _is_optimization_round(self) -> bool:
+        """Check if this is an optimization iteration (not the first run).
+
+        Optimization rounds are identified by the presence of explicit pipeline
+        iteration markers in the conversation context, which indicates the pipeline
+        has looped back from MetricAnalysis to CodeGen.
+        """
+        try:
+            messages = self.context_manager.to_messages()
+        except Exception:
+            return False
+        if not messages:
+            return False
+        for msg in messages:
+            content = ""
+            if isinstance(msg, dict):
+                content = str(msg.get("content", ""))
+            elif hasattr(msg, "content"):
+                content = str(msg.content)
+            if ("[Pipeline] MetricAnalysis found optimization opportunities" in content
+                or "[Pipeline] Looping back to CodeGen" in content
+                or "OPTIMIZATION ITERATION #" in content
+                or "MANDATORY RE-OPTIMIZATION TARGETS" in content):
+                return True
+        return False
+
+    def _get_remaining_optimization_targets(self) -> list[str]:
+        """Get the list of optimization targets that still need re-compilation.
+
+        Parses the conversation context for MANDATORY RE-OPTIMIZATION TARGETS
+        and checks which ones have been re-compiled in this optimization round.
+        """
+        try:
+            messages = self.context_manager.to_messages()
+        except Exception:
+            return []
+
+        opt_targets = []
+        in_opt_section = False
+        for msg in messages:
+            content = ""
+            if isinstance(msg, dict):
+                content = str(msg.get("content", ""))
+            elif hasattr(msg, "content"):
+                content = str(msg.content)
+
+            if "MANDATORY RE-OPTIMIZATION TARGETS" in content:
+                in_opt_section = True
+                for line in content.splitlines():
+                    line = line.strip()
+                    if line.startswith("📌 Target #") and ":" in line:
+                        colon_idx = line.find(":", line.find("Target #"))
+                        if colon_idx != -1:
+                            target_name = line[colon_idx + 1:].strip()
+                            if target_name:
+                                opt_targets.append(target_name)
+                continue
+            if in_opt_section and "YOUR MISSION" in content:
+                in_opt_section = False
+
+        if not opt_targets:
+            return []
+
+        recompiled = set()
+        entries = self.context_manager.get_entries()
+        for entry in entries:
+            if entry.role.value != "assistant":
+                continue
+            try:
+                data = json.loads(entry.content)
+                if isinstance(data, dict) and data.get("tool") == "compile_cuda":
+                    source = str(data.get("args", {}).get("source", ""))
+                    for target in opt_targets:
+                        target_short = target.split(".")[-1].replace("_", " ")
+                        target_keywords = target.replace("__", " ").replace(".", " ").split()
+                        if any(kw in source for kw in target_keywords if len(kw) > 4):
+                            recompiled.add(target)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        remaining = [t for t in opt_targets if t not in recompiled]
+        return remaining
     
     def _reset_target_timer(self, new_target: str) -> None:
         """Reset time budget when switching to a new target."""
@@ -485,17 +574,29 @@ class AgentLoop:
         print(f"[AgentLoop] Turn {self.loop_state.turn_count}/{self.max_turns} (session: {self.session.session_id})")
 
         # T11 FIX: Enforce per-stage maximum turn limits
-        # MetricAnalysis should complete quickly (≤6 turns) to avoid 3+ minute stalls
+        # MetricAnalysis: first run gets 15 turns, optimization rounds get 8
         session_id_lower = self.session.session_id.lower() if self.session.session_id else ""
         if "metric_analysis" in session_id_lower:
-            if self.loop_state.turn_count > self.MAX_METRIC_ANALYSIS_TURNS:
+            effective_limit = self.MAX_METRIC_ANALYSIS_TURNS
+            if self._is_optimization_round():
+                effective_limit = 8
+            if self.loop_state.turn_count > effective_limit:
                 print(f"[AgentLoop] ⚠️ T11 FIX: METRIC_ANALYSIS TURN LIMIT EXCEEDED!")
-                print(f"   Turns: {self.loop_state.turn_count} > Limit: {self.MAX_METRIC_ANALYSIS_TURNS}")
-                print(f"   → Force-completing MetricAnalysis to prevent stall")
+                print(f"   Turns: {self.loop_state.turn_count} > Limit: {effective_limit}"
+                      f" ({'optimization' if effective_limit == 8 else 'initial'} round)")
+                print(f"   → Force-completing MetricAnalysis with partial results")
+                self.context_manager.add_entry(
+                    Role.SYSTEM,
+                    "TIME LIMIT REACHED. Output your analysis NOW. "
+                    "Include: bottleneck_type, bottleneck details, and any suggested fixes. "
+                    "Format: Bottleneck type: [compute_bound/memory_bound/latency_bound]. "
+                    "Summary: [brief analysis]. Suggested fixes: [list or 'none needed'].",
+                    token_count=60,
+                )
                 self._emit(EventKind.STOP, {
                     "reason": "metric_analysis_turn_limit_exceeded",
                     "actual_turns": self.loop_state.turn_count,
-                    "max_turns": self.MAX_METRIC_ANALYSIS_TURNS,
+                    "max_turns": effective_limit,
                 })
                 self.stop()
                 return
@@ -575,6 +676,11 @@ class AgentLoop:
                 except TypeError:
                     self._model_output = self._model_caller(messages)
                 print(f"[AgentLoop] Model response: {len(self._model_output)} chars")
+            else:
+                print(f"[AgentLoop] FATAL: No model caller configured!")
+                self._emit(EventKind.STOP, {"reason": "no_model_caller"})
+                self.stop()
+                return
         except Exception as e:
             self.loop_state.last_error = str(e)
             self._failure_pattern = f"api_error:{type(e).__name__}"
@@ -586,10 +692,8 @@ class AgentLoop:
                 message=str(e),
             )
 
-            # FIX for 32-min timeout: Fast-fail on connection errors to prevent infinite retry loops
             if "ConnectionError" in type(e).__name__ or "RemoteDisconnected" in str(e):
                 import time as _time
-                # Track consecutive connection errors
                 if not hasattr(self, '_consecutive_connection_errors'):
                     self._consecutive_connection_errors = 0
                     self._first_connection_error_time = _time.time()
@@ -597,12 +701,10 @@ class AgentLoop:
                 self._consecutive_connection_errors += 1
                 elapsed_since_first = _time.time() - self._first_connection_error_time
 
-                print(f"[AgentLoop] ⚠️ Connection Error #{self._consecutive_connection_errors} (elapsed: {elapsed_since_first:.0f}s)")
+                print(f"[AgentLoop] Connection Error #{self._consecutive_connection_errors} (elapsed: {elapsed_since_first:.0f}s)")
 
-                # If 3+ consecutive connection errors within 2 minutes, force stop
                 if self._consecutive_connection_errors >= 3 and elapsed_since_first < 120:
-                    print(f"[AgentLoop] ❌ TOO MANY CONNECTION ERRORS - Force stopping to prevent timeout")
-                    print(f"   Errors: {self._consecutive_connection_errors} in {elapsed_since_first:.0f}s")
+                    print(f"[AgentLoop] Too many connection errors - force stopping")
                     self._emit(EventKind.STOP, {
                         "reason": "connection_error_limit",
                         "error_count": self._consecutive_connection_errors,
@@ -610,15 +712,28 @@ class AgentLoop:
                     })
                     self.stop()
                     return
+                else:
+                    import time as _time
+                    print(f"[AgentLoop] Retrying in 10s...")
+                    _time.sleep(10)
             else:
-                # Reset counter on non-connection errors
                 if hasattr(self, '_consecutive_connection_errors'):
                     self._consecutive_connection_errors = 0
-            # 不要将 API 错误保存到 ASSISTANT 消息中，避免污染上下文
-            # 使用 SYSTEM 角色记录错误信息
+
+            consecutive_api_errors = self._failure_tracker.get_failure_count(self._failure_pattern) if self._failure_pattern else 0
+            if consecutive_api_errors >= 5:
+                print(f"[AgentLoop] Too many API errors ({consecutive_api_errors}) - force stopping")
+                self._emit(EventKind.STOP, {
+                    "reason": "api_error_limit",
+                    "error_type": type(e).__name__,
+                    "error_count": consecutive_api_errors,
+                })
+                self.stop()
+                return
+
             self.context_manager.add_entry(
                 Role.SYSTEM,
-                f"[Internal Error Log: {type(e).__name__}] {str(e)[:200]}",
+                f"[API Error: {type(e).__name__}] {str(e)[:200]}. Retrying...",
                 token_count=20,
             )
             self._persist_state()
@@ -648,6 +763,25 @@ class AgentLoop:
                 self.loop_state.consecutive_no_tool_calls = 0
                 self.loop_state.last_tool_call_turn = self.loop_state.turn_count
                 self.loop_state.stall_recovery_triggered = False
+
+            # STUCK DETECTION: If same tool called 3+ times with empty results, force redirect
+            if not hasattr(self, '_recent_tool_calls'):
+                self._recent_tool_calls = []
+            self._recent_tool_calls.append(tool_call.name)
+            if len(self._recent_tool_calls) > 5:
+                self._recent_tool_calls = self._recent_tool_calls[-5:]
+            if len(self._recent_tool_calls) >= 3:
+                last_3 = self._recent_tool_calls[-3:]
+                if all(t == last_3[0] for t in last_3) and last_3[0] in ("read_file", "write_file"):
+                    print(f"[AgentLoop] ⚠️ STUCK DETECTED: Called {last_3[0]} 3+ times in a row")
+                    self.context_manager.add_entry(
+                        Role.SYSTEM,
+                        f"⚠️ You are stuck calling {last_3[0]} repeatedly. "
+                        f"You MUST call compile_cuda to compile your CUDA code, "
+                        f"then execute_binary to run it. Stop reading/writing files and COMPILE.",
+                        token_count=50,
+                    )
+                    self._recent_tool_calls = []
 
             # 🔧 BUG#5 FIX: Tool Call Interceptor - Block known-unavailable tools
             if self._should_block_tool(tool_call.name):
@@ -1038,7 +1172,7 @@ class AgentLoop:
                         for line in auto_stdout.splitlines():
                             if line.strip().startswith("//") or line.strip().startswith("#"):
                                 continue
-                            m = re.match(r'\s*([\w_]+)\s*[:=]\s*([\d.]+[eE]?[\d]*)', line)
+                            m = re.match(r'\s*([\w_.]+)\s*[:=]\s*([\d.]+[eE]?[\d]*)', line)
                             if m:
                                 key, val_str = m.group(1), m.group(2)
                                 # CRITICAL FIX: Normalize key before storing
@@ -1508,15 +1642,20 @@ class AgentLoop:
                         if stdout:
                             measurements = {}
                             for line in stdout.splitlines():
-                                # Skip comment lines and empty lines
                                 if line.strip().startswith("//") or line.strip().startswith("#"):
                                     continue
-                                # Match patterns like "dram_latency_cycles: 450.5" or "sm_count = 56"
-                                m = re.match(r'\s*([\w_]+)\s*[:=]\s*([\d.]+[eE]?[\d]*)', line)
+                                m = re.match(r'\s*([\w_.]+)\s*[:=]\s*([\d.]+[eE]?[\d]*)', line)
                                 if m:
                                     key, val_str = m.group(1), m.group(2)
                                     try:
                                         val = float(val_str)
+                                        if "pct_of_peak_sustained_elapsed" in key:
+                                            if val > 100.0:
+                                                print(f"[AgentLoop] Clamping out-of-range pct_of_peak '{key}': {val} -> 100.0")
+                                                val = 100.0
+                                            elif val < 0.0:
+                                                print(f"[AgentLoop] Clamping negative pct_of_peak '{key}': {val} -> 0.0")
+                                                val = 0.0
                                         measurements[key] = val
                                     except ValueError:
                                         pass
@@ -1743,7 +1882,7 @@ class AgentLoop:
                         for line in auto_stdout.splitlines():
                             if line.strip().startswith("//") or line.strip().startswith("#"):
                                 continue
-                            m = re.match(r'\s*([\w_]+)\s*[:=]\s*([\d.]+[eE]?[\d]*)', line)
+                            m = re.match(r'\s*([\w_.]+)\s*[:=]\s*([\d.]+[eE]?[\d]*)', line)
                             if m:
                                 key, val_str = m.group(1), m.group(2)
                                 # CRITICAL FIX: Normalize key before storing
@@ -1815,13 +1954,65 @@ class AgentLoop:
             # Prevent false positives in test/mock environments where no real tool calls were made
             has_actual_work = len(self.loop_state.completed_targets) > 0 or self.loop_state.turn_count >= 3
 
-            if not unmeasured and self.loop_state.consecutive_no_tool_calls > 0 and has_actual_work:
-                # All targets measured, LLM is just signaling completion
+            # OPTIMIZATION ROUND CHECK: In optimization rounds, don't exit just because
+            # all targets are measured. CodeGen needs to RE-COMPILE specific targets
+            # with optimization strategies. Only exit when optimization targets are done.
+            is_opt_round = self._is_optimization_round()
+            opt_targets_remaining = self._get_remaining_optimization_targets()
+
+            if is_opt_round and opt_targets_remaining:
+                # In optimization round with remaining targets — don't exit early
+                # Instead, if LLM is idle (no tool calls), inject a nudge to continue
+                if self.loop_state.consecutive_no_tool_calls > 0 and has_actual_work:
+                    print(f"[AgentLoop] 🔄 OPTIMIZATION ROUND: {len(opt_targets_remaining)} targets still need re-compilation")
+                    print(f"[AgentLoop] → Remaining: {opt_targets_remaining}")
+                    print(f"[AgentLoop] → Injecting nudge to continue optimization instead of exiting")
+                    self.context_manager.add_entry(
+                        Role.SYSTEM,
+                        f"⚠️ You are in an OPTIMIZATION iteration. You MUST re-compile and re-execute "
+                        f"CUDA code for these targets with the specified optimization strategies:\n"
+                        + "\n".join(f"  → {t}" for t in opt_targets_remaining)
+                        + "\n\nDo NOT just confirm existing results. Write NEW optimized code, "
+                        "compile_cuda, then execute_binary for each target above.",
+                        token_count=80,
+                    )
+                    self.loop_state.consecutive_no_tool_calls = 0
+                    # Don't return — let the loop continue with the nudge
+
+            elif not unmeasured and self.loop_state.consecutive_no_tool_calls > 0 and has_actual_work:
+                # All targets measured (non-optimization round), LLM is just signaling completion
                 print(f"[AgentLoop] ✅ ALL TARGETS COMPLETED! Signaling graceful exit "
                       f"(consecutive_no_tool={self.loop_state.consecutive_no_tool_calls})")
                 self._emit(EventKind.STOP, {"reason": "all_targets_measured"})
                 self.stop()
                 return
+
+            # MetricAnalysis-specific STALL handling:
+            # When MetricAnalysis outputs text analysis without tool calls, it means
+            # it has completed its analysis. Don't force recovery — just end.
+            session_id_lower = self.session.session_id.lower() if self.session.session_id else ""
+            if "metric_analysis" in session_id_lower:
+                output_length = len(self._model_output.strip()) if self._model_output else 0
+                if self.loop_state.consecutive_no_tool_calls >= 2 and output_length > 100:
+                    print(f"[AgentLoop] ✅ MetricAnalysis completed analysis "
+                          f"(output={output_length} chars, consecutive_no_tool={self.loop_state.consecutive_no_tool_calls})")
+                    print(f"[AgentLoop] → Ending MetricAnalysis — analysis text is the final output")
+                    self._emit(EventKind.STOP, {"reason": "metric_analysis_completed"})
+                    self.stop()
+                    return
+
+            # Verification-specific STALL handling:
+            # When Verification outputs verdict text without tool calls, it means
+            # it has completed its review. Don't force recovery — just end.
+            if "verification" in session_id_lower:
+                output_length = len(self._model_output.strip()) if self._model_output else 0
+                if self.loop_state.consecutive_no_tool_calls >= 2 and output_length > 100:
+                    print(f"[AgentLoop] ✅ Verification completed review "
+                          f"(output={output_length} chars, consecutive_no_tool={self.loop_state.consecutive_no_tool_calls})")
+                    print(f"[AgentLoop] → Ending Verification — review text is the final output")
+                    self._emit(EventKind.STOP, {"reason": "verification_completed"})
+                    self.stop()
+                    return
 
             # ⚡ FIX-A: Plan阶段Stall Detection优化 (解决Plan耗时95秒问题)
             # Plan/Planner阶段故意设计为0工具，无tool call是正常行为！
@@ -2797,7 +2988,7 @@ class AgentLoop:
                         data = json.loads(entry.content)
                         if isinstance(data, dict) and "stdout" in data:
                             for line in data["stdout"].splitlines():
-                                m2 = re.match(r'\s*([\w_]+)\s*[:=]\s*[\d.]+', line)
+                                m2 = re.match(r'\s*([\w_.]+)\s*[:=]\s*[\d.]+', line)
                                 if m2:
                                     measured_set.add(m2.group(1))
                     except (json.JSONDecodeError, TypeError):

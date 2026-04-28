@@ -168,7 +168,7 @@ class SubAgentFactory:
         "planner": {"read_file", "write_file"},
         "code_gen": {"compile_cuda", "execute_binary", "read_file", "write_file"},
         "metric_analysis": {"run_ncu", "read_file"},
-        "verification": {"read_file"},
+        "verification": set(),
     }
 
     @classmethod
@@ -292,84 +292,25 @@ def _build_circuit_breaker():
 
 
 def _wire_all_subagents(planner, code_gen, metric_analysis, verification) -> bool:
-    from src.infrastructure.model_caller import make_model_caller, load_config
+    from src.infrastructure.model_caller import make_model_caller, _get_api_config
 
-    config = None
-    env = {}
     try:
-        config = load_config()
-        env = config["env"]
-    except (FileNotFoundError, ValueError) as e:
-        print(f"[llm] No api_config.json: {e} — using provider_manager")
+        _, _, resolved_model = _get_api_config()
+    except ValueError as e:
+        print(f"[llm] FATAL: Cannot configure model caller: {e}")
+        return False
 
-    provider_name = "unknown"
-    try:
-        from src.infrastructure.provider_manager import get_provider_manager
-        provider_manager = get_provider_manager()
-        print(f"[llm] Provider manager loaded: {list(provider_manager.providers.keys())}")
+    planner.set_model_caller(make_model_caller(model_name=resolved_model))
+    print(f"[llm] PlannerAgent -> {resolved_model}")
 
-        if provider_manager.providers:
-            provider_priority = ["longcat"]
-            for pn in provider_priority:
-                provider = provider_manager.providers.get(pn)
-                if not provider:
-                    print(f"[llm] Provider '{pn}' not in config, skipping")
-                    continue
-                api_key = provider.get_api_key()
-                if not api_key:
-                    print(f"[llm] Provider '{pn}' has no API key, skipping")
-                    continue
-                print(f"[llm] Selected provider: {pn} (model: {provider.get_model('default')})")
-                provider_manager.current_provider = provider
-                provider_name = pn
-                break
+    code_gen.set_model_caller(make_model_caller(model_name=resolved_model))
+    print(f"[llm] CodeGenAgent -> {resolved_model}")
 
-            if provider_name == "unknown" and provider_manager.providers:
-                first_pn = next(iter(provider_manager.providers))
-                first_provider = provider_manager.providers[first_pn]
-                if first_provider.get_api_key():
-                    print(f"[llm] Fallback to first available provider: {first_pn}")
-                    provider_manager.current_provider = first_provider
-                    provider_name = first_pn
-    except Exception as e:
-        print(f"[llm] Provider manager error: {e}")
+    metric_analysis.set_model_caller(make_model_caller(model_name=resolved_model))
+    print(f"[llm] MetricAnalysisAgent -> {resolved_model}")
 
-    if provider_name == "longcat":
-        # 从 provider 配置获取模型名称
-        longcat_provider = provider_manager.providers.get("longcat")
-        if longcat_provider:
-            main_model = longcat_provider.get_model("default")
-            code_model = longcat_provider.get_model("default")
-            reasoning_model = longcat_provider.get_model("reasoning")
-        else:
-            main_model = "LongCat-Flash-Thinking-2601"
-            code_model = "LongCat-Flash-Thinking-2601"
-            reasoning_model = "LongCat-Flash-Thinking-2601"
-    elif provider_name == "aliyun_bailian":
-        main_model = "qwen-plus"
-        code_model = "qwen-plus"
-        reasoning_model = "qwen-max"
-    else:
-        main_model = env.get("ANTHROPIC_MODEL", "qwen3.6-plus")
-        code_model = env.get("ANTHROPIC_DEFAULT_SONNET_MODEL", main_model)
-        reasoning_model = env.get("ANTHROPIC_REASONING_MODEL", main_model)
-
-    print(f"[llm] Models: main={main_model}, code={code_model}, reasoning={reasoning_model}")
-
-    planner.set_model_caller(make_model_caller(model_name=main_model))
-    print(f"[llm] PlannerAgent -> {main_model} (Provider: {provider_name})")
-
-    code_gen.set_model_caller(make_model_caller(model_name=code_model))
-    print(f"[llm] CodeGenAgent -> {code_model} (Provider: {provider_name})")
-
-    metric_analysis.set_model_caller(make_model_caller(model_name=main_model))
-    print(f"[llm] MetricAnalysisAgent -> {main_model} (Provider: {provider_name})")
-
-    verification.set_model_caller(make_model_caller(
-        model_name=reasoning_model,
-        max_tokens=8192,
-    ))
-    print(f"[llm] VerificationAgent -> {reasoning_model} (Provider: {provider_name})")
+    verification.set_model_caller(make_model_caller(model_name=resolved_model, max_tokens=8192))
+    print(f"[llm] VerificationAgent -> {resolved_model}")
 
     return True
 
@@ -379,9 +320,9 @@ def try_wire_model_caller(agent_loop) -> bool:
         from src.infrastructure.model_caller import make_model_caller
         caller = make_model_caller()
         agent_loop.set_model_caller(caller)
-        print("[llm] Model caller configured from config/api_config.json")
+        print("[llm] Model caller configured successfully")
         return True
-    except (FileNotFoundError, ValueError) as e:
+    except ValueError as e:
         print(f"[llm] No LLM API configured: {e}")
         print("[llm] Falling back to interactive REPL mode")
         return False

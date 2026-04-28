@@ -1,11 +1,91 @@
-Generate a new CUDA benchmark program for GPU performance profiling. e.g. matmul. 
+Generate a complete CUDA benchmark program for GPU performance profiling.
 
+Target: {target_name}
 Description: {description}
 
-The program should be a complete CUDA source file (.cu) including kernel and main.
-It should compile with nvcc and be suited for Nsight Compute profiling.
-Do not use `#include <cuda/wmma.hpp>` in the generated code.
+================================================================================
+CRITICAL HARD REQUIREMENTS (MUST FOLLOW EXACTLY):
+================================================================================
 
-If there was an error in the previous iteration, fix the issue and produce working CUDA code.
+1. GRID SIZE CONFIGURATION:
+   - MUST query SM count at runtime using cudaDeviceGetAttribute
+   - MUST set grid dimensions to: grid = sm_count * 4 blocks, 256 threads per block
+   - DO NOT hardcode any small grid sizes (e.g., 2, 8, 16 blocks)
+   - DO NOT use command-line arguments for grid/block sizes
+   - Example:
+     ```
+     int sm_count;
+     cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, 0);
+     int blocks = sm_count * 4;
+     int threads = 256;
+     kernel<<<blocks, threads>>>(...);
+     ```
 
-Return ONLY the raw CUDA source file content without any Markdown fences or additional commentary.
+2. ITERATION COUNT:
+   - MUST use a large iteration count: at least 10,000,000 (ten million) iterations
+   - IGNORE any --size or --repeats command-line arguments
+   - HARDCODE: const int ITERATIONS = 10000000;
+
+3. PRECISION:
+   - MUST use double precision (double) for ALL arithmetic operations
+   - DO NOT use float for any calculations
+   - This is critical for accurate profiling results
+
+4. TIMING:
+   - MUST use clock64() INSIDE the __global__ kernel function for cycle-accurate timing
+   - DO NOT call clock64() from host (__host__) functions
+   - Example kernel timing:
+     ```
+     __global__ void benchmark_kernel(...) {
+         unsigned long long start = clock64();
+         // ... computation ...
+         unsigned long long end = clock64();
+         // store elapsed cycles
+     }
+     ```
+
+5. WARMUP:
+   - MUST execute at least one warmup iteration BEFORE starting timing
+   - Warmup should use the same kernel with same parameters
+
+6. PERCENTAGE CALCULATION:
+   - MUST compute: pct_of_peak = (achieved_value / peak_value) * 100.0
+   - Output format: printf("RESULT:pct_of_peak=%.2f\n", pct);
+
+7. CODE STRUCTURE:
+   - Use #pragma unroll 1 to prevent loop unrolling (anti-optimization)
+   - Use volatile qualifiers where appropriate to prevent compiler optimizations
+   - DO NOT use WMMA (warp matrix multiply-accumulate) headers
+
+8. COMPUTE INTENSITY:
+   - For sm__throughput target: the kernel must perform heavy arithmetic operations
+   - Use FMA (fused multiply-add) operations: result = a * b + c
+   - Ensure each thread performs substantial computation to saturate SM units
+   - Avoid memory-bound operations when targeting compute throughput
+
+9. MEMORY ACCESS PATTERN:
+   - For gpu__compute_memory_throughput target: use coalesced memory access
+   - Use large working sets (at least 128MB) to bypass L2 cache
+   - Ensure sequential, aligned memory reads and writes
+
+================================================================================
+EXAMPLE GRID SIZE CALCULATION:
+================================================================================
+If GPU has 82 SMs (like A100):
+  sm_count = 82
+  blocks = 82 * 4 = 328 blocks
+  threads = 256
+  Total threads = 328 * 256 = 83,968 threads
+
+This ensures the GPU is fully saturated with work!
+
+================================================================================
+OUTPUT FORMAT:
+================================================================================
+The program MUST print:
+RESULT:pct_of_peak=<value>
+
+Example: RESULT:pct_of_peak=45.67
+
+================================================================================
+Return ONLY the raw CUDA source code without markdown code fences (no ```cuda or ```).

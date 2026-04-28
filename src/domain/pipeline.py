@@ -116,9 +116,26 @@ class Pipeline:
             stage_duration = time.monotonic() - stage_start
             print(f"[Pipeline] Stage {step.stage.value} completed in {round(stage_duration, 2)}s with status: {result.status.value}")
 
-            if result.is_failed():
+            ctx.record_stage_duration(step.stage.value, stage_duration, ctx.iteration_count)
+
+            if step.stage == PipelineStage.CODE_GEN and ctx.is_optimization_round:
+                ctx.clear_optimization_targets()
+                print(f"[Pipeline] CodeGen optimization round completed — cleared optimization targets")
+
+            if result.is_failed() and result.status != SubAgentStatus.REJECTED:
                 result = self._handle_failure(step, result, ctx, stage_duration)
                 if result.is_failed() and not self._can_continue_with_partial(step, result):
+                    if step.stage == PipelineStage.CODE_GEN:
+                        measurements = result.data.get("measurements", {})
+                        if isinstance(measurements, dict) and len(measurements) > 0:
+                            print(f"[Pipeline] CodeGen FAILED but has {len(measurements)} measurements — converting to PARTIAL and continuing")
+                            result.status = SubAgentStatus.PARTIAL
+                            result.data["completion_rate"] = len(measurements) / max(len(ctx.target_spec.get("targets", [])), 1)
+                            ctx.update(step.stage, result)
+                            stage_idx += 1
+                            continue
+                    result = ctx.assemble_final_result(result)
+                    print(f"[Pipeline] Final result assembled with {len(result.data.get('measurements', {}))} measurements (after failure)")
                     return result
 
             self._guard.check_after_stage(step.stage, result)
@@ -150,6 +167,13 @@ class Pipeline:
 
                 ctx.add_rejection(step.stage.value, concerns, suggested_fixes)
 
+                print(
+                    f"[Pipeline] DEBUG: Verification REJECTED — "
+                    f"iteration_count={ctx.iteration_count}, max_iterations={ctx.max_iterations}, "
+                    f"can_retry={ctx.can_retry()}, concerns={len(concerns)}, "
+                    f"suggested_fixes={len(suggested_fixes)}"
+                )
+
                 if ctx.can_retry():
                     ctx.increment_iteration()
                     print(
@@ -163,12 +187,9 @@ class Pipeline:
                     code_gen_idx = self._find_stage_index(PipelineStage.CODE_GEN)
                     if code_gen_idx is not None:
                         stage_idx = code_gen_idx
-                        planner_result = ctx.get_stage_result(PipelineStage.PLAN)
-                        ctx.prev_result = None
-                        ctx.prev_stage = None
-                        if planner_result is not None:
-                            ctx.prev_result = planner_result
-                            ctx.prev_stage = PipelineStage.PLAN
+                        # FIX: Set prev_result and prev_stage to Verification for proper handoff validation
+                        ctx.prev_result = result
+                        ctx.prev_stage = PipelineStage.VERIFICATION
                         continue
                 else:
                     print(
@@ -179,17 +200,23 @@ class Pipeline:
                         "iteration": ctx.iteration_count,
                         "concerns": concerns,
                     })
+                    result = ctx.assemble_final_result(result)
+                    print(f"[Pipeline] Final result assembled with {len(result.data.get('measurements', {}))} measurements (after rejection)")
                     return result
 
             ctx.update(step.stage, result)
             if step.stage == PipelineStage.METRIC_ANALYSIS:
                 ctx.bubble_codegen_data(result)
 
-                if result.is_success() and result.data:
-                    suggested_fixes = result.data.get("suggested_fixes", [])
-                    bottleneck_type = result.data.get("bottleneck_type", "")
-                    bottleneck_sub_type = result.data.get("bottleneck_sub_type", "")
-                    recommendations = result.data.get("recommendations", [])
+                metric_data = result.data if result.data else {}
+                if not metric_data and hasattr(result, 'payload') and result.payload:
+                    metric_data = result.payload
+
+                if metric_data:
+                    suggested_fixes = metric_data.get("suggested_fixes", [])
+                    bottleneck_type = metric_data.get("bottleneck_type", "")
+                    bottleneck_sub_type = metric_data.get("bottleneck_sub_type", "")
+                    recommendations = metric_data.get("recommendations", [])
 
                     if suggested_fixes or recommendations:
                         ctx.add_metric_feedback(
@@ -202,7 +229,92 @@ class Pipeline:
                             "bottleneck_type": bottleneck_type,
                             "bottleneck_sub_type": bottleneck_sub_type,
                             "fixes_count": len(suggested_fixes),
+                            "stage_success": result.is_success(),
                         })
+
+                # ── CodeGen ↔ MetricAnalysis iterative optimization loop ──
+                # When MetricAnalysis identifies bottlenecks or optimization
+                # opportunities, loop back to CodeGen for another round of
+                # code generation with the feedback injected.
+                metric_feedback = ctx.get_feedback_for_codegen()
+                opt_targets = ctx.get_optimization_targets() if hasattr(ctx, 'get_optimization_targets') else []
+                if metric_feedback and ctx.can_retry():
+                    bottleneck_type = metric_feedback.get("bottleneck_type", "")
+                    is_balanced = bottleneck_type == "balanced"
+                    has_actionable_feedback = bool(
+                        (metric_feedback.get("metric_suggested_fixes")
+                         or metric_feedback.get("metric_recommendations"))
+                        and not is_balanced
+                    )
+                    metric_opt_count = sum(1 for mf in ctx.metric_feedback if mf.get("source") == "metric_analysis")
+                    MAX_METRIC_OPTIMIZATION_ROUNDS = 3  # Allow up to 3 optimization rounds
+                    if metric_opt_count >= MAX_METRIC_OPTIMIZATION_ROUNDS:
+                        print(
+                            f"[Pipeline] MetricAnalysis optimization loop limit reached "
+                            f"({metric_opt_count}/{MAX_METRIC_OPTIMIZATION_ROUNDS} rounds). Proceeding to Verification."
+                        )
+                        self._persister.log_entry("metric_optimization_limit", details={
+                            "bottleneck_type": bottleneck_type,
+                            "metric_opt_count": metric_opt_count,
+                        })
+                    elif has_actionable_feedback and ctx.is_optimization_converged():
+                        cg_durs = {k: v for k, v in ctx._stage_durations.items() if "code_gen" in k}
+                        print(
+                            f"[Pipeline] Optimization converged — same bottleneck "
+                            f"('{bottleneck_type}') with no concrete fixes for 2 consecutive rounds, "
+                            f"or diminishing returns detected. CodeGen durations: {cg_durs}"
+                            f"Proceeding to Verification."
+                        )
+                        self._persister.log_entry("optimization_converged", details={
+                            "bottleneck_type": bottleneck_type,
+                            "iteration": ctx.iteration_count,
+                        })
+                    elif has_actionable_feedback:
+                        ctx.increment_iteration()
+                        ctx.is_optimization_round = True
+                        opt_target_names = [t.get("target", "?") for t in opt_targets] if opt_targets else []
+                        print(
+                            f"[Pipeline] MetricAnalysis found optimization opportunities "
+                            f"(iteration {ctx.iteration_count}/{ctx.max_iterations}). "
+                            f"Looping back to CodeGen for optimization."
+                            + (f" Optimization targets: {opt_target_names}" if opt_target_names else "")
+                        )
+                        self._persister.log_entry("metric_optimization_loop", details={
+                            "iteration": ctx.iteration_count,
+                            "bottleneck_type": metric_feedback.get("bottleneck_type", ""),
+                            "fixes": metric_feedback.get("metric_suggested_fixes", []),
+                            "optimization_targets": opt_target_names,
+                        })
+                        code_gen_idx = self._find_stage_index(PipelineStage.CODE_GEN)
+                        if code_gen_idx is not None:
+                            guard_decision = self._guard.check_before_stage(
+                                PipelineStage.CODE_GEN, _GuardContext(ctx, self._stages)
+                            )
+                            if not guard_decision.allowed:
+                                print(
+                                    f"[Pipeline] Stage guard blocked CODE_GEN re-entry: "
+                                    f"{guard_decision.reason or 'unknown reason'}. "
+                                    f"Proceeding to Verification."
+                                )
+                            else:
+                                cg_step = self._stages[code_gen_idx]
+                                if cg_step.retry_on_failure < 1:
+                                    cg_step.retry_on_failure = 1
+                                stage_idx = code_gen_idx
+                                # FIX: Set prev_result and prev_stage to MetricAnalysis for proper handoff validation
+                                ctx.prev_result = result
+                                ctx.prev_stage = PipelineStage.METRIC_ANALYSIS
+                                continue
+                    else:
+                        if is_balanced:
+                            print("[Pipeline] MetricAnalysis reports code is well-balanced — no optimization needed")
+                        else:
+                            print("[Pipeline] MetricAnalysis completed — no actionable optimization feedback")
+                elif metric_feedback and not ctx.can_retry():
+                    print(
+                        f"[Pipeline] MetricAnalysis has feedback but max iterations "
+                        f"({ctx.max_iterations}) reached. Proceeding to Verification."
+                    )
             elif step.stage == PipelineStage.VERIFICATION:
                 ctx.bubble_codegen_data(result)
 
@@ -212,6 +324,22 @@ class Pipeline:
         # CRITICAL FIX: Always assemble final result, regardless of status
         # This ensures measurements from CodeGen are included even if downstream stages fail
         if final_result is not None:
+            # VERSION CONTROL: Rollback to best version if current is degraded
+            if hasattr(ctx, 'measurement_versions') and ctx.measurement_versions:
+                current_idx = ctx.current_version_idx
+                if 0 <= current_idx < len(ctx.measurement_versions):
+                    current_ver = ctx.measurement_versions[current_idx]
+                    if not current_ver.quality_ok:
+                        print(
+                            f"[Pipeline] Current measurement version #{current_idx} has quality_ok=False "
+                            f"(quality_score={current_ver.quality_score:.1f}, "
+                            f"improvement_score={current_ver.improvement_score:.1f}). "
+                            f"Rolling back to best version."
+                        )
+                        best = ctx.rollback_to_best_version()
+                        ctx.key_measurements = best
+                        print(f"[Pipeline] Rolled back key_measurements to best version")
+
             final_result = ctx.assemble_final_result(final_result)
             print(f"[Pipeline] Final result assembled with {len(final_result.data.get('measurements', {}))} measurements")
 
@@ -257,7 +385,11 @@ class Pipeline:
             isinstance(tr, dict) and tr.get("binary_path")
             for tr in result.data.get("tool_results", [])
         )
-        return has_useful_data or has_compiled_binary
+        # CRITICAL FIX: MetricAnalysis may fail status but still have useful NCU data
+        # Check for tool_results with NCU output or analysis_output
+        has_analysis_output = bool(result.data and result.data.get("analysis_output"))
+        has_ncu_results = bool(result.data and result.data.get("tool_results"))
+        return has_useful_data or has_compiled_binary or has_analysis_output or has_ncu_results
 
     def _find_stage_index(self, stage: PipelineStage) -> int | None:
         """Find the index of a stage in the pipeline steps list."""

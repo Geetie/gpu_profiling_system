@@ -268,6 +268,16 @@ def run_hardware_probes(
             results["measurements"]["_confidence_sm_detection"] = sm_result["_confidence"]
         _record_evidence(results, "sm_detection", sm_result, write_dir)
 
+    # Stage 9: Device attribute queries (NCU-style target names)
+    print("[probe] Stage 9: Device attribute queries...")
+    devattr_result = _safe_probe(results, "device_attributes",
+                                  lambda: _run_device_attribute_probe(sandbox))
+    if devattr_result:
+        for key, value in devattr_result.items():
+            if not key.startswith("_") and isinstance(value, (int, float)):
+                results["measurements"][key] = value
+        _record_evidence(results, "device_attributes", devattr_result, write_dir)
+
     # Cross-validation
     _run_cross_validation(results)
 
@@ -335,6 +345,24 @@ def _run_shmem_bandwidth_probe(sandbox) -> dict[str, Any] | None:
 def _run_sm_detection_probe(sandbox) -> dict[str, Any] | None:
     from src.infrastructure.probing.sm_detection import probe_sm_count
     return probe_sm_count(sandbox=sandbox)
+
+
+def _run_device_attribute_probe(sandbox) -> dict[str, Any] | None:
+    """Query device attributes by delegating to existing probe modules.
+
+    Does NOT contain hardcoded CUDA source — relies on sm_detection probe
+    which itself uses LLM-generated or empirically measured code.
+    """
+    result = {}
+    try:
+        sm_data = probe_sm_count(sandbox=sandbox)
+        if sm_data:
+            if "sm_count" in sm_data:
+                result["launch__sm_count"] = sm_data["sm_count"]
+    except Exception as e:
+        print(f"[probe] SM count query failed: {e}")
+
+    return result if result else None
 
 
 def _run_with_mode(probe_fn, key: str, trials: int = 3) -> dict[str, Any] | None:

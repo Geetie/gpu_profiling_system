@@ -381,3 +381,464 @@ class TestPipeline:
         # Verification REJECTED — should not retry
         assert result.status == SubAgentStatus.REJECTED
         assert call_count["n"] == 1
+
+
+class TestMetricAnalysisOptimizationLoop:
+    """Tests for CodeGen ↔ MetricAnalysis iterative optimization.
+
+    Verifies that:
+    1. When MetricAnalysis identifies a bottleneck, pipeline loops back to CodeGen
+    2. When MetricAnalysis reports no actionable feedback, pipeline proceeds to Verification
+    3. "balanced" bottleneck type does NOT trigger optimization loop
+    4. Max iterations limit is respected
+    5. MetricAnalysis feedback is properly injected into CodeGen's prompt
+    """
+
+    def test_metric_feedback_triggers_codegen_loop(self, tmp_path):
+        """When MetricAnalysis finds a bottleneck, pipeline loops back to CodeGen."""
+        from src.domain.pipeline_context import PipelineContext
+
+        ctx = PipelineContext(target_spec={"targets": ["dram_latency_cycles"]})
+
+        ctx.add_metric_feedback(
+            suggested_fixes=["Use shared memory for reduction"],
+            bottleneck_type="memory_bound",
+            bottleneck_sub_type="dram",
+            recommendations=["Reduce global memory accesses"],
+        )
+
+        feedback = ctx.get_feedback_for_codegen()
+        assert feedback is not None
+        assert feedback["bottleneck_type"] == "memory_bound"
+        assert feedback["metric_suggested_fixes"] == ["Use shared memory for reduction"]
+        assert feedback["metric_recommendations"] == ["Reduce global memory accesses"]
+
+    def test_balanced_bottleneck_not_actionable(self, tmp_path):
+        """'balanced' bottleneck type should NOT trigger optimization loop."""
+        from src.domain.pipeline_context import PipelineContext
+
+        ctx = PipelineContext(target_spec={"targets": ["dram_latency_cycles"]})
+
+        ctx.add_metric_feedback(
+            suggested_fixes=[],
+            bottleneck_type="balanced",
+            recommendations=[],
+        )
+
+        feedback = ctx.get_feedback_for_codegen()
+        assert feedback is not None
+        assert feedback["bottleneck_type"] == "balanced"
+
+        bottleneck_type = feedback.get("bottleneck_type", "")
+        is_balanced = bottleneck_type == "balanced"
+        has_actionable_feedback = bool(
+            (feedback.get("metric_suggested_fixes") or feedback.get("metric_recommendations"))
+            and not is_balanced
+        )
+        assert not has_actionable_feedback, "'balanced' should not be actionable"
+
+    def test_no_feedback_not_actionable(self, tmp_path):
+        """When MetricAnalysis has no feedback, it should not be actionable."""
+        from src.domain.pipeline_context import PipelineContext
+
+        ctx = PipelineContext(target_spec={"targets": ["dram_latency_cycles"]})
+
+        ctx.add_metric_feedback(
+            suggested_fixes=[],
+            bottleneck_type="",
+            recommendations=[],
+        )
+
+        feedback = ctx.get_feedback_for_codegen()
+        assert feedback is not None
+
+        has_actionable_feedback = bool(
+            (feedback.get("metric_suggested_fixes") or feedback.get("metric_recommendations"))
+            and not (feedback.get("bottleneck_type") == "balanced")
+        )
+        assert not has_actionable_feedback
+
+    def test_iteration_count_limits_optimization(self, tmp_path):
+        """Pipeline should stop iterating when max_iterations is reached."""
+        from src.domain.pipeline_context import PipelineContext
+
+        ctx = PipelineContext(
+            target_spec={"targets": ["dram_latency_cycles"]},
+            max_iterations=5,
+        )
+
+        for i in range(1, 5):
+            ctx.increment_iteration()
+            assert ctx.iteration_count == i
+            assert ctx.can_retry()
+
+        ctx.increment_iteration()
+        assert ctx.iteration_count == 5
+        assert not ctx.can_retry(), "Should not allow retry after max_iterations"
+
+    def test_multiple_metric_feedback_accumulates(self, tmp_path):
+        """Multiple MetricAnalysis rounds should accumulate feedback."""
+        from src.domain.pipeline_context import PipelineContext
+
+        ctx = PipelineContext(target_spec={"targets": ["dram_latency_cycles"]})
+
+        ctx.add_metric_feedback(
+            suggested_fixes=["Use shared memory"],
+            bottleneck_type="memory_bound",
+            recommendations=["Reduce global memory accesses"],
+        )
+        ctx.increment_iteration()
+
+        ctx.add_metric_feedback(
+            suggested_fixes=["Optimize warp scheduling"],
+            bottleneck_type="compute_bound",
+            recommendations=["Increase occupancy"],
+        )
+        ctx.increment_iteration()
+
+        assert len(ctx.metric_feedback) == 2
+        feedback = ctx.get_feedback_for_codegen()
+        assert feedback["bottleneck_type"] == "compute_bound"
+        assert feedback["metric_suggested_fixes"] == ["Optimize warp scheduling"]
+        assert feedback["metric_recommendations"] == ["Increase occupancy"]
+
+    def test_metric_feedback_injected_into_codegen_prompt(self, tmp_path):
+        """_build_user_task should inject MetricAnalysis feedback for CodeGen."""
+        from src.domain.pipeline_context import PipelineContext
+        from src.domain.stage_executor import StageExecutor
+
+        ctx = PipelineContext(target_spec={"targets": ["dram_latency_cycles"]})
+        ctx.add_metric_feedback(
+            suggested_fixes=["Use shared memory for reduction"],
+            bottleneck_type="memory_bound",
+            bottleneck_sub_type="dram",
+            recommendations=["Reduce global memory accesses"],
+        )
+        ctx.increment_iteration()
+
+        executor = StageExecutor(state_dir=str(tmp_path))
+        user_task = executor._build_user_task(
+            stage=PipelineStage.CODE_GEN,
+            task={"tasks": [{"target": "dram_latency_cycles", "category": "latency_measurement", "method": "test"}]},
+            prev_result={},
+            target_spec={"targets": ["dram_latency_cycles"]},
+            ctx=ctx,
+        )
+
+        assert "OPTIMIZATION ITERATION" in user_task
+        assert "memory_bound" in user_task
+        assert "Use shared memory for reduction" in user_task
+        assert "Reduce global memory accesses" in user_task
+        assert "YOUR MISSION" in user_task
+
+    def test_metric_feedback_not_injected_for_non_codegen(self, tmp_path):
+        """_build_user_task should NOT inject MetricAnalysis feedback for non-CodeGen stages."""
+        from src.domain.pipeline_context import PipelineContext
+        from src.domain.stage_executor import StageExecutor
+
+        ctx = PipelineContext(target_spec={"targets": ["dram_latency_cycles"]})
+        ctx.add_metric_feedback(
+            suggested_fixes=["Use shared memory"],
+            bottleneck_type="memory_bound",
+            recommendations=["Reduce global memory accesses"],
+        )
+
+        executor = StageExecutor(state_dir=str(tmp_path))
+        user_task = executor._build_user_task(
+            stage=PipelineStage.METRIC_ANALYSIS,
+            task={},
+            prev_result={},
+            target_spec={"targets": ["dram_latency_cycles"]},
+            ctx=ctx,
+        )
+
+        assert "OPTIMIZATION ITERATION" not in user_task
+        assert "memory_bound" not in user_task
+
+    def test_no_metric_feedback_no_injection(self, tmp_path):
+        """_build_user_task should not inject anything when there's no feedback."""
+        from src.domain.pipeline_context import PipelineContext
+        from src.domain.stage_executor import StageExecutor
+
+        ctx = PipelineContext(target_spec={"targets": ["dram_latency_cycles"]})
+
+        executor = StageExecutor(state_dir=str(tmp_path))
+        user_task = executor._build_user_task(
+            stage=PipelineStage.CODE_GEN,
+            task={"tasks": [{"target": "test", "category": "latency_measurement", "method": "test"}]},
+            prev_result={},
+            target_spec={"targets": ["dram_latency_cycles"]},
+            ctx=ctx,
+        )
+
+        assert "OPTIMIZATION ITERATION" not in user_task
+        assert "BOTTLENECK" not in user_task
+
+    def test_full_optimization_loop_with_convergence(self, tmp_path):
+        """End-to-end: MetricAnalysis finds bottleneck → CodeGen optimizes → MetricAnalysis says balanced → done.
+
+        This is the core test for continuous iterative optimization:
+        - Iteration 0: CodeGen → MetricAnalysis finds memory_bound → loop
+        - Iteration 1: CodeGen → MetricAnalysis finds compute_bound → loop
+        - Iteration 2: CodeGen → MetricAnalysis says balanced → proceed to Verification
+        """
+        from src.domain.pipeline_context import PipelineContext
+
+        ctx = PipelineContext(
+            target_spec={"targets": ["dram_latency_cycles"]},
+            max_iterations=5,
+        )
+
+        # Iteration 0: MetricAnalysis finds memory_bound
+        ctx.add_metric_feedback(
+            suggested_fixes=["Use shared memory"],
+            bottleneck_type="memory_bound",
+            recommendations=["Reduce global memory accesses"],
+        )
+        feedback = ctx.get_feedback_for_codegen()
+        bottleneck_type = feedback.get("bottleneck_type", "")
+        is_balanced = bottleneck_type == "balanced"
+        has_actionable = bool(
+            (feedback.get("metric_suggested_fixes") or feedback.get("metric_recommendations"))
+            and not is_balanced
+        )
+        assert has_actionable, "memory_bound should be actionable"
+        assert ctx.can_retry()
+        ctx.increment_iteration()
+
+        # Iteration 1: MetricAnalysis finds compute_bound
+        ctx.add_metric_feedback(
+            suggested_fixes=["Increase occupancy"],
+            bottleneck_type="compute_bound",
+            recommendations=["Optimize warp scheduling"],
+        )
+        feedback = ctx.get_feedback_for_codegen()
+        bottleneck_type = feedback.get("bottleneck_type", "")
+        is_balanced = bottleneck_type == "balanced"
+        has_actionable = bool(
+            (feedback.get("metric_suggested_fixes") or feedback.get("metric_recommendations"))
+            and not is_balanced
+        )
+        assert has_actionable, "compute_bound should be actionable"
+        assert ctx.can_retry()
+        ctx.increment_iteration()
+
+        # Iteration 2: MetricAnalysis says balanced (converged!)
+        ctx.add_metric_feedback(
+            suggested_fixes=[],
+            bottleneck_type="balanced",
+            recommendations=[],
+        )
+        feedback = ctx.get_feedback_for_codegen()
+        bottleneck_type = feedback.get("bottleneck_type", "")
+        is_balanced = bottleneck_type == "balanced"
+        has_actionable = bool(
+            (feedback.get("metric_suggested_fixes") or feedback.get("metric_recommendations"))
+            and not is_balanced
+        )
+        assert not has_actionable, "'balanced' means converged — no more optimization needed"
+
+    def test_max_iterations_forced_termination(self, tmp_path):
+        """When max iterations reached, pipeline must proceed even if feedback exists."""
+        from src.domain.pipeline_context import PipelineContext
+
+        ctx = PipelineContext(
+            target_spec={"targets": ["dram_latency_cycles"]},
+            max_iterations=2,
+        )
+
+        # Iteration 0: finds bottleneck
+        ctx.add_metric_feedback(
+            suggested_fixes=["Fix 1"],
+            bottleneck_type="memory_bound",
+            recommendations=["Rec 1"],
+        )
+        ctx.increment_iteration()
+        assert ctx.can_retry()
+
+        # Iteration 1: still finds bottleneck
+        ctx.add_metric_feedback(
+            suggested_fixes=["Fix 2"],
+            bottleneck_type="memory_bound",
+            recommendations=["Rec 2"],
+        )
+        ctx.increment_iteration()
+        assert not ctx.can_retry(), "Max iterations reached — must proceed to Verification"
+
+        # Even though there's actionable feedback, can_retry() prevents further looping
+        feedback = ctx.get_feedback_for_codegen()
+        has_actionable = bool(
+            (feedback.get("metric_suggested_fixes") or feedback.get("metric_recommendations"))
+            and not (feedback.get("bottleneck_type") == "balanced")
+        )
+        assert has_actionable, "Feedback is still actionable"
+        assert not ctx.can_retry(), "But iteration limit prevents further optimization"
+
+    def test_convergence_detection_same_bottleneck_no_fixes(self, tmp_path):
+        """is_optimization_converged should detect when same bottleneck repeats with no fixes."""
+        from src.domain.pipeline_context import PipelineContext
+
+        ctx = PipelineContext(
+            target_spec={"targets": ["dram_latency_cycles"]},
+            max_iterations=5,
+        )
+
+        assert not ctx.is_optimization_converged(), "No feedback yet — not converged"
+
+        ctx.add_metric_feedback(
+            suggested_fixes=["Use shared memory"],
+            bottleneck_type="memory_bound",
+            recommendations=["Reduce global memory accesses"],
+        )
+        assert not ctx.is_optimization_converged(), "Only 1 round — not converged"
+
+        ctx.add_metric_feedback(
+            suggested_fixes=["Optimize access pattern"],
+            bottleneck_type="memory_bound",
+            recommendations=["Coalesce accesses"],
+        )
+        assert not ctx.is_optimization_converged(), "Same bottleneck but has fixes — not converged"
+
+        ctx.add_metric_feedback(
+            suggested_fixes=[],
+            bottleneck_type="memory_bound",
+            recommendations=[],
+        )
+        assert not ctx.is_optimization_converged(), "Last round has no fixes, but prev round did — not converged"
+
+        ctx.add_metric_feedback(
+            suggested_fixes=[],
+            bottleneck_type="memory_bound",
+            recommendations=[],
+        )
+        assert ctx.is_optimization_converged(), "Same bottleneck, no fixes for 2 rounds — CONVERGED"
+
+    def test_convergence_not_triggered_different_bottlenecks(self, tmp_path):
+        """is_optimization_converged should NOT trigger when bottleneck types differ."""
+        from src.domain.pipeline_context import PipelineContext
+
+        ctx = PipelineContext(
+            target_spec={"targets": ["dram_latency_cycles"]},
+            max_iterations=5,
+        )
+
+        ctx.add_metric_feedback(
+            suggested_fixes=[],
+            bottleneck_type="memory_bound",
+            recommendations=[],
+        )
+        ctx.add_metric_feedback(
+            suggested_fixes=[],
+            bottleneck_type="compute_bound",
+            recommendations=[],
+        )
+        assert not ctx.is_optimization_converged(), "Different bottleneck types — not converged"
+
+    def test_convergence_not_triggered_with_fixes(self, tmp_path):
+        """is_optimization_converged should NOT trigger when there are concrete fixes."""
+        from src.domain.pipeline_context import PipelineContext
+
+        ctx = PipelineContext(
+            target_spec={"targets": ["dram_latency_cycles"]},
+            max_iterations=5,
+        )
+
+        ctx.add_metric_feedback(
+            suggested_fixes=["Fix A"],
+            bottleneck_type="memory_bound",
+            recommendations=[],
+        )
+        ctx.add_metric_feedback(
+            suggested_fixes=["Fix B"],
+            bottleneck_type="memory_bound",
+            recommendations=[],
+        )
+        assert not ctx.is_optimization_converged(), "Has concrete fixes — not converged"
+
+    def test_convergence_with_recommendations_only(self, tmp_path):
+        """Convergence should NOT trigger if recommendations exist (even without fixes)."""
+        from src.domain.pipeline_context import PipelineContext
+
+        ctx = PipelineContext(
+            target_spec={"targets": ["dram_latency_cycles"]},
+            max_iterations=5,
+        )
+
+        ctx.add_metric_feedback(
+            suggested_fixes=[],
+            bottleneck_type="memory_bound",
+            recommendations=["Try shared memory"],
+        )
+        ctx.add_metric_feedback(
+            suggested_fixes=[],
+            bottleneck_type="memory_bound",
+            recommendations=["Try tiling"],
+        )
+        assert not ctx.is_optimization_converged(), "Has recommendations — still actionable"
+
+    def test_diminishing_returns_convergence(self, tmp_path):
+        """is_optimization_converged should detect diminishing returns via CodeGen duration."""
+        from src.domain.pipeline_context import PipelineContext
+
+        ctx = PipelineContext(
+            target_spec={"targets": ["dram_latency_cycles"]},
+            max_iterations=5,
+        )
+
+        ctx.add_metric_feedback(
+            suggested_fixes=["Fix A"],
+            bottleneck_type="memory_bound",
+            recommendations=["Rec A"],
+        )
+        ctx.add_metric_feedback(
+            suggested_fixes=["Fix B"],
+            bottleneck_type="memory_bound",
+            recommendations=["Rec B"],
+        )
+        assert not ctx.is_optimization_converged(), "Has fixes — not converged"
+
+        ctx.record_stage_duration("code_gen", 190.0, iteration=0)
+        ctx.record_stage_duration("code_gen", 14.0, iteration=1)
+        ctx.record_stage_duration("code_gen", 6.0, iteration=2)
+        assert ctx.is_optimization_converged(), "6s < 14s*0.5=7s and <30s — diminishing returns detected"
+
+    def test_diminishing_returns_not_triggered_slow_codegen(self, tmp_path):
+        """Diminishing returns should NOT trigger when CodeGen is still doing substantial work."""
+        from src.domain.pipeline_context import PipelineContext
+
+        ctx = PipelineContext(
+            target_spec={"targets": ["dram_latency_cycles"]},
+            max_iterations=5,
+        )
+
+        ctx.add_metric_feedback(
+            suggested_fixes=["Fix A"],
+            bottleneck_type="memory_bound",
+            recommendations=["Rec A"],
+        )
+        ctx.add_metric_feedback(
+            suggested_fixes=["Fix B"],
+            bottleneck_type="memory_bound",
+            recommendations=["Rec B"],
+        )
+
+        ctx.record_stage_duration("code_gen", 190.0, iteration=0)
+        ctx.record_stage_duration("code_gen", 100.0, iteration=1)
+        ctx.record_stage_duration("code_gen", 60.0, iteration=2)
+        assert not ctx.is_optimization_converged(), "60s > 100s*0.5=50s but >30s — still substantial work"
+
+    def test_record_stage_duration(self, tmp_path):
+        """record_stage_duration should store durations with correct keys."""
+        from src.domain.pipeline_context import PipelineContext
+
+        ctx = PipelineContext(target_spec={"targets": ["test"]})
+        ctx.record_stage_duration("plan", 25.0)
+        ctx.record_stage_duration("code_gen", 190.0, iteration=0)
+        ctx.record_stage_duration("code_gen", 14.0, iteration=1)
+        ctx.record_stage_duration("code_gen", 6.0, iteration=2)
+
+        assert "plan" in ctx._stage_durations
+        assert "code_gen" in ctx._stage_durations
+        assert "code_gen_opt_1" in ctx._stage_durations
+        assert "code_gen_opt_2" in ctx._stage_durations
+        assert ctx._stage_durations["code_gen_opt_2"] == 6.0

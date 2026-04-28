@@ -66,7 +66,8 @@ class PlannerAgent(BaseSubAgent):
 
         valid_categories = {
             "latency_measurement", "capacity_measurement",
-            "clock_measurement", "bandwidth_measurement", "unknown",
+            "clock_measurement", "bandwidth_measurement",
+            "ncu_throughput_measurement", "unknown",
         }
 
         # Try LLM-based planning first, fall back to rule-based
@@ -168,7 +169,8 @@ class PlannerAgent(BaseSubAgent):
                             "- Output ONLY JSON text (no tool calls)\n"
                             "- Decompose targets into tasks with: target, category, method\n"
                             "- Categories: latency_measurement, capacity_measurement, "
-                            "clock_measurement, bandwidth_measurement, unknown\n\n"
+                            "clock_measurement, bandwidth_measurement, "
+                            "ncu_throughput_measurement, unknown\n\n"
                             "Your role is ANALYSIS only — not code generation or execution."
                         )
                         system_msg["content"] = minimal_system
@@ -390,7 +392,8 @@ class PlannerAgent(BaseSubAgent):
         """Normalize parsed JSON into task list."""
         valid_categories = {
             "latency_measurement", "capacity_measurement",
-            "clock_measurement", "bandwidth_measurement", "unknown",
+            "clock_measurement", "bandwidth_measurement",
+            "ncu_throughput_measurement", "unknown",
         }
         if isinstance(parsed, list):
             tasks = []
@@ -452,11 +455,10 @@ class PlannerAgent(BaseSubAgent):
                             "l2_cache_size_mb"}
         clock_targets = {"actual_boost_clock_mhz", "base_clock_mhz", "sm_clock_mhz"}
         bandwidth_targets = {"dram_bandwidth_gbps", "l2_bandwidth_gbps", "shmem_bandwidth_gbps"}
-
-        # Targets intentionally classified as "unknown" (per agent_prompts.py TASK CLASSIFICATION RULES):
-        # - sm_count: requires cudaDeviceGetAttribute API, not a standard micro-benchmark pattern
-        # - bank_conflict_penalty_ratio: requires strided vs sequential access comparison
-        # These are handled by _suggest_method() with specialized method descriptions.
+        ncu_throughput_targets = {
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed",
+            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed",
+        }
 
         category = "unknown"
         if target in latency_targets:
@@ -467,6 +469,8 @@ class PlannerAgent(BaseSubAgent):
             category = "clock_measurement"
         elif target in bandwidth_targets:
             category = "bandwidth_measurement"
+        elif target in ncu_throughput_targets:
+            category = "ncu_throughput_measurement"
 
         return {
             "target": target,
@@ -507,6 +511,32 @@ class PlannerAgent(BaseSubAgent):
                 "L1 cache (typically 16-48 KB per SM), use clock64() for cycle timing, "
                 "ensure working set fits in L1 but exceeds register file capacity"
             ),
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": (
+                "Compute-bound metric: write a PURELY compute-bound kernel with double-precision "
+                "FMA chain (result += a * b + c) where a,b,c are register doubles initialized "
+                "BEFORE the timed loop. Use volatile double* sink to prevent dead-code elimination. "
+                "Add asm volatile('' : '+d'(sink) : : 'memory') after the FMA loop. "
+                "Use #pragma unroll 1 before the loop. Launch sm_count*4 blocks x 256 threads. "
+                "Run a WARMUP kernel before timing. Inside kernel: record clock64() before/after FMA loop, "
+                "output cycle count. Compute actual_freq_mhz = cycle_count / (elapsed_ms * 1000.0). "
+                "COMPUTE the actual percentage: "
+                "achieved_flops / (sm_count * fp64_per_sm * actual_freq_mhz * 1e6 * 2) * 100. "
+                "Determine fp64_per_sm from compute capability: SM70=32, SM80=32, SM90=64, SM75=2, SM86+=2. "
+                "Do NOT use cudaDevAttrClockRate for peak — it may report base clock, not boost!"
+            ),
+            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": (
+                "Compute-memory metric: write a FUSED read-compute-write kernel that stresses both "
+                "memory and compute. Read input[i] via __restrict__ pointer, compute 8 FMA per "
+                "element USING THE READ VALUE (not register-only!), write to volatile output[i]. "
+                "WRONG: val = val * 1.0001f + 0.001f where val is register-only → 0.09%! "
+                "RIGHT: val = input[i]; then val = val * 1.0001f + 0.001f; then output[i] = val; "
+                "Use 64MB+ buffer to ensure DRAM access. "
+                "Launch sm_count*4 blocks x 256 threads. Run a WARMUP kernel before timing. "
+                "COMPUTE the actual percentage: achieved_bw / peak_bw * 100. "
+                "peak_bw = (mem_clock_khz/1000.0) * 1e6 * (bus_width_bits/8) * 2 / 1e9. "
+                "Query mem_clock_khz and bus_width_bits via cudaDeviceGetAttribute. "
+                "If pct < 5%, the kernel is FUNDAMENTALLY WRONG — not stressing memory at all!"
+            ),
         }
         if target in special_methods:
             return special_methods[target]
@@ -531,6 +561,19 @@ class PlannerAgent(BaseSubAgent):
             "bandwidth_measurement": (
                 "STREAM copy (dst[i] = src[i]) with large arrays (32M floats = 128 MB), "
                 "cudaEventElapsedTime for timing, BW = bytes / elapsed_ns GB/s"
+            ),
+            "ncu_throughput_measurement": (
+                "Throughput metric: write a stress kernel that exercises the "
+                "target hardware unit, then COMPUTE the actual percentage: "
+                "achieved_throughput / peak_throughput * 100. "
+                "For sm__throughput: use clock64() inside kernel to measure actual running frequency, "
+                "actual_freq_mhz = cycle_count / (elapsed_ms * 1000.0), "
+                "achieved_flops / (sm_count * fp64_per_sm * actual_freq_mhz * 1e6 * 2) * 100. "
+                "Determine fp64_per_sm from compute capability: SM70=32, SM80=32, SM90=64, SM75=2, SM86+=2. "
+                "Do NOT use cudaDevAttrClockRate for peak — it may report base clock, not boost! "
+                "For gpu__compute_memory_throughput: achieved_bw / peak_bw * 100. "
+                "FMA chain MUST use value read from memory, NOT register-only. "
+                "Query hardware params via cudaDeviceGetAttribute at runtime."
             ),
         }
         return methods.get(category, "custom micro-benchmark with clock64() timing and parseable printf output")

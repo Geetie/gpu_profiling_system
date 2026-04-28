@@ -7,11 +7,15 @@ Performs active tool-based analysis:
 4. Falls back to rule-based analysis on printf output when ncu unavailable
 5. Generates targeted optimization recommendations
 6. Provides cross-validation between CodeGen measurements and ncu data
+7. Code quality review: accuracy, efficiency, resource consumption, compatibility, maintainability
+8. Anti-cheat environment detection: frequency lock, SM masking, API interception
 """
 from __future__ import annotations
 
 import logging
+import os
 import re
+import subprocess
 from typing import Any
 
 from src.application.context import ContextManager, Role
@@ -120,6 +124,20 @@ _METRIC_SELECTION_MAP: dict[str, list[str]] = {
         "l1tex__t_sectors.sum",
         "l1tex__t_sectors_hit.sum",
     ],
+    "sm__throughput.avg.pct_of_peak_sustained_elapsed": [
+        "sm__throughput.avg.pct_of_peak_sustained_elapsed",
+        "sm__cycles_active.sum",
+        "sm__warps_active.avg.pct_of_peak_sustained_elapsed",
+        "sm__pipe_fma_cycle_active.avg.pct_of_peak_sustained_active",
+        "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed",
+    ],
+    "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": [
+        "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed",
+        "dram__throughput.avg.pct_of_peak_sustained_elapsed",
+        "sm__throughput.avg.pct_of_peak_sustained_elapsed",
+        "lts__t_sectors_op_read.sum",
+        "lts__t_sectors_op_write.sum",
+    ],
 }
 
 _RECOMMENDATIONS: dict[str, dict[str, list[str]]] = {
@@ -166,6 +184,36 @@ _RECOMMENDATIONS: dict[str, dict[str, list[str]]] = {
             "Check if FP64 computation is necessary — FP32 may suffice for some calculations",
             "Verify GPU has high FP64 throughput (data center GPUs vs consumer GPUs differ significantly)",
             "Consider iterative refinement: FP32 main computation with FP64 correction passes",
+        ],
+        "sm_throughput": [
+            "CRITICAL: sm__throughput kernel MUST be PURELY compute-bound with ZERO global memory access in the FMA loop",
+            "Use double-precision FMA (result += a * b + c) with ALL variables in registers — NOT float",
+            "Initialize a, b, c as register doubles BEFORE the timed loop to prevent constant-folding",
+            "Use volatile double* sink to prevent dead-code elimination of the FMA chain",
+            "Add asm volatile('' : '+d'(sink) : : 'memory') AFTER the FMA loop",
+            "Use #pragma unroll 1 before the FMA loop for consistent compiler behavior",
+            "Launch sm_count*4 blocks x 256 threads for full SM utilization",
+            "Run a WARMUP kernel before timing — GPU power ramping reduces first-run throughput by 20-30%",
+            "Inside kernel: record clock64() before/after FMA loop, output cycle count",
+            "COMPUTE actual_freq_mhz = cycle_count / (elapsed_ms * 1000.0)",
+            "COMPUTE actual pct: achieved_flops / (sm_count * fp64_per_sm * actual_freq_mhz * 1e6 * 2) * 100",
+            "Do NOT use cudaDevAttrClockRate for peak — it may report base clock, not boost!",
+        ],
+        "compute_memory_throughput": [
+            "CRITICAL: gpu__compute_memory_throughput requires a FUSED read-compute-write kernel",
+            "Read input[i] with const float* __restrict__ pointer, compute 8+ FMA per element USING the read value, write to volatile output[i]",
+            "Use 64MB+ buffer (16M+ floats) to ensure data goes through DRAM (not just L2 cache)",
+            "Use volatile float* output to prevent dead-code elimination of writes",
+            "FMA chain MUST use the value read from memory — register-only FMA does NOT stress memory → 0.09%!",
+            "WRONG: val = val * 1.0001f + 0.001f where val is register-only",
+            "RIGHT: val = input[i]; then val = val * 1.0001f + 0.001f; then output[i] = val;",
+            "Launch sm_count*4 blocks x 256 threads for full memory+compute utilization",
+            "Run a WARMUP kernel before timing — GPU power ramping reduces first-run throughput",
+            "Balance compute and memory: each thread should do 4-8 FMA operations per memory access",
+            "COMPUTE actual pct: achieved_bw / peak_bw * 100",
+            "  peak_bw = (mem_clock_khz/1000.0) * 1e6 * (bus_width_bits/8) * 2 / 1e9",
+            "  achieved_bw = (2.0 * buffer_size_bytes) / elapsed_seconds / 1e9  // 2x for read+write",
+            "If pct < 5%, the kernel is FUNDAMENTALLY WRONG — not stressing memory at all",
         ],
     },
     "latency_bound": [
@@ -576,8 +624,8 @@ class MetricAnalysisAgent(BaseSubAgent):
             merged_metrics, ncu_available=True, cross_validation=cross_validation
         )
 
-        # CRITICAL FIX: Include 'measurements' field for StageExecutor compatibility
-        # StageExecutor checks for 'measurements' to determine which targets are completed
+        code_quality = self._get_code_quality_review(target, raw_output)
+
         return SubAgentResult(
             agent_role=self.role,
             status=SubAgentStatus.SUCCESS,
@@ -585,7 +633,7 @@ class MetricAnalysisAgent(BaseSubAgent):
                 "bottleneck_type": roofline_result["bottleneck_type"],
                 "bottleneck_sub_type": roofline_result.get("bottleneck_sub_type"),
                 "parsed_metrics": merged_metrics,
-                "measurements": merged_metrics,  # CRITICAL: StageExecutor expects this field
+                "measurements": merged_metrics,
                 "evidence": evidence,
                 "recommendations": recommendations,
                 "suggested_fixes": suggested_fixes,
@@ -593,6 +641,7 @@ class MetricAnalysisAgent(BaseSubAgent):
                 "confidence_reason": confidence_reason,
                 "cross_validation": cross_validation,
                 "analysis_method": "ncu_roofline",
+                "code_quality": code_quality,
             },
             metadata={"target": target, "ncu_result_count": len(ncu_results)},
         )
@@ -618,7 +667,8 @@ class MetricAnalysisAgent(BaseSubAgent):
             parsed_metrics, ncu_available=False
         )
 
-        # CRITICAL FIX: Include 'measurements' field for StageExecutor compatibility
+        code_quality = self._get_code_quality_review(target, raw_output)
+
         return SubAgentResult(
             agent_role=self.role,
             status=SubAgentStatus.SUCCESS,
@@ -626,7 +676,7 @@ class MetricAnalysisAgent(BaseSubAgent):
                 "bottleneck_type": roofline_result["bottleneck_type"],
                 "bottleneck_sub_type": roofline_result.get("bottleneck_sub_type"),
                 "parsed_metrics": parsed_metrics,
-                "measurements": parsed_metrics,  # CRITICAL: StageExecutor expects this field
+                "measurements": parsed_metrics,
                 "evidence": evidence,
                 "recommendations": recommendations,
                 "suggested_fixes": suggested_fixes,
@@ -634,6 +684,7 @@ class MetricAnalysisAgent(BaseSubAgent):
                 "confidence_reason": confidence_reason,
                 "cross_validation": None,
                 "analysis_method": "printf_pattern_matching",
+                "code_quality": code_quality,
             },
             metadata={"target": target, "ncu_available": False},
         )
@@ -781,6 +832,8 @@ class MetricAnalysisAgent(BaseSubAgent):
         compute_targets = {
             "actual_boost_clock_mhz": ("compute_bound", "clock"),
             "sm_count": ("compute_bound", "sm"),
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": ("compute_bound", "sm_throughput"),
+            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": ("memory_bound", "compute_memory_throughput"),
         }
         conflict_targets = {
             "bank_conflict_penalty_ratio": ("latency_bound", "bank_conflict"),
@@ -1161,6 +1214,7 @@ class MetricAnalysisAgent(BaseSubAgent):
                 confidence = parsed.get("confidence", 0.5)
 
                 suggested_fixes = self._generate_suggested_fixes(recommendations)
+                code_quality = self._get_code_quality_review(target, raw_output)
 
                 return SubAgentResult(
                     agent_role=self.role,
@@ -1169,6 +1223,7 @@ class MetricAnalysisAgent(BaseSubAgent):
                         "bottleneck_type": bottleneck,
                         "bottleneck_sub_type": sub_type,
                         "parsed_metrics": ncu_metrics,
+                        "measurements": ncu_metrics,
                         "evidence": evidence,
                         "recommendations": recommendations,
                         "suggested_fixes": suggested_fixes,
@@ -1176,6 +1231,7 @@ class MetricAnalysisAgent(BaseSubAgent):
                         "confidence_reason": "LLM analysis with ncu data",
                         "cross_validation": None,
                         "analysis_method": "llm_ncu_roofline",
+                        "code_quality": code_quality,
                     },
                     metadata={"target": target},
                 )
@@ -1183,6 +1239,7 @@ class MetricAnalysisAgent(BaseSubAgent):
             pass
 
         roofline_result = self.analyze_roofline(ncu_metrics, target)
+        code_quality = self._get_code_quality_review(target, raw_output)
         return SubAgentResult(
             agent_role=self.role,
             status=SubAgentStatus.SUCCESS,
@@ -1190,7 +1247,7 @@ class MetricAnalysisAgent(BaseSubAgent):
                 "bottleneck_type": roofline_result["bottleneck_type"],
                 "bottleneck_sub_type": roofline_result.get("bottleneck_sub_type"),
                 "parsed_metrics": ncu_metrics,
-                "measurements": ncu_metrics,  # CRITICAL: StageExecutor expects this field
+                "measurements": ncu_metrics,
                 "evidence": roofline_result.get("evidence", {}),
                 "recommendations": roofline_result.get("recommendations", []),
                 "suggested_fixes": self._generate_suggested_fixes(
@@ -1200,6 +1257,7 @@ class MetricAnalysisAgent(BaseSubAgent):
                 "confidence_reason": "LLM parsing failed, fell back to rule-based Roofline",
                 "cross_validation": None,
                 "analysis_method": "fallback_rule_based",
+                "code_quality": code_quality,
             },
             metadata={"target": target},
         )
@@ -1243,6 +1301,7 @@ class MetricAnalysisAgent(BaseSubAgent):
                 recommendations = parsed.get("recommendations", [])
 
                 suggested_fixes = self._generate_suggested_fixes(recommendations)
+                code_quality = self._get_code_quality_review(target, raw_output)
 
                 return SubAgentResult(
                     agent_role=self.role,
@@ -1251,7 +1310,7 @@ class MetricAnalysisAgent(BaseSubAgent):
                         "bottleneck_type": bottleneck,
                         "bottleneck_sub_type": sub_type,
                         "parsed_metrics": metrics,
-                        "measurements": metrics,  # CRITICAL: StageExecutor expects this field
+                        "measurements": metrics,
                         "evidence": evidence,
                         "recommendations": recommendations,
                         "suggested_fixes": suggested_fixes,
@@ -1259,6 +1318,7 @@ class MetricAnalysisAgent(BaseSubAgent):
                         "confidence_reason": "LLM analysis without ncu — low confidence",
                         "cross_validation": None,
                         "analysis_method": "llm_printf",
+                        "code_quality": code_quality,
                     },
                     metadata={"target": target},
                 )
@@ -1267,8 +1327,8 @@ class MetricAnalysisAgent(BaseSubAgent):
 
         parsed_metrics = self._parse_output(raw_output)
         roofline_result = self.analyze_roofline(parsed_metrics, target)
+        code_quality = self._get_code_quality_review(target, raw_output)
 
-        # CRITICAL FIX: Include 'measurements' field for StageExecutor compatibility
         return SubAgentResult(
             agent_role=self.role,
             status=SubAgentStatus.SUCCESS,
@@ -1276,7 +1336,7 @@ class MetricAnalysisAgent(BaseSubAgent):
                 "bottleneck_type": roofline_result["bottleneck_type"],
                 "bottleneck_sub_type": roofline_result.get("bottleneck_sub_type"),
                 "parsed_metrics": parsed_metrics,
-                "measurements": parsed_metrics,  # CRITICAL: StageExecutor expects this field
+                "measurements": parsed_metrics,
                 "evidence": roofline_result.get("evidence", {}),
                 "recommendations": roofline_result.get("recommendations", []),
                 "suggested_fixes": self._generate_suggested_fixes(
@@ -1286,6 +1346,7 @@ class MetricAnalysisAgent(BaseSubAgent):
                 "confidence_reason": "LLM failed, rule-based analysis without ncu",
                 "cross_validation": None,
                 "analysis_method": "fallback_rule_based_printf",
+                "code_quality": code_quality,
             },
             metadata={"target": target},
         )
@@ -1338,3 +1399,480 @@ class MetricAnalysisAgent(BaseSubAgent):
             return 0.0
         numeric_count = sum(1 for v in metrics.values() if isinstance(v, (int, float)))
         return min(1.0, numeric_count / 5.0)
+
+    def _get_code_quality_review(
+        self, target: str, execution_output: str
+    ) -> dict[str, Any] | None:
+        """Attempt to retrieve source code and perform quality review.
+
+        Tries to find the CUDA source from the sandbox or previous
+        CodeGen output, then runs the 5-dimension quality review.
+        """
+        source_code = ""
+        try:
+            from src.infrastructure.file_ops import FileOperations
+            file_ops = FileOperations("/workspace")
+            cu_files = file_ops.list_files("/workspace", pattern="*.cu")
+            if cu_files:
+                latest_cu = sorted(cu_files)[-1]
+                content = file_ops.read(latest_cu)
+                if content:
+                    source_code = content
+        except Exception:
+            pass
+
+        if not source_code:
+            try:
+                sandbox_root = "/workspace/.sandbox"
+                for root, dirs, files in os.walk(sandbox_root):
+                    for f in files:
+                        if f.endswith('.cu'):
+                            path = os.path.join(root, f)
+                            try:
+                                with open(path, 'r') as fh:
+                                    source_code = fh.read()
+                                    break
+                            except Exception:
+                                continue
+                    if source_code:
+                        break
+            except Exception:
+                pass
+
+        if not source_code:
+            return None
+
+        return self.review_code_quality(
+            source_code=source_code,
+            target_name=target,
+            execution_output=execution_output,
+        )
+
+    def review_code_quality(
+        self,
+        source_code: str,
+        target_name: str,
+        execution_output: str = "",
+    ) -> dict[str, Any]:
+        """Comprehensive code quality review covering all 5 key dimensions.
+
+        Dimensions:
+        1. Code Accuracy: Correctness of measurement logic
+        2. Execution Efficiency: Kernel optimization and throughput
+        3. Resource Consumption: Register, shared memory, bandwidth usage
+        4. Compatibility: Cross-architecture and anti-cheat resilience
+        5. Maintainability: Code readability and modularity
+
+        Returns:
+            dict with keys: accuracy, efficiency, resource, compatibility,
+            maintainability, overall_score, detailed_feedback, suggested_fixes
+        """
+        accuracy = self._review_accuracy(source_code, target_name, execution_output)
+        efficiency = self._review_efficiency(source_code, target_name)
+        resource = self._review_resource_consumption(source_code, target_name)
+        compatibility = self._review_compatibility(source_code, target_name)
+        maintainability = self._review_maintainability(source_code, target_name)
+
+        scores = [accuracy["score"], efficiency["score"], resource["score"],
+                  compatibility["score"], maintainability["score"]]
+        overall = round(sum(scores) / len(scores), 2) if scores else 0.0
+
+        all_fixes = []
+        for dim in [accuracy, efficiency, resource, compatibility, maintainability]:
+            all_fixes.extend(dim.get("fixes", []))
+
+        return {
+            "accuracy": accuracy,
+            "efficiency": efficiency,
+            "resource": resource,
+            "compatibility": compatibility,
+            "maintainability": maintainability,
+            "overall_score": overall,
+            "detailed_feedback": {
+                "accuracy_feedback": accuracy.get("feedback", ""),
+                "efficiency_feedback": efficiency.get("feedback", ""),
+                "resource_feedback": resource.get("feedback", ""),
+                "compatibility_feedback": compatibility.get("feedback", ""),
+                "maintainability_feedback": maintainability.get("feedback", ""),
+            },
+            "suggested_fixes": all_fixes[:8],
+        }
+
+    def _review_accuracy(
+        self, source: str, target: str, exec_output: str
+    ) -> dict[str, Any]:
+        """Review code accuracy: correct measurement logic, no logical errors."""
+        issues = []
+        fixes = []
+        score = 1.0
+
+        if "cudaGetDeviceProperties" in source:
+            issues.append("Uses cudaGetDeviceProperties which may be intercepted in evaluation")
+            fixes.append(
+                "REPLACE cudaGetDeviceProperties with empirical measurement. "
+                "Use clock64() + cudaEventElapsedTime for frequency, "
+                "pointer-chasing for latency, occupancy API for SM count."
+            )
+            score -= 0.3
+
+        if target and "latency" in target.lower():
+            if "clock64()" not in source and "clock()" not in source:
+                issues.append(f"Latency target '{target}' but no clock64() timing found")
+                fixes.append("Add clock64() based timing for latency measurement")
+                score -= 0.3
+
+        if target and "bandwidth" in target.lower():
+            if "cudaEventRecord" not in source and "cudaEventElapsedTime" not in source:
+                issues.append(f"Bandwidth target '{target}' but no cudaEvent timing found")
+                fixes.append("Use cudaEventRecord/cudaEventElapsedTime for bandwidth measurement")
+                score -= 0.3
+
+        if target and "clock" in target.lower() and "mhz" in target.lower():
+            if "clock64()" not in source:
+                issues.append("Clock frequency target requires clock64() for cycle counting")
+                fixes.append("Use dual-timing: clock64() for cycles, cudaEventElapsedTime for wall time")
+                score -= 0.3
+
+        if "printf" in source:
+            printf_matches = re.findall(r'printf\s*\(\s*"([^"]*)"', source)
+            has_target_printf = any(target in p for p in printf_matches) if target else False
+            if target and not has_target_printf:
+                issues.append(f"No printf output matching target '{target}'")
+                fixes.append(f"Ensure printf outputs '{target}: <value>' format for result extraction")
+                score -= 0.2
+
+        if exec_output and "0.0" in exec_output and target:
+            lines = [l.strip() for l in exec_output.splitlines() if l.strip()]
+            for line in lines:
+                m = re.match(r'^([a-zA-Z_][\w.]*)\s*:\s*([\d.eE+-]+)', line)
+                if m and m.group(1) == target and float(m.group(2)) == 0.0:
+                    if "pct_of_peak" in target:
+                        issues.append(
+                            f"Measurement for '{target}' returned 0.0% — "
+                            f"kernel failed to achieve measurable throughput. "
+                            f"The FMA loop may be optimized away or peak calculation is wrong."
+                        )
+                        fixes.append(
+                            "Ensure volatile double* sink prevents dead-code elimination, "
+                            "use #pragma unroll 1, add warmup kernel, "
+                            "and compute actual pct = achieved/peak * 100 (NOT placeholder 0.0)"
+                        )
+                    else:
+                        issues.append(f"Measurement for '{target}' returned 0.0 — likely dead-code elimination")
+                        fixes.append(
+                            "Add 'volatile' qualifier on output pointer and "
+                            "'asm volatile(\"\" ::: \"memory\")' barrier after compute loop"
+                        )
+                    score -= 0.3
+                    break
+
+        if "volatile" not in source and ("clock64()" in source or "cudaEvent" in source):
+            has_asm_barrier = 'asm volatile' in source
+            if not has_asm_barrier:
+                issues.append("Missing volatile/asm barrier — compiler may optimize away measurement")
+                fixes.append("Use 'volatile double* sink' or add asm volatile memory barrier")
+                score -= 0.15
+
+        score = max(0.0, score)
+        feedback = "; ".join(issues) if issues else "Measurement logic appears correct"
+        return {"score": score, "issues": issues, "fixes": fixes, "feedback": feedback}
+
+    def _review_efficiency(
+        self, source: str, target: str
+    ) -> dict[str, Any]:
+        """Review execution efficiency: kernel optimization, throughput, occupancy."""
+        issues = []
+        fixes = []
+        score = 1.0
+
+        is_compute_target = "sm__throughput" in target or "compute_memory_throughput" in target
+        is_memory_target = any(kw in target for kw in ("bandwidth", "throughput", "bytes"))
+
+        if is_compute_target:
+            if "double" not in source and "float" in source:
+                issues.append("Using float for sm__throughput — double-precision FMA achieves higher SM utilization")
+                fixes.append("Change float to double in the compute loop for higher FMA throughput")
+                score -= 0.2
+
+            if "volatile" not in source:
+                issues.append("Missing volatile qualifier — compiler may eliminate compute (dead-code)")
+                fixes.append("Use 'volatile double* sink' or add asm volatile memory barrier after loop")
+                score -= 0.2
+
+            in_kernel = False
+            has_global_read_in_loop = False
+            lines = source.split('\n')
+            loop_depth = 0
+            for line in lines:
+                s = line.strip()
+                if '__global__' in s or '__device__' in s:
+                    in_kernel = True
+                    continue
+                if in_kernel:
+                    if '{' in s:
+                        loop_depth += 1
+                    if '}' in s:
+                        loop_depth -= 1
+                        if loop_depth <= 0:
+                            in_kernel = False
+                    if 'for' in s or 'while' in s:
+                        next_lines = s
+                        if any(kw in next_lines for kw in ('input[', 'data[', 'array[', 'global')):
+                            has_global_read_in_loop = True
+
+            if has_global_read_in_loop:
+                issues.append("Global memory read inside timed compute loop — makes kernel memory-bound")
+                fixes.append("Move all memory reads BEFORE the loop, use register variables only inside loop")
+                score -= 0.2
+
+            if "#pragma unroll" not in source:
+                issues.append("No #pragma unroll — compiler may unpredictably unroll or optimize away iterations")
+                fixes.append("Add '#pragma unroll 1' before the FMA loop for consistent behavior")
+                score -= 0.1
+
+        if is_memory_target:
+            if "volatile" not in source:
+                issues.append("Missing volatile on output pointer — compiler eliminates writes")
+                fixes.append("Use 'volatile float* output' for the output buffer")
+                score -= 0.2
+
+        warmup_patterns = ['warmup', 'WARMUP', 'warm_up', 'dummy']
+        has_warmup = any(p in source.lower() for p in warmup_patterns)
+        if not has_warmup and ("cudaEventRecord" in source or "clock64()" in source):
+            issues.append("No warmup kernel — first run measures lower throughput due to GPU power ramping")
+            fixes.append("Run kernel once before starting cudaEventRecord timing")
+            score -= 0.1
+
+        if "cudaEventRecord" in source:
+            if "cudaEventCreate" not in source:
+                issues.append("cudaEventRecord used without cudaEventCreate — will crash")
+                fixes.append("Add cudaEventCreate(&start); cudaEventCreate(&stop); before timing")
+                score -= 0.2
+
+        score = max(0.0, score)
+        feedback = "; ".join(issues) if issues else "Kernel efficiency looks adequate"
+        return {"score": score, "issues": issues, "fixes": fixes, "feedback": feedback}
+
+    def _review_resource_consumption(
+        self, source: str, target: str
+    ) -> dict[str, Any]:
+        """Review resource consumption: registers, shared memory, bandwidth."""
+        issues = []
+        fixes = []
+        score = 1.0
+
+        if "__shared__" in source:
+            shmem_matches = re.findall(r'__shared__\s+\w+\s+(\w+)\s*\[', source)
+            if shmem_matches and "bank_conflict" not in target:
+                has_padding = any("padding" in source.lower() or "+ 1]" in source or "+ 2]" in source
+                                 for _ in [1])
+                if not has_padding and len(shmem_matches) > 0:
+                    issues.append("Shared memory used without padding — potential bank conflicts")
+                    fixes.append("Add padding to shared memory arrays (e.g., [256+1]) to avoid bank conflicts")
+                    score -= 0.1
+
+        if "__launch_bounds__" not in source and "__global__" in source:
+            issues.append("No __launch_bounds__ specified — register allocation left to compiler default")
+            fixes.append("Add __launch_bounds__(256, 2) to control register usage and occupancy")
+            score -= 0.05
+
+        if "register" in source.lower() or "local memory" in source.lower():
+            pass
+
+        if "memcpy" in source and "cudaMemcpy" not in source:
+            issues.append("Using host memcpy instead of cudaMemcpy — may cause unnecessary D2H transfers")
+            fixes.append("Use cudaMemcpy for device-to-host transfers")
+            score -= 0.1
+
+        if target and "bandwidth" in target.lower():
+            block_matches = re.findall(r'<<<\s*(\d+)\s*,\s*(\d+)\s*>>>', source)
+            if block_matches:
+                blocks = int(block_matches[0][0])
+                threads = int(block_matches[0][1])
+                if blocks < 100 or threads < 128:
+                    issues.append(
+                        f"Low parallelism for bandwidth measurement: {blocks} blocks x {threads} threads"
+                    )
+                    fixes.append("Increase to at least 65535 blocks x 256 threads for full DRAM saturation")
+                    score -= 0.2
+
+        score = max(0.0, score)
+        feedback = "; ".join(issues) if issues else "Resource usage appears reasonable"
+        return {"score": score, "issues": issues, "fixes": fixes, "feedback": feedback}
+
+    def _review_compatibility(
+        self, source: str, target: str
+    ) -> dict[str, Any]:
+        """Review compatibility: cross-architecture, anti-cheat resilience, API independence."""
+        issues = []
+        fixes = []
+        score = 1.0
+
+        if "cudaGetDeviceProperties" in source:
+            issues.append("DEPENDS on cudaGetDeviceProperties — may be intercepted/virtualized in evaluation")
+            fixes.append(
+                "Replace ALL cudaGetDeviceProperties calls with empirical measurement. "
+                "Use clock64()+cudaEventElapsedTime for frequency, "
+                "pointer-chasing for latency, occupancy API for SM count."
+            )
+            score -= 0.3
+
+        if "cudaDeviceGetAttribute" in source:
+            issues.append("Uses cudaDeviceGetAttribute — may return virtualized values in evaluation")
+            fixes.append(
+                "Cross-validate cudaDeviceGetAttribute results with empirical measurement. "
+                "Do NOT rely on it as sole source for any target metric."
+            )
+            score -= 0.15
+
+        sm_version_matches = re.findall(r'sm_(\d+)', source)
+        if sm_version_matches:
+            versions = set(sm_version_matches)
+            if len(versions) == 1:
+                issues.append(f"Hard-coded for sm_{list(versions)[0]} — may not work on other architectures")
+                fixes.append("Use runtime architecture detection or make code architecture-agnostic")
+                score -= 0.1
+
+        if "cudaDevAttrMultiProcessorCount" in source and target != "launch__sm_count":
+            issues.append("Measures SM count but target is not SM count — wrong measurement approach")
+            fixes.append(f"Write code that specifically measures '{target}', not SM count")
+            score -= 0.3
+
+        if target and "clock" in target.lower() and "mhz" in target.lower():
+            if "nvidia-smi" in source:
+                issues.append("Uses nvidia-smi for clock — may report locked frequency, not actual")
+                fixes.append("Use clock64()+cudaEventElapsedTime dual-timing to measure actual running frequency")
+                score -= 0.2
+
+        env_detection = self._detect_environment_interference()
+        if env_detection.get("frequency_locked"):
+            issues.append(
+                f"GPU frequency appears LOCKED at {env_detection.get('reported_clock_mhz', '?')} MHz "
+                f"— static lookup tables will give wrong results"
+            )
+            fixes.append("Use empirical measurement (clock64()+cudaEventElapsedTime) to detect actual frequency")
+            score -= 0.1
+
+        if env_detection.get("sm_masked"):
+            issues.append(
+                f"SM masking detected: API reports {env_detection.get('api_sm_count', '?')} SMs, "
+                f"but actual active count may differ"
+            )
+            fixes.append("Use occupancy API + block ID sweep to detect actual active SM count")
+            score -= 0.1
+
+        score = max(0.0, score)
+        feedback = "; ".join(issues) if issues else "Code appears compatible and anti-cheat resilient"
+        return {"score": score, "issues": issues, "fixes": fixes, "feedback": feedback}
+
+    def _review_maintainability(
+        self, source: str, target: str
+    ) -> dict[str, Any]:
+        """Review maintainability: readability, modularity, error handling."""
+        issues = []
+        fixes = []
+        score = 1.0
+
+        lines = source.split('\n')
+        total_lines = len(lines)
+        if total_lines > 300:
+            issues.append(f"Kernel code is very long ({total_lines} lines) — consider splitting into functions")
+            fixes.append("Extract helper functions for initialization, measurement, and output")
+            score -= 0.1
+
+        if "__global__" in source:
+            kernel_lines = 0
+            in_kernel = False
+            for line in lines:
+                if '__global__' in line:
+                    in_kernel = True
+                if in_kernel:
+                    kernel_lines += 1
+                    if '}' in line and kernel_lines > 5:
+                        brace_count = sum(1 for c in line if c == '}') - sum(1 for c in line if c == '{')
+                        if brace_count > 0:
+                            in_kernel = False
+            if kernel_lines > 150:
+                issues.append(f"Single kernel is {kernel_lines} lines — hard to debug and maintain")
+                fixes.append("Break kernel into device helper functions for clarity")
+                score -= 0.1
+
+        has_error_check = any("cudaGetLastError" in l or "cudaPeekAtLastError" in l for l in lines)
+        if "cudaMalloc" in source and not has_error_check:
+            issues.append("CUDA operations without error checking — silent failures possible")
+            fixes.append("Add cudaGetLastError() checks after kernel launches and cudaMalloc calls")
+            score -= 0.1
+
+        magic_numbers = re.findall(r'\b(\d{4,})\b', source)
+        defined_constants = re.findall(r'#define\s+\w+\s+\d+', source)
+        if len(magic_numbers) > 3 and len(defined_constants) < 2:
+            issues.append(f"{len(magic_numbers)} magic numbers without #define constants")
+            fixes.append("Define constants with #define or constexpr for key parameters")
+            score -= 0.05
+
+        if "fprintf(stderr" not in source and "printf" in source:
+            has_diagnostic = any("error" in l.lower() or "fail" in l.lower() for l in lines if "printf" in l)
+            if not has_diagnostic:
+                issues.append("No diagnostic output for error conditions")
+                fixes.append("Add fprintf(stderr, ...) for error conditions to aid debugging")
+                score -= 0.05
+
+        score = max(0.0, score)
+        feedback = "; ".join(issues) if issues else "Code maintainability is acceptable"
+        return {"score": score, "issues": issues, "fixes": fixes, "feedback": feedback}
+
+    def _detect_environment_interference(self) -> dict[str, Any]:
+        """Detect anti-cheat environment conditions: frequency lock, SM masking, API interception.
+
+        Returns dict with detection results for each interference type.
+        """
+        result: dict[str, Any] = {
+            "frequency_locked": False,
+            "sm_masked": False,
+            "api_interception": False,
+            "reported_clock_mhz": None,
+            "api_sm_count": None,
+        }
+
+        try:
+            nvidia_smi = subprocess.run(
+                ["nvidia-smi", "--query-gpu=clocks.max.sm,clocks.sm,multiprocessor_count",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if nvidia_smi.returncode == 0 and nvidia_smi.stdout.strip():
+                parts = nvidia_smi.stdout.strip().split(",")
+                if len(parts) >= 3:
+                    try:
+                        max_clock = float(parts[0].strip())
+                        current_clock = float(parts[1].strip())
+                        sm_count_api = int(parts[2].strip())
+                        result["reported_clock_mhz"] = current_clock
+                        result["api_sm_count"] = sm_count_api
+
+                        if max_clock > 0 and current_clock > 0:
+                            ratio = current_clock / max_clock
+                            if ratio < 0.7:
+                                result["frequency_locked"] = True
+                                logger.warning(
+                                    f"[env-detect] Frequency lock detected: "
+                                    f"current={current_clock}MHz, max={max_clock}MHz, ratio={ratio:.2f}"
+                                )
+                    except (ValueError, IndexError):
+                        pass
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+        try:
+            cuda_env = os.environ.get("CUDA_VISIBLE_DEVICES", "")
+            if cuda_env and cuda_env != "0" and "," not in cuda_env:
+                try:
+                    import torch
+                    if torch.cuda.device_count() < 1:
+                        result["sm_masked"] = True
+                except ImportError:
+                    pass
+        except Exception:
+            pass
+
+        return result

@@ -87,7 +87,12 @@ class StageTransitionGuard:
         )
 
     def _check_p7(self, current_stage: PipelineStage, ctx: Any) -> GuardDecision:
-        """P7 gate: VerificationAgent must have clean context."""
+        """P7 gate: VerificationAgent must have clean context.
+
+        P7 ENFORCEMENT: If VerificationAgent has residual context from a
+        previous iteration, clear it before allowing the stage to proceed.
+        This ensures the agent always reviews from first principles.
+        """
         if current_stage != PipelineStage.VERIFICATION:
             return GuardDecision(allowed=True)
 
@@ -97,13 +102,8 @@ class StageTransitionGuard:
 
         tokens = verify_agent.context_manager.total_tokens
         if tokens > 0:
-            return GuardDecision(
-                allowed=False,
-                reason=(
-                    f"P7 violation: VerificationAgent has non-empty context "
-                    f"({tokens} tokens). Verification must not inherit generation context."
-                ),
-            )
+            verify_agent.context_manager.clear()
+            tokens = verify_agent.context_manager.total_tokens
 
         if self._persister:
             self._persister.log_entry(

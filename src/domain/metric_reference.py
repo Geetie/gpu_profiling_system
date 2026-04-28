@@ -67,17 +67,10 @@ def _build_docs():
             "Not checking cudaError_t return value"
         ],
         code_template=(
-            '#include <cuda_runtime.h>\n'
-            '#include <cstdio>\n\n'
-            '__global__ void flag_kernel(volatile int* flags) {\n'
-            '    flags[blockIdx.x] = 1;\n'
-            '}\n\n'
-            'int main() {\n'
-            '    int sm_count = 0;\n'
-            '    cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, 0);\n'
-            '    printf("launch__sm_count: %d\\n", sm_count);\n'
-            '    return 0;\n'
-            '}'
+            '// TODO: Include necessary headers\n'
+            '// TODO: Declare flag_kernel that signals from each block\n'
+            '// TODO: In main(), query SM count via cudaDeviceGetAttribute\n'
+            '// TODO: Print result as "launch__sm_count: <value>"\n'
         ),
     )
 
@@ -117,36 +110,16 @@ def _build_docs():
             "Using clock64() instead of cudaEventElapsedTime for wall-clock timing"
         ],
         code_template=(
-            '#include <cuda_runtime.h>\n'
-            '#include <cstdio>\n\n'
-            '#define BUFFER_SIZE (64 * 1024 * 1024)  // 64MB\n\n'
-            '__global__ void read_kernel(const float* data, int n) {\n'
-            '    int idx = blockIdx.x * blockDim.x + threadIdx.x;\n'
-            '    int stride = blockDim.x * gridDim.x;\n'
-            '    volatile float sink = 0.0f;\n'
-            '    while (idx < n) {\n'
-            '        sink += __ldg(&data[idx]);  // Force global memory read\n'
-            '        idx += stride;\n'
-            '    }\n'
-            '}\n\n'
-            'int main() {\n'
-            '    float* d_data = nullptr;\n'
-            '    cudaMalloc(&d_data, BUFFER_SIZE);\n'
-            '    cudaMemset(d_data, 0x42, BUFFER_SIZE);\n\n'
-            '    cudaEvent_t start, stop;\n'
-            '    cudaEventCreate(&start); cudaEventCreate(&stop);\n\n'
-            '    cudaEventRecord(start);\n'
-            '    read_kernel<<<65535, 256>>>(d_data, BUFFER_SIZE / sizeof(float));\n'
-            '    cudaEventRecord(stop);\n'
-            '    cudaEventSynchronize(stop);\n\n'
-            '    float ms = 0;\n'
-            '    cudaEventElapsedTime(&ms, start, stop);\n\n'
-            '    double seconds = ms / 1000.0;\n'
-            '    double bytes = (double)(BUFFER_SIZE / sizeof(float)) * sizeof(float);\n'
-            '    double bandwidth = bytes / seconds;\n'
-            '    printf("dram__bytes_read.sum.per_second: %.2f\\n", bandwidth);\n'
-            '    return 0;\n'
-            '}'
+            '// TODO: Include cuda_runtime.h and cstdio\n'
+            '// TODO: Define BUFFER_SIZE as 64*1024*1024 (64MB)\n'
+            '// TODO: Write __global__ read_kernel(const float* data, int n)\n'
+            '//   - Each thread reads data[idx] using __ldg() for cache bypass\n'
+            '//   - Accumulate into volatile float sink to prevent dead-code elimination\n'
+            '//   - Use stride loop: idx += blockDim.x * gridDim.x\n'
+            '// TODO: In main(): cudaMalloc buffer, cudaMemset to initialize\n'
+            '// TODO: Use cudaEventElapsedTime for wall-clock timing\n'
+            '// TODO: Compute bandwidth = total_bytes / elapsed_seconds\n'
+            '// TODO: Print: printf("dram__bytes_read.sum.per_second: %.2f\\n", bandwidth)\n'
         ),
     )
 
@@ -183,34 +156,16 @@ def _build_docs():
             "Buffer too small — stays in L2 cache"
         ],
         code_template=(
-            '#include <cuda_runtime.h>\n'
-            '#include <cstdio>\n\n'
-            '#define BUFFER_SIZE (64 * 1024 * 1024)  // 64MB\n\n'
-            '__global__ void write_kernel(volatile float* data, int n) {\n'
-            '    int idx = blockIdx.x * blockDim.x + threadIdx.x;\n'
-            '    int stride = blockDim.x * gridDim.x;\n'
-            '    while (idx < n) {\n'
-            '        data[idx] = 1.23456f;  // Pure write, no read\n'
-            '        idx += stride;\n'
-            '    }\n'
-            '}\n\n'
-            'int main() {\n'
-            '    volatile float* d_data = nullptr;\n'
-            '    cudaMalloc((void**)&d_data, BUFFER_SIZE);\n\n'
-            '    cudaEvent_t start, stop;\n'
-            '    cudaEventCreate(&start); cudaEventCreate(&stop);\n\n'
-            '    cudaEventRecord(start);\n'
-            '    write_kernel<<<65535, 256>>>((float*)d_data, BUFFER_SIZE / sizeof(float));\n'
-            '    cudaEventRecord(stop);\n'
-            '    cudaEventSynchronize(stop);\n\n'
-            '    float ms = 0;\n'
-            '    cudaEventElapsedTime(&ms, start, stop);\n\n'
-            '    double seconds = ms / 1000.0;\n'
-            '    double bytes = (double)(BUFFER_SIZE / sizeof(float)) * sizeof(float);\n'
-            '    double bandwidth = bytes / seconds;\n'
-            '    printf("dram__bytes_write.sum.per_second: %.2f\\n", bandwidth);\n'
-            '    return 0;\n'
-            '}'
+            '// TODO: Include cuda_runtime.h and cstdio\n'
+            '// TODO: Define BUFFER_SIZE as 64*1024*1024 (64MB)\n'
+            '// TODO: Write __global__ write_kernel(volatile float* data, int n)\n'
+            '//   - Each thread writes a constant value to data[idx]\n'
+            '//   - Use volatile float* to prevent compiler optimization\n'
+            '//   - Use stride loop: idx += blockDim.x * gridDim.x\n'
+            '// TODO: In main(): cudaMalloc buffer\n'
+            '// TODO: Use cudaEventElapsedTime for wall-clock timing\n'
+            '// TODO: Compute bandwidth = total_bytes / elapsed_seconds\n'
+            '// TODO: Print: printf("dram__bytes_write.sum.per_second: %.2f\\n", bandwidth)\n'
         ),
     )
 
@@ -241,14 +196,10 @@ def _build_docs():
             "Using cudaGetDeviceProperties instead of cudaDeviceGetAttribute"
         ],
         code_template=(
-            '#include <cuda_runtime.h>\n'
-            '#include <cstdio>\n\n'
-            'int main() {\n'
-            '    int clock_rate = 0;\n'
-            '    cudaDeviceGetAttribute(&clock_rate, cudaDevAttrClockRate, 0);\n'
-            '    printf("device__attribute_max_gpu_frequency_khz: %d\\n", clock_rate);\n'
-            '    return 0;\n'
-            '}'
+            '// TODO: Include cuda_runtime.h and cstdio\n'
+            '// TODO: In main(), declare int clock_rate = 0;\n'
+            '// TODO: Call cudaDeviceGetAttribute(&clock_rate, cudaDevAttrClockRate, 0)\n'
+            '// TODO: Print: printf("device__attribute_max_gpu_frequency_khz: %d\\n", clock_rate)\n'
         ),
     )
 
@@ -277,14 +228,10 @@ def _build_docs():
             "Confusing with GPU core clock (cudaDevAttrClockRate vs cudaDevAttrMemoryClockRate)"
         ],
         code_template=(
-            '#include <cuda_runtime.h>\n'
-            '#include <cstdio>\n\n'
-            'int main() {\n'
-            '    int mem_clock = 0;\n'
-            '    cudaDeviceGetAttribute(&mem_clock, cudaDevAttrMemoryClockRate, 0);\n'
-            '    printf("device__attribute_max_mem_frequency_khz: %d\\n", mem_clock);\n'
-            '    return 0;\n'
-            '}'
+            '// TODO: Include cuda_runtime.h and cstdio\n'
+            '// TODO: In main(), declare int mem_clock = 0;\n'
+            '// TODO: Call cudaDeviceGetAttribute(&mem_clock, cudaDevAttrMemoryClockRate, 0)\n'
+            '// TODO: Print: printf("device__attribute_max_mem_frequency_khz: %d\\n", mem_clock)\n'
         ),
     )
 
@@ -313,14 +260,10 @@ def _build_docs():
             "Value is in bits, not bytes — don't divide by 8"
         ],
         code_template=(
-            '#include <cuda_runtime.h>\n'
-            '#include <cstdio>\n\n'
-            'int main() {\n'
-            '    int bus_width = 0;\n'
-            '    cudaDeviceGetAttribute(&bus_width, cudaDevAttrMemoryBusWidth, 0);\n'
-            '    printf("device__attribute_fb_bus_width: %d\\n", bus_width);\n'
-            '    return 0;\n'
-            '}'
+            '// TODO: Include cuda_runtime.h and cstdio\n'
+            '// TODO: In main(), declare int bus_width = 0;\n'
+            '// TODO: Call cudaDeviceGetAttribute(&bus_width, cudaDevAttrMemoryBusWidth, 0)\n'
+            '// TODO: Print: printf("device__attribute_fb_bus_width: %d\\n", bus_width)\n'
         ),
     )
 
@@ -329,72 +272,81 @@ def _build_docs():
         target_name="sm__throughput.avg.pct_of_peak_sustained_elapsed",
         what_it_measures=(
             "The SM (Streaming Multiprocessor) compute throughput as a percentage "
-            "of the peak sustained throughput. This measures how efficiently the "
-            "GPU's compute cores are being utilized."
+            "of the peak sustained throughput. This is an NCU-native metric — "
+            "it is measured by Nsight Compute, NOT calculated by the CUDA program."
         ),
         measurement_approach=(
             "1. Launch a COMPUTE-INTENSIVE kernel with NO memory bottleneck.\n"
             "2. Each thread performs millions of FMA (fused multiply-add) operations.\n"
             "3. Use volatile double to prevent dead-code elimination.\n"
-            "4. Measure elapsed time with cudaEventElapsedTime.\n"
-            "5. Calculate: actual_FLOPs / peak_FLOPs * 100 = utilization %\n"
-            "   peak_FLOPs = sm_count * 2(DP_units) * clock_GHz * 2(FMA)\n"
-            "   actual_FLOPs = blocks * threads * iterations * 2(FMA) * 2(flops_per_FMA)"
+            "4. Compute actual percentage: achieved_FLOPS / peak_FLOPS * 100.\n"
+            "5. Query sm_count and compute capability via cudaDeviceGetAttribute at runtime.\n"
+            "6. Inside kernel: record clock64() before/after FMA loop, output cycle count.\n"
+            "7. Compute actual_freq_mhz = cycle_count / (elapsed_ms * 1000.0).\n"
+            "8. peak_FLOPS = sm_count * fp64_per_sm * actual_freq_mhz * 1e6 * 2.\n"
+            "   fp64_per_sm depends on compute capability: SM70=32, SM80=32, SM90=64, SM75=2, SM86+=2.\n"
+            "9. achieved_FLOPS = total_FMA_ops / elapsed_seconds.\n"
+            "10. ALWAYS run a WARMUP kernel before the timed measurement to reach steady-state clock.\n"
+            "11. Do NOT use cudaDevAttrClockRate for peak — it may report base clock, not boost!\n"
+            "KERNEL STRUCTURE: __global__ void compute_kernel(volatile double* sink, uint64_t* cycle_out)\n"
+            "  - All variables in registers: double a=1.0123, b=0.9876, c=0.1234, result=0.0\n"
+            "  - uint64_t start_cycle = clock64();\n"
+            "  - #pragma unroll 1 before the FMA loop (10M+ iterations)\n"
+            "  - result += a * b + c; // pure FMA, NO global memory access\n"
+            "  - uint64_t end_cycle = clock64();\n"
+            "  - *sink = result; + asm volatile('' : '+d'(sink) : : 'memory')\n"
+            "  - if (threadIdx.x == 0 && blockIdx.x == 0) *cycle_out = end_cycle - start_cycle;\n"
+            "  - Launch: sm_count*4 blocks x 256 threads\n"
+            "  - Warmup: run kernel once before timed measurement"
         ),
         key_api_calls=[
             "cudaEventRecord(start); kernel<<<...>>>; cudaEventRecord(stop);",
             "cudaEventElapsedTime(&ms, start, stop)",
-            "cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, 0)",
-            "cudaDeviceGetAttribute(&clock_rate, cudaDevAttrClockRate, 0)",
         ],
         kernel_type="Compute-intensive FMA kernel (pure compute, no global memory after init)",
-        thread_config="65535 blocks x 256 threads (maximize SM utilization)",
+        thread_config="sm_count*4 blocks x 256 threads (maximize SM utilization)",
         expected_output_format="sm__throughput.avg.pct_of_peak_sustained_elapsed: <float_percent>",
         expected_range="70-99% (well-tuned compute kernel should achieve >80%)",
         anti_cheat_notes=[
             "Kernel must be purely compute-bound — any global memory access will lower the percentage",
             "Use #pragma unroll 1 to prevent compiler from unrolling the FMA loop",
-            "Must use volatile to prevent the compiler from eliminating the loop entirely"
+            "Must use volatile to prevent the compiler from eliminating the loop entirely",
+            "COMPUTE actual percentage using clock64() for actual frequency + cudaDeviceGetAttribute for SM count",
+            "Do NOT use cudaDevAttrClockRate for peak_flops — it may report base clock, not boost!",
+            "The harness adds a runtime clamp [0,100] as safety net"
         ],
         common_pitfalls=[
             "Reading/writing global memory in the kernel — makes it memory-bound, not compute-bound",
             "Not using #pragma unroll 1 — compiler unrolls loop, reduces iteration count",
-            "Using wrong peak FLOPs formula (must account for DP vs SP)"
+            "Outputting 0.0 as placeholder instead of computing actual percentage",
+            "Using hardcoded peak values instead of cudaDeviceGetAttribute",
+            "Using cudaDevAttrClockRate for peak_flops — may report base clock → pct > 100% → clamped to 100%"
         ],
         code_template=(
-            '#include <cuda_runtime.h>\n'
-            '#include <cstdio>\n\n'
-            '__global__ void compute_kernel(volatile double* sink) {\n'
-            '    double a = 1.234, b = 9.876, c = 3.141;\n'
-            '    double result = 0.0;\n'
-            '    #pragma unroll 1\n'
-            '    for (int i = 0; i < 10000000; i++) {\n'
-            '        result += a * b + c;  // FMA: 2 DP FLOPs per iteration\n'
-            '    }\n'
-            '    *sink = result;\n'
-            '}\n\n'
-            'int main() {\n'
-            '    volatile double* d_sink = nullptr;\n'
-            '    cudaMalloc((void**)&d_sink, sizeof(double));\n\n'
-            '    cudaEvent_t start, stop;\n'
-            '    cudaEventCreate(&start); cudaEventCreate(&stop);\n\n'
-            '    cudaEventRecord(start);\n'
-            '    compute_kernel<<<65535, 256>>>(d_sink);\n'
-            '    cudaEventRecord(stop);\n'
-            '    cudaEventSynchronize(stop);\n\n'
-            '    float ms = 0;\n'
-            '    cudaEventElapsedTime(&ms, start, stop);\n\n'
-            '    // Calculate utilization\n'
-            '    int sm_count = 0, clock_khz = 0;\n'
-            '    cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, 0);\n'
-            '    cudaDeviceGetAttribute(&clock_khz, cudaDevAttrClockRate, 0);\n\n'
-            '    double total_flops = 65535.0 * 256.0 * 10000000.0 * 2.0 * 2.0;\n'
-            '    double seconds = ms / 1000.0;\n'
-            '    double peak_flops = sm_count * 2.0 * (clock_khz / 1e6) * 2.0;\n'
-            '    double util = (total_flops / seconds) / peak_flops * 100.0;\n'
-            '    printf("sm__throughput.avg.pct_of_peak_sustained_elapsed: %.2f\\n", util);\n'
-            '    return 0;\n'
-            '}'
+            '// TODO: Include cuda_runtime.h and cstdio\n'
+            '// TODO: Write __global__ compute_kernel(volatile double* sink, uint64_t* cycle_out)\n'
+            '//   - Declare local doubles a, b, c with arbitrary values\n'
+            '//   - Initialize result = 0.0\n'
+            '//   - uint64_t start_cycle = clock64();\n'
+            '//   - Use #pragma unroll 1 before a loop of 10M iterations\n'
+            '//   - In loop: result += a * b + c (FMA operation)\n'
+            '//   - uint64_t end_cycle = clock64();\n'
+            '//   - Write result to *sink to prevent dead-code elimination\n'
+            '//   - if (threadIdx.x == 0 && blockIdx.x == 0) *cycle_out = end_cycle - start_cycle;\n'
+            '// TODO: In main(): cudaMalloc for sink and cycle_out, query SM count and compute capability\n'
+            '//   - cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, 0)\n'
+            '//   - cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, 0)\n'
+            '//   - cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, 0)\n'
+            '//   - Determine fp64_per_sm: SM70=32, SM80=32, SM90=64, SM75=2, SM86+=2\n'
+            '// TODO: Launch sm_count*4 blocks x 256 threads\n'
+            '// TODO: Include warmup run before timed measurement\n'
+            '// TODO: Use cudaEventElapsedTime for timing\n'
+            '// TODO: cudaMemcpy cycle_count from device to host\n'
+            '// COMPUTE: actual_freq_mhz = cycle_count / (elapsed_ms * 1000.0)\n'
+            '// COMPUTE: peak_flops = sm_count * fp64_per_sm * actual_freq_mhz * 1e6 * 2\n'
+            '// COMPUTE: achieved_flops = total_fma_ops / elapsed_seconds\n'
+            '// COMPUTE: pct = (achieved_flops / peak_flops) * 100.0\n'
+            '// printf("sm__throughput.avg.pct_of_peak_sustained_elapsed: %.2f\\n", pct);\n'
         ),
     )
 
@@ -403,15 +355,25 @@ def _build_docs():
         target_name="gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed",
         what_it_measures=(
             "The combined compute and memory throughput as a percentage of peak "
-            "sustained throughput. This measures how efficiently the GPU utilizes "
-            "BOTH its compute cores AND memory subsystem simultaneously."
+            "sustained throughput. This is an NCU-native metric — it is measured "
+            "by Nsight Compute, NOT calculated by the CUDA program."
         ),
         measurement_approach=(
             "1. Launch a FUSED kernel that does: READ → COMPUTE → WRITE.\n"
             "2. Each thread reads from global memory, performs FMA operations, writes back.\n"
-            "3. Use cudaEventElapsedTime for wall-clock timing.\n"
-            "4. Calculate effective throughput = (memory_bytes + compute_flops) / elapsed_time.\n"
-            "5. Express as percentage of peak sustained throughput."
+            "3. Compute actual percentage: achieved_BW / peak_BW * 100.\n"
+            "4. Query mem_clock_khz and bus_width_bits via cudaDeviceGetAttribute at runtime.\n"
+            "5. peak_BW = (mem_clock_khz / 1000.0) * 1e6 * (bus_width_bits / 8) * 2 / 1e9 GB/s.\n"
+            "6. achieved_BW = total_bytes / elapsed_seconds / 1e9 GB/s.\n"
+            "7. ALWAYS run a WARMUP kernel before the timed measurement to reach steady-state clock.\n"
+            "KERNEL STRUCTURE: __global__ void fused_kernel(const float* __restrict__ input, volatile float* output, int n)\n"
+            "  - Each thread: stride loop over elements\n"
+            "  - Read: val = input[i] (use __ldg for read-only path)\n"
+            "  - Compute: #pragma unroll 1; for(j=0;j<8;j++) val = val*1.0001f + 0.001f;\n"
+            "  - Write: output[i] = val; (volatile prevents dead-code elimination)\n"
+            "  - Buffer: >= 64MB to exceed L2 cache\n"
+            "  - Launch: sm_count*4 blocks x 256 threads\n"
+            "  - Warmup: run kernel once before timed measurement"
         ),
         key_api_calls=[
             "cudaMalloc(&d_input, BUFFER_SIZE); cudaMalloc(&d_output, BUFFER_SIZE)",
@@ -419,64 +381,44 @@ def _build_docs():
             "cudaEventElapsedTime(&ms, start, stop)",
         ],
         kernel_type="Fused read-compute-write kernel (exercises both memory and compute)",
-        thread_config="65535 blocks x 256 threads",
+        thread_config="sm_count*4 blocks x 256 threads",
         expected_output_format="gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed: <float_percent>",
         expected_range="50-95%",
         anti_cheat_notes=[
             "Kernel must do BOTH reads and writes with computation in between",
             "Use __ldg() for reads to go through load path",
             "Use volatile for writes to prevent optimization",
-            "Balance compute intensity — not purely compute-bound or memory-bound"
+            "Balance compute intensity — not purely compute-bound or memory-bound",
+            "COMPUTE actual percentage using cudaDeviceGetAttribute for peak calculation",
+            "The harness adds a runtime clamp [0,100] as safety net"
         ],
         common_pitfalls=[
             "Only reading or only writing — must do both for combined throughput",
             "Too much compute — becomes purely compute-bound, not combined",
-            "Too little compute — becomes purely memory-bound"
+            "Too little compute — becomes purely memory-bound",
+            "Outputting 0.0 as placeholder instead of computing actual percentage",
+            "Using hardcoded peak values instead of cudaDeviceGetAttribute"
         ],
         code_template=(
-            '#include <cuda_runtime.h>\n'
-            '#include <cstdio>\n\n'
-            '#define BUFFER_SIZE (64 * 1024 * 1024)  // 64MB\n\n'
-            '__global__ void fused_kernel(const float* input, volatile float* output, int n) {\n'
-            '    int idx = blockIdx.x * blockDim.x + threadIdx.x;\n'
-            '    int stride = blockDim.x * gridDim.x;\n'
-            '    while (idx < n) {\n'
-            '        float val = __ldg(&input[idx]);  // Read from global memory\n'
-            '        double result = 0.0;\n'
-            '        #pragma unroll 1\n'
-            '        for (int i = 0; i < 100; i++) {  // Compute (FMA)\n'
-            '            result += val * 1.234 + 0.567;\n'
-            '        }\n'
-            '        output[idx] = (float)result;  // Write back to global memory\n'
-            '        idx += stride;\n'
-            '    }\n'
-            '}\n\n'
-            'int main() {\n'
-            '    float* d_input = nullptr;\n'
-            '    volatile float* d_output = nullptr;\n'
-            '    cudaMalloc(&d_input, BUFFER_SIZE);\n'
-            '    cudaMalloc((void**)&d_output, BUFFER_SIZE);\n'
-            '    cudaMemset(d_input, 0x42, BUFFER_SIZE);\n\n'
-            '    cudaEvent_t start, stop;\n'
-            '    cudaEventCreate(&start); cudaEventCreate(&stop);\n\n'
-            '    cudaEventRecord(start);\n'
-            '    fused_kernel<<<65535, 256>>>(d_input, (float*)d_output, BUFFER_SIZE / sizeof(float));\n'
-            '    cudaEventRecord(stop);\n'
-            '    cudaEventSynchronize(stop);\n\n'
-            '    float ms = 0;\n'
-            '    cudaEventElapsedTime(&ms, start, stop);\n\n'
-            '    double seconds = ms / 1000.0;\n'
-            '    double bytes = (double)(BUFFER_SIZE / sizeof(float)) * sizeof(float);\n'
-            '    double bandwidth = bytes / seconds;\n\n'
-            '    // Peak bandwidth approximation\n'
-            '    int mem_clock = 0, bus_width = 0;\n'
-            '    cudaDeviceGetAttribute(&mem_clock, cudaDevAttrMemoryClockRate, 0);\n'
-            '    cudaDeviceGetAttribute(&bus_width, cudaDevAttrMemoryBusWidth, 0);\n'
-            '    double peak_bw = 2.0 * (mem_clock / 1e3) * (bus_width / 8.0);  // bytes/s\n\n'
-            '    double util = (bandwidth / peak_bw) * 100.0;\n'
-            '    printf("gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed: %.2f\\n", util);\n'
-            '    return 0;\n'
-            '}'
+            '// TODO: Include cuda_runtime.h and cstdio\n'
+            '// TODO: Define BUFFER_SIZE (at least 64MB)\n'
+            '// TODO: Write __global__ fused_kernel(const float* input, volatile float* output, int n)\n'
+            '//   - Each thread reads input[idx] using __ldg()\n'
+            '//   - Performs FMA compute loop (e.g., 100 iterations) on the read value\n'
+            '//   - Writes result to output[idx] via volatile pointer\n'
+            '//   - Use #pragma unroll 1 before the compute loop\n'
+            '// TODO: In main(): cudaMalloc input/output buffers, initialize input\n'
+            '// TODO: Query mem_clock_khz and bus_width_bits via cudaDeviceGetAttribute\n'
+            '//   - cudaDeviceGetAttribute(&mem_clock_khz, cudaDevAttrMemoryClockRate, 0)\n'
+            '//   - cudaDeviceGetAttribute(&bus_width_bits, cudaDevAttrGlobalMemoryBusWidth, 0)\n'
+            '// TODO: Launch sm_count*4 blocks x 256 threads\n'
+            '// TODO: Include warmup run before timed measurement\n'
+            '// TODO: Use cudaEventElapsedTime for timing\n'
+            '// COMPUTE: peak_bw = (mem_clock_khz / 1000.0) * 1e6 * (bus_width_bits / 8) * 2 / 1e9\n'
+            '// COMPUTE: achieved_bw = (2.0 * buffer_size_bytes) / elapsed_seconds / 1e9\n'
+            '//   NOTE: 2x because each element is read AND written (input+output)\n'
+            '// COMPUTE: pct = (achieved_bw / peak_bw) * 100.0\n'
+            '// printf("gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed: %.2f\\n", pct);\n'
         ),
     )
 

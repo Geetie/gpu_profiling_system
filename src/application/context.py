@@ -6,11 +6,13 @@ assembled, compressed, and managed — not a static prompt.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+logger = logging.getLogger("context_manager")
 
 class Role(Enum):
     SYSTEM = "system"
@@ -57,21 +59,21 @@ def _classify_priority(role: Role, content: str) -> Priority:
         # Control Plane — can be replaced each turn
         if "[ControlPlane]" in content:
             return Priority.LOW
-        # Design principle injections — LOW (can be truncated)
+        # Design principle injections — DISPOSABLE (repetitive, can be regenerated)
         if "DESIGN PRINCIPLES" in content or "design principle" in content.lower():
-            return Priority.LOW
+            return Priority.DISPOSABLE
         # Next target guidance — HIGH (critical for workflow)
         if "NEXT TARGET" in content or "NEXT: Write CUDA code" in content:
             return Priority.HIGH
         # Compilation success + execute hint — HIGH
         if "Compilation #" in content and "IMMEDIATELY call execute_binary" in content:
             return Priority.HIGH
-        # Error guidance — medium importance
+        # Error guidance — low importance (noise if repeated)
         if "⚠️" in content or "ERROR" in content:
-            return Priority.MEDIUM
-        # Tool usage instructions — high importance
+            return Priority.LOW
+        # Tool usage instructions — medium (only needed once)
         if "TOOL USAGE" in content or "MANDATORY" in content:
-            return Priority.HIGH
+            return Priority.MEDIUM
         # Other system messages — medium
         return Priority.MEDIUM
 
@@ -256,6 +258,11 @@ class ContextManager:
         entry = ContextEntry(role=role, content=content, token_count=token_count, priority=priority)
         self._entries.append(entry)
         self._total_tokens += entry.token_count
+        logger.info(
+            "[CONTEXT] ADD: role=%s priority=%s tokens=%d total_tokens=%d preview=%s",
+            role.value, priority.name, token_count, self._total_tokens,
+            content[:100].replace('\n', '\\n')
+        )
 
     def update_system_entry(self, content: str, token_count: int = 0) -> None:
         """Replace the Control Plane SYSTEM entry or add a new one if none exists.
@@ -288,9 +295,18 @@ class ContextManager:
             self._total_tokens -= old.token_count
             self._entries[existing_idx] = new_entry
             self._total_tokens += new_entry.token_count
+            logger.info(
+                "[CONTEXT] UPDATE_SYSTEM: replaced idx=%d old_tokens=%d new_tokens=%d total_tokens=%d",
+                existing_idx, old.token_count, new_entry.token_count, self._total_tokens
+            )
         else:
             self._entries.append(new_entry)
             self._total_tokens += new_entry.token_count
+            logger.info(
+                "[CONTEXT] ADD_SYSTEM: new_tokens=%d total_tokens=%d preview=%s",
+                new_entry.token_count, self._total_tokens,
+                content[:100].replace('\n', '\\n')
+            )
 
     def get_entries(self) -> list[ContextEntry]:
         """Return a copy to prevent external mutation."""
@@ -303,10 +319,10 @@ class ContextManager:
         """Smart compression: summarize before deleting, respect priorities.
 
         Compression strategy (in order):
-        1. Remove DISPOSABLE entries (old guidance, short responses)
-        2. Summarize LOW priority entries (Control Plane, long responses)
-        3. Summarize MEDIUM priority entries (error messages)
-        4. Remove summarized entries that are still over budget
+        1. Remove DISPOSABLE entries (old guidance, short responses, design principles)
+        2. Remove LOW priority entries (Control Plane snapshots, error guidance)
+        3. Summarize MEDIUM priority entries (tool usage instructions)
+        4. Remove oldest MEDIUM entries if still over budget
         5. Never remove PERMANENT or HIGH priority entries
 
         Returns the number of entries removed.
@@ -315,63 +331,85 @@ class ContextManager:
         if self._total_tokens <= target:
             return 0
 
+        initial_tokens = self._total_tokens
+        initial_entries = len(self._entries)
         removed_count = 0
+
+        logger.info(
+            "[CONTEXT] COMPRESSION START: total_tokens=%d target=%d entries=%d",
+            self._total_tokens, target, initial_entries
+        )
 
         # Phase 1: Remove DISPOSABLE entries
         new_entries = []
+        phase1_removed = 0
         for e in self._entries:
             if e.priority == Priority.DISPOSABLE and self._total_tokens > target:
                 self._total_tokens -= e.token_count
                 removed_count += 1
+                phase1_removed += 1
             else:
                 new_entries.append(e)
         self._entries = new_entries
+        if phase1_removed > 0:
+            logger.info("[CONTEXT] COMPRESSION Phase1: removed %d DISPOSABLE entries, tokens=%d", phase1_removed, self._total_tokens)
 
         if self._total_tokens <= target:
             return removed_count
 
-        # Phase 2: Summarize LOW priority entries
+        # Phase 2: Remove LOW priority entries (not just summarize)
         new_entries = []
+        phase2_removed = 0
         for e in self._entries:
             if e.priority == Priority.LOW and self._total_tokens > target:
-                summarized = _summarize_entry(e)
-                if summarized.content != e.content:
-                    self._total_tokens -= e.token_count
-                    self._total_tokens += summarized.token_count
-                    new_entries.append(summarized)
-                else:
-                    self._total_tokens -= e.token_count
-                    removed_count += 1
+                self._total_tokens -= e.token_count
+                removed_count += 1
+                phase2_removed += 1
             else:
                 new_entries.append(e)
         self._entries = new_entries
+        if phase2_removed > 0:
+            logger.info("[CONTEXT] COMPRESSION Phase2: removed %d LOW entries, tokens=%d", phase2_removed, self._total_tokens)
 
         if self._total_tokens <= target:
             return removed_count
 
         # Phase 3: Summarize MEDIUM priority entries (oldest first)
         medium_entries = [(i, e) for i, e in enumerate(self._entries) if e.priority == Priority.MEDIUM]
+        phase3_summarized = 0
         for idx, entry in medium_entries:
             if self._total_tokens <= target:
                 break
             summarized = _summarize_entry(entry)
             if summarized.content != entry.content:
-                self._total_tokens -= entry.token_count
-                self._total_tokens += summarized.token_count
+                saved = entry.token_count - summarized.token_count
+                self._total_tokens -= saved
                 self._entries[idx] = summarized
+                phase3_summarized += 1
+        if phase3_summarized > 0:
+            logger.info("[CONTEXT] COMPRESSION Phase3: summarized %d MEDIUM entries, tokens=%d", phase3_summarized, self._total_tokens)
 
         if self._total_tokens <= target:
             return removed_count
 
         # Phase 4: Remove oldest MEDIUM entries if still over budget
         new_entries = []
+        phase4_removed = 0
         for e in self._entries:
             if e.priority == Priority.MEDIUM and self._total_tokens > target:
                 self._total_tokens -= e.token_count
                 removed_count += 1
+                phase4_removed += 1
             else:
                 new_entries.append(e)
         self._entries = new_entries
+        if phase4_removed > 0:
+            logger.info("[CONTEXT] COMPRESSION Phase4: removed %d MEDIUM entries, tokens=%d", phase4_removed, self._total_tokens)
+
+        logger.info(
+            "[CONTEXT] COMPRESSION END: removed=%d tokens_before=%d tokens_after=%d entries_before=%d entries_after=%d",
+            removed_count, initial_tokens, self._total_tokens, initial_entries, len(self._entries)
+        )
 
         return removed_count
 

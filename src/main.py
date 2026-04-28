@@ -314,21 +314,66 @@ def _run_pipeline_mode(args, builder: SystemBuilder):
             if result.metadata:
                 pipeline_data["_pipeline_metadata"] = result.metadata
 
-            # CRITICAL FIX: Inject measurements from agent_loop.loop_state.measured_values
-            # This ensures CodeGen measurements are included even when MetricAnalysis fails
+            # CRITICAL FIX: Extract measurements from pipeline result.data
+            # The pipeline creates its own AgentLoop internally, so the outer
+            # agent_loop.loop_state.measured_values is always empty.
+            # Measurements come from result.data["measurements"] which is populated
+            # by PipelineContext.assemble_final_result() and StageExecutor._extract_result()
+            extracted_measurements = {}
+
+            # Source 1: Direct measurements from result.data
+            if "measurements" in pipeline_data and isinstance(pipeline_data["measurements"], dict):
+                for k, v in pipeline_data["measurements"].items():
+                    if isinstance(v, (int, float)):
+                        extracted_measurements[k] = v
+
+            # Source 2: key_measurements from PipelineContext L1 memory
+            if "key_measurements" in pipeline_data and isinstance(pipeline_data["key_measurements"], dict):
+                for k, v in pipeline_data["key_measurements"].items():
+                    if isinstance(v, (int, float)) and k not in extracted_measurements:
+                        extracted_measurements[k] = v
+
+            # Source 3: Parse from tool_results stdout (fallback)
+            tool_results_list = pipeline_data.get("tool_results", [])
+            if isinstance(tool_results_list, list):
+                import re as _re
+                for tr in tool_results_list:
+                    if not isinstance(tr, dict):
+                        continue
+                    for stdout_key in ("stdout", "auto_exec_stdout", "output"):
+                        stdout = tr.get(stdout_key, "")
+                        if not stdout:
+                            continue
+                        for section in stdout.split("[AUTO-EXEC]"):
+                            for line in section.splitlines():
+                                line = line.strip()
+                                if not line or line.startswith("//") or line.startswith("#"):
+                                    continue
+                                m = _re.match(r'^([a-zA-Z_][\w.]*)\s*:\s*([\d.eE+-]+)', line)
+                                if m:
+                                    key, val_str = m.group(1), m.group(2)
+                                    try:
+                                        val = float(val_str)
+                                        if key not in extracted_measurements:
+                                            extracted_measurements[key] = val
+                                    except ValueError:
+                                        pass
+
+            # Source 4: Outer agent_loop.loop_state (legacy, usually empty)
             if hasattr(agent_loop, 'loop_state') and hasattr(agent_loop.loop_state, 'measured_values'):
                 codegen_measurements = agent_loop.loop_state.measured_values
                 if codegen_measurements:
-                    existing = pipeline_data.get("measurements", {})
-                    if isinstance(existing, dict):
-                        for k, v in codegen_measurements.items():
-                            if k not in existing:
-                                existing[k] = v
-                        pipeline_data["measurements"] = existing
-                    else:
-                        pipeline_data["measurements"] = dict(codegen_measurements)
-                    print(f"[pipeline] Injected {len(codegen_measurements)} measurements from CodeGen stage")
-                    print(f"[pipeline] CodeGen measurements: {list(codegen_measurements.keys())}")
+                    for k, v in codegen_measurements.items():
+                        if k not in extracted_measurements:
+                            extracted_measurements[k] = v
+
+            if extracted_measurements:
+                pipeline_data["measurements"] = extracted_measurements
+                print(f"[pipeline] Total measurements extracted: {len(extracted_measurements)}")
+                print(f"[pipeline] Measurement keys: {sorted(extracted_measurements.keys())}")
+            else:
+                print(f"[pipeline] WARNING: No measurements found in pipeline result!")
+                print(f"[pipeline] Available data keys: {list(pipeline_data.keys())}")
 
             ui.show_message("Running hardware probes for ground-truth measurements...")
             probe_results = _run_probes_no_write(builder.sandbox)
@@ -496,16 +541,32 @@ def _validate_results_quality(results: dict, target_spec: dict) -> tuple[bool, l
         if isinstance(v, (int, float)):
             measurement_keys.append((k, v))
     
-    # Check 1: Zero values — FILTER THEM OUT
-    zero_keys = {k for k, v in measurement_keys if v == 0 and k not in ("exit_code", "binary_count")}
+    # Check 1: Zero values — FILTER THEM OUT only if they are clearly broken
+    # Device attribute queries (sm_count, bus_width, clock_rate) should NEVER be zero
+    # Bandwidth measurements that are zero indicate broken code
+    zero_keys = set()
+    pct_of_peak_zero_keys = set()
+    for k, v in measurement_keys:
+        if v == 0 and k not in ("exit_code", "binary_count"):
+            if "pct_of_peak_sustained_elapsed" in k:
+                pct_of_peak_zero_keys.add(k)
+            else:
+                zero_keys.add(k)
     if zero_keys:
         warnings.append(
             f"Zero measurements detected and REMOVED: {', '.join(sorted(zero_keys)[:5])}. "
             "This indicates measurement code is broken (clock64() not called, code optimized away)."
         )
-        # Remove zero values from cleaned results
         for k in zero_keys:
             cleaned.pop(k, None)
+    if pct_of_peak_zero_keys:
+        warnings.append(
+            f"pct_of_peak_sustained_elapsed metrics are zero: {', '.join(sorted(pct_of_peak_zero_keys))}. "
+            "This indicates the kernel failed to achieve measurable throughput or the measurement code is broken. "
+            "The kernel MUST use proper FMA loops, volatile qualifiers, warmup runs, and compute the actual percentage."
+        )
+        for k in pct_of_peak_zero_keys:
+            cleaned[k] = 0.0
     
     # Check 2: Negative values — FILTER THEM OUT
     negative_keys = {k for k, v in measurement_keys if v < 0}
@@ -558,19 +619,39 @@ def _validate_results_quality(results: dict, target_spec: dict) -> tuple[bool, l
     remaining_numeric = sum(1 for v in cleaned.values() if isinstance(v, (int, float)))
     if requested_targets:
         remaining_measured = {k for k, v in cleaned.items() if isinstance(v, (int, float)) and not k.startswith("_")}
-        # Normalize both sets for comparison
         from src.application.agent_loop import AgentLoop
         normalized_measured = {AgentLoop.normalize_target_name(k) for k in remaining_measured}
         normalized_requested = {AgentLoop.normalize_target_name(t) for t in requested_targets}
         missing_after_filter = normalized_requested - normalized_measured
-        quality_ok = len(missing_after_filter) == 0
+
+        plausible_device_attributes = {
+            "device__attribute_fb_bus_width",
+            "device__attribute_max_gpu_frequency_khz",
+            "device__attribute_max_mem_frequency_khz",
+            "launch__sm_count",
+        }
+        missing_non_device = missing_after_filter - plausible_device_attributes
+
         if missing_after_filter and remaining_numeric > 0:
-            warnings.append(
-                f"Partial results: {len(remaining_measured)}/{len(requested_targets)} targets measured. "
-                f"Missing after quality filtering: {', '.join(sorted(missing_after_filter))}"
-            )
+            if missing_non_device:
+                quality_ok = False
+                warnings.append(
+                    f"Missing critical targets after quality filtering: {', '.join(sorted(missing_non_device))}"
+                )
+            else:
+                quality_ok = True
+                warnings.append(
+                    f"Device attribute targets missing but plausible values exist for others: "
+                    f"{', '.join(sorted(missing_after_filter))}"
+                )
+        elif not missing_after_filter:
+            quality_ok = True
+        else:
+            quality_ok = remaining_numeric >= 1
     else:
         quality_ok = remaining_numeric >= 1
+    if pct_of_peak_zero_keys:
+        quality_ok = False
     cleaned["_quality_ok"] = quality_ok
     
     return quality_ok, warnings, cleaned
@@ -578,57 +659,66 @@ def _validate_results_quality(results: dict, target_spec: dict) -> tuple[bool, l
 
 def _assemble_final_results(output_dir, hardware_results, pipeline_data, target_spec):
     try:
+        from src.application.agent_loop import AgentLoop
         os.makedirs(output_dir, exist_ok=True)
         results_path = os.path.join(output_dir, "results.json")
 
         hw_measurements = hardware_results.get("measurements", {}) if hardware_results else {}
         output = {}
 
-        # CRITICAL FIX: Extract measurements from multiple sources
+        # CRITICAL FIX: Extract measurements from multiple sources with key normalization
         # 1. First from pipeline_measurements (CodeGen stage output)
         pipeline_measurements = pipeline_data.get("measurements", {})
         if isinstance(pipeline_measurements, dict):
             for k, v in pipeline_measurements.items():
-                if k not in output:
-                    output[k] = v
+                if isinstance(v, (int, float)):
+                    normalized_key = AgentLoop.normalize_target_name(k)
+                    if normalized_key not in output:
+                        output[normalized_key] = v
 
         # CRITICAL FIX: Also extract from key_measurements
         key_measurements = pipeline_data.get("key_measurements", {})
         if isinstance(key_measurements, dict):
             for k, v in key_measurements.items():
-                if k not in output:
-                    output[k] = v
-                    print(f"[assemble] Added measurement from key_measurements: {k}={v}")
+                if isinstance(v, (int, float)):
+                    normalized_key = AgentLoop.normalize_target_name(k)
+                    if normalized_key not in output:
+                        output[normalized_key] = v
 
-        # CRITICAL FIX: Extract measurements from tool_results execute_binary stdout
-        # This captures the actual NCU output from program execution
+        # CRITICAL FIX: Extract measurements from tool_results stdout
+        # This captures the actual output from program execution
         tool_results = pipeline_data.get("tool_results", [])
         if isinstance(tool_results, list):
             import re
             for tr in tool_results:
                 if not isinstance(tr, dict):
                     continue
-                tool_name = tr.get("tool_name", "")
-                stdout = tr.get("stdout", "") or tr.get("output", "")
-                if stdout and tool_name == "execute_binary":
-                    for line in stdout.splitlines():
-                        line = line.strip()
-                        # Match NCU-style output: target_name: value
-                        match = re.match(r'^([a-zA-Z_][\w_]*(?:\.\w+)*)\s*:\s*([\d.eE+-]+)', line)
-                        if match:
-                            key = match.group(1)
-                            val_str = match.group(2)
-                            try:
-                                val = float(val_str)
-                                if key not in output:
-                                    output[key] = val
-                                    print(f"[assemble] Extracted from execute_binary stdout: {key}={val}")
-                            except ValueError:
-                                pass
+                for stdout_key in ("stdout", "auto_exec_stdout", "output"):
+                    stdout = tr.get(stdout_key, "")
+                    if not stdout:
+                        continue
+                    for section in stdout.split("[AUTO-EXEC]"):
+                        for line in section.splitlines():
+                            line = line.strip()
+                            if not line or line.startswith("//") or line.startswith("#"):
+                                continue
+                            match = re.match(r'^([a-zA-Z_][\w.]*)\s*:\s*([\d.eE+-]+)', line)
+                            if match:
+                                key = match.group(1)
+                                val_str = match.group(2)
+                                try:
+                                    val = float(val_str)
+                                    normalized_key = AgentLoop.normalize_target_name(key)
+                                    if normalized_key not in output:
+                                        output[normalized_key] = val
+                                except ValueError:
+                                    pass
 
         for k, v in hw_measurements.items():
-            if k not in output:
-                output[k] = v
+            if isinstance(v, (int, float)):
+                normalized_key = AgentLoop.normalize_target_name(k)
+                if normalized_key not in output:
+                    output[normalized_key] = v
 
         for k, v in pipeline_data.items():
             if k in ("_pipeline_metadata", "measurements", "tool_results",

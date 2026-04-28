@@ -65,13 +65,34 @@ class StagePromptBuilder:
             "OUTPUT FORMAT: A JSON array of task objects, each with:\n"
             '  "target": the measurement target name\n'
             '  "category": one of latency_measurement, capacity_measurement, '
-            'clock_measurement, bandwidth_measurement, or unknown\n'
+            'clock_measurement, bandwidth_measurement, ncu_throughput_measurement, or unknown\n'
             '  "method": detailed description of the measurement approach\n'
         )
 
     @staticmethod
     def _codegen_system() -> str:
         return (
+            "###########################################################################\n"
+            "#                        MANDATORY RULES (FAILURE = REJECT)                #\n"
+            "###########################################################################\n"
+            "# RULE 1: sm__throughput MUST use clock64() INSIDE the kernel              #\n"
+            "#   - NEVER use cudaDevAttrClockRate for peak_flops calculation!          #\n"
+            "#   - cudaDevAttrClockRate reports BASE clock (~1.4GHz), NOT BOOST       #\n"
+            "#   - Using BASE clock → peak_flops UNDERESTIMATED → pct > 100% → FAIL   #\n"
+            "#                                                                         #\n"
+            "# RULE 2: gpu__compute_memory_throughput MUST use FUSED read-compute-write #\n"
+            "#   - Pattern: val = input[i]; val = val*1.0001f+0.001f; output[i] = val; #\n"
+            "#   - Register-only FMA (without memory read) = 0.09% throughput → FAIL  #\n"
+            "#                                                                         #\n"
+            "# RULE 3: ALWAYS HARDCODE: grid=sm_count*4, buffer=64MB+, iterations=10M+ #\n"
+            "#   - IGNORE --size/--repeats arguments completely                        #\n"
+            "#                                                                         #\n"
+            "# RULE 4: ALWAYS warmup before timing, volatile on output, #pragma unroll 1#\n"
+            "#                                                                         #\n"
+            "# RULE 5: sm__throughput = DOUBLE precision, gpu__compute_memory = FLOAT   #\n"
+            "#                                                                         #\n"
+            "# RULE 6: Compute actual pct_of_peak. DO NOT output 0.0 placeholder.      #\n"
+            "###########################################################################\n\n"
             "You are a CUDA kernel developer. Your task is to write a complete "
             "CUDA micro-benchmark that measures a specific GPU hardware characteristic.\n\n"
             "You MUST use the compile_cuda tool to compile your code, then "
@@ -81,8 +102,83 @@ class StagePromptBuilder:
             "2. Use clock64() for cycle-accurate timing\n"
             "3. Use cudaEventElapsedTime for wall-clock timing\n"
             "4. Output must be parseable: printf(\"key: value\\n\")\n"
-            "5. Run at least 3 trials and report MEDIAN for latency, MAX for bandwidth\n"
-            "6. Do NOT use cudaGetDeviceProperties as the sole measurement method\n"
+            "5. Do NOT use cudaGetDeviceProperties as the sole measurement method\n"
+            "6. IGNORE --size and --repeats arguments — HARDCODE correct values in your kernel\n"
+            "7. For throughput metrics: HARDCODE grid=sm_count*4, buffer=64MB+, iterations=10M+\n\n"
+            "⚠️  ANTI-CHEAT WARNING (per spec.md §6.3 and PJ需求.md §1.7.3):\n"
+            "cudaDeviceGetAttribute may return VIRTUALIZED values in evaluation.\n"
+            "You MUST cross-validate API values with empirical measurement.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "📐 VERIFIED FORMULA: sm__throughput.avg.pct_of_peak_sustained_elapsed\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Step 1: Query hardware parameters:\n"
+            "  int sm_count;\n"
+            "  cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, 0);\n"
+            "  int major, minor;\n"
+            "  cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, 0);\n"
+            "  cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, 0);\n"
+            "  int fp64_per_sm;\n"
+            "  if (major==7 && minor==0) fp64_per_sm=32;       // V100\n"
+            "  else if (major==8 && minor==0) fp64_per_sm=32;  // A100\n"
+            "  else if (major==9 && minor==0) fp64_per_sm=64;  // H100\n"
+            "  else if (major==7 && minor==5) fp64_per_sm=2;   // T4\n"
+            "  else if (major>=8 && minor>=6) fp64_per_sm=2;   // Consumer GPUs\n"
+            "  else fp64_per_sm=32;\n\n"
+            "Step 2: Run PURELY compute-bound FMA kernel (double-precision, all registers)\n"
+            "  - volatile double* sink, #pragma unroll 1, 10M+ iterations per thread\n"
+            "  - Launch sm_count*4 blocks x 256 threads, WARMUP first\n"
+            "  - CRITICAL: Inside kernel, record clock64() before and after FMA loop:\n"
+            "      uint64_t start_cycle = clock64();\n"
+            "      // ... FMA loop ...\n"
+            "      uint64_t end_cycle = clock64();\n"
+            "      if (threadIdx.x == 0 && blockIdx.x == 0) *cycle_out = end_cycle - start_cycle;\n"
+            "    Allocate a uint64_t d_cycle_count on device, pass to kernel as cycle_out\n\n"
+            "Step 3: Compute achieved FLOPS:\n"
+            "  total_fma_ops = (double)sm_count * 4 * 256 * iterations * 2  // 2 FLOP per FMA\n"
+            "  achieved_flops = total_fma_ops / elapsed_seconds\n\n"
+            "Step 4: Compute ACTUAL running frequency (NOT API-reported — may be wrong!):\n"
+            "  uint64_t h_cycle_count;\n"
+            "  cudaMemcpy(&h_cycle_count, d_cycle_count, sizeof(uint64_t), cudaMemcpyDeviceToHost);\n"
+            "  double actual_freq_mhz = (double)h_cycle_count / (elapsed_ms * 1000.0);\n"
+            "  // Do NOT use cudaDevAttrClockRate for peak — it may report base clock, not boost!\n\n"
+            "Step 5: Compute peak FLOPS and percentage:\n"
+            "  peak_flops = (double)sm_count * fp64_per_sm * actual_freq_mhz * 1e6 * 2\n"
+            "  pct = (achieved_flops / peak_flops) * 100.0\n"
+            "  printf(\"sm__throughput.avg.pct_of_peak_sustained_elapsed: %.2f\\n\", pct);\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "📐 VERIFIED FORMULA: gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Step 1: Query hardware parameters:\n"
+            "  int mem_clock_khz, bus_width_bits;\n"
+            "  cudaDeviceGetAttribute(&mem_clock_khz, cudaDevAttrMemoryClockRate, 0);\n"
+            "  cudaDeviceGetAttribute(&bus_width_bits, cudaDevAttrGlobalMemoryBusWidth, 0);\n\n"
+            "Step 2: Run FUSED read-compute-write kernel\n"
+            "  - const float* __restrict__ input, volatile float* output\n"
+            "  - 64MB+ buffer (16M+ floats), sm_count*4 blocks x 256 threads, WARMUP first\n"
+            "  - CRITICAL: Each thread MUST read input[i], compute 8+ FMA USING THE READ VALUE, write to output[i]\n"
+            "  - Example kernel body:\n"
+            "      int tid = blockIdx.x * blockDim.x + threadIdx.x;\n"
+            "      int stride = blockDim.x * gridDim.x;\n"
+            "      for (int i = tid; i < n; i += stride) {\n"
+            "          float val = input[i];           // READ from global memory\n"
+            "          #pragma unroll 1\n"
+            "          for (int j = 0; j < 8; j++) {   // COMPUTE: 8 FMA per element\n"
+            "              val = val * 1.0001f + 0.001f;  // USES val from memory!\n"
+            "          }\n"
+            "          output[i] = val;                // WRITE to global memory\n"
+            "      }\n\n"
+            "Step 3: Compute achieved bandwidth:\n"
+            "  total_bytes = 2.0 * buffer_size_bytes  // read + write\n"
+            "  achieved_bw_gbps = total_bytes / elapsed_seconds / 1e9\n\n"
+            "Step 4: Compute peak bandwidth and percentage:\n"
+            "  peak_bw_gbps = (mem_clock_khz/1000.0) * 1e6 * (bus_width_bits / 8) * 2 / 1e9  // DDR factor=2\n"
+            "  pct = (achieved_bw_gbps / peak_bw_gbps) * 100.0\n"
+            "  printf(\"gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed: %.2f\\n\", pct);\n\n"
+            "⚠️  The harness adds a runtime clamp [0,100] as safety net.\n"
+            "⚠️  Always cross-validate API values with empirical measurement (spec.md §6.3).\n\n"
+            "NUMERICAL STABILITY (prevents nan/inf checksum):\n"
+            "  Use values close to 1.0 for FMA: double a=1.0123, b=0.9876, c=0.1234; result += a * b + c;\n"
+            "  WRONG: double a=1e10, b=1e10; result += a * b; → overflow to inf!\n"
         )
 
     @staticmethod
@@ -94,7 +190,29 @@ class StagePromptBuilder:
             "1. Parse the benchmark output for key-value pairs\n"
             "2. Validate results against expected ranges\n"
             "3. Identify any anomalies or measurement errors\n"
-            "4. Provide a summary of findings\n"
+            "4. Provide a summary of findings\n\n"
+            "CRITICAL QUALITY CHECKS:\n"
+            "  - sm__throughput < 20%: kernel is poorly designed (likely using float instead of double, "
+            "or grid size too small, or no warmup, or using cudaDevAttrClockRate for peak)\n"
+            "  - gpu__compute_memory_throughput < 15%: kernel is NOT stressing memory properly "
+            "(likely FMA chain uses register-only values, not read from memory)\n"
+            "  - Any pct_of_peak == 0.0: measurement is broken\n"
+            "  - Any pct_of_peak == 100.0: likely using base clock for peak (underestimated peak)\n\n"
+            "When you detect low throughput, your RECOMMENDATIONS must include specific fixes:\n"
+            "  - For sm__throughput: use double FMA, clock64() for actual freq, sm_count*4 blocks, warmup\n"
+            "  - For gpu__compute_memory_throughput: val = input[i]; val = val*1.0001f+0.001f; output[i] = val;\n\n"
+            "CRITICAL: After analyzing all NCU profiling data, you MUST output a "
+            "structured summary in the following EXACT format:\n\n"
+            "BOTTLENECK_TYPE: <compute_bound|memory_bound|latency_bound|balanced>\n"
+            "CONFIDENCE: <high|medium|low>\n"
+            "KEY_METRICS:\n"
+            "  <metric_name>: <value>\n"
+            "  ...\n"
+            "RECOMMENDATIONS:\n"
+            "  - <recommendation>\n"
+            "  - ...\n\n"
+            "This structured output is REQUIRED for the pipeline to function correctly.\n"
+            "Without it, the pipeline cannot determine if optimization is needed.\n"
         )
 
     @staticmethod
@@ -107,6 +225,12 @@ class StagePromptBuilder:
             "2. Whether results fall within expected ranges\n"
             "3. Whether anti-cheat measures were properly implemented\n"
             "4. Whether the benchmark actually measures what it claims\n\n"
+            "CRITICAL QUALITY THRESHOLDS (REJECT if below these):\n"
+            "  - sm__throughput.avg.pct_of_peak_sustained_elapsed < 20% → REJECT\n"
+            "  - sm__throughput.avg.pct_of_peak_sustained_elapsed >= 99% → REJECT (base clock used, not boost)\n"
+            "  - gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed < 15% → REJECT\n"
+            "  - Any pct_of_peak_sustained_elapsed == 0.0 → REJECT\n"
+            "  - Any pct_of_peak_sustained_elapsed > 100% → REJECT (clamp artifact)\n\n"
             "IMPORTANT: You are the INDEPENDENT verifier. You must NOT have "
             "access to the code generation context. You only see the final "
             "results and must judge them on their own merits.\n\n"
@@ -133,7 +257,7 @@ class StagePromptBuilder:
             f"Write CUDA micro-benchmarks for: {target}",
         ]
 
-        # 1. AUTO-INVOKE METRIC DOCUMENTATION (primary guidance)
+        # 2. NCU METRIC DOCUMENTATION (auto-loaded for ALL targets)
         try:
             from src.domain.metric_reference import format_metric_context
             metric_context = format_metric_context(target)
@@ -145,16 +269,16 @@ class StagePromptBuilder:
         except (ImportError, KeyError):
             pass
 
-        # 2. TARGET-SPECIFIC DESIGN PRINCIPLE (filtered to current target only)
+        # 3. DESIGN PRINCIPLE (auto-loaded for ALL targets)
         from src.domain.design_principles import get_design_principle
         principle = get_design_principle(target)
         if principle:
             parts.append(f"\n{'=' * 60}")
             parts.append(f"🎯 DESIGN PRINCIPLE FOR TARGET: {target}")
             parts.append(f"{'=' * 60}")
-            parts.append(principle[:1500])
+            parts.append(principle[:3000])
 
-        # 3. PATTERN GUIDANCE (if available for this target)
+        # 4. CODE PATTERN REFERENCE (auto-loaded for targets with templates)
         try:
             from src.infrastructure.probing.cuda_templates import get_pattern
             pattern = get_pattern(target)
@@ -201,8 +325,6 @@ class StagePromptBuilder:
             for i, t in enumerate(targets[1:], start=2):
                 parts[-1] += f"  ☐ Target {i}: {t}\n"
 
-            # Only include target type guidance for CURRENT target (filter out irrelevant)
-            target_type_guidance = _get_target_type_guidance(target)
             parts[-1] += (
                 f"\nWORKFLOW (repeat for EACH target):\n"
                 f"  1. Write CUDA code SPECIFICALLY for the CURRENT target (unique kernel)\n"
@@ -211,8 +333,7 @@ class StagePromptBuilder:
                 f"  4. Record the measured value from stdout\n"
                 f"  5. Wait for SYSTEM message → then move to NEXT target\n\n"
                 f"⚠️ CRITICAL RULES:\n"
-                f"  • Each target needs DIFFERENT CUDA code! Use the guidance below:\n"
-                f"    — CURRENT TARGET ({target}): {target_type_guidance}\n\n"
+                f"  • Each target needs DIFFERENT CUDA code! Follow the design principle and metric doc above.\n\n"
                 f"  • compile_cuda OVERWRITES the previous binary each time.\n"
                 f"    So you MUST execute_binary IMMEDIATELY after each compile_cuda.\n"
                 f"    Do NOT compile all targets first — compile+execute one at a time.\n\n"
@@ -259,12 +380,34 @@ class StagePromptBuilder:
                 parts.append(f"\n\n--- Plan from previous stage ---\n{prev_result['error']}")
 
         # 7. FINAL MANDATORY INSTRUCTION - STRONG TARGET AWARENESS
-        parts.append(
-            f"\n\n⚠️ URGENT: You are measuring **{target}**. "
-            f"Do NOT generate code for any other target. "
-            f"Do NOT use cudaDeviceGetAttribute(cudaDevAttrMultiProcessorCount). "
-            f"Use the measurement approach described above for {target}."
-        )
+        if "sm__throughput" in target:
+            parts.append(
+                f"\n\n⚠️⚠️⚠️ CRITICAL FOR {target} ⚠️⚠️⚠️\n"
+                f"You MUST use clock64() inside the kernel to measure actual running frequency.\n"
+                f"DO NOT use cudaDevAttrClockRate for peak_flops — it reports BASE clock → pct=100%!\n"
+                f"Inside kernel: uint64_t start_cycle = clock64(); ... FMA loop ... uint64_t end_cycle = clock64();\n"
+                f"Output cycle count: if (threadIdx.x == 0 && blockIdx.x == 0) *cycle_out = end_cycle - start_cycle;\n"
+                f"Host code: actual_freq_mhz = cycle_count / (elapsed_ms * 1000.0)\n"
+                f"peak_flops = sm_count * fp64_per_sm * actual_freq_mhz * 1e6 * 2\n"
+                f"IGNORE --size/--repeats. HARDCODE iterations=10000000, grid=sm_count*4 blocks x 256 threads"
+            )
+        elif "gpu__compute_memory_throughput" in target:
+            parts.append(
+                f"\n\n⚠️⚠️⚠️ CRITICAL FOR {target} ⚠️⚠️⚠️\n"
+                f"You MUST write a FUSED read-compute-write kernel:\n"
+                f"  float val = input[i];  // READ from global memory\n"
+                f"  val = val * 1.0001f + 0.001f;  // COMPUTE using READ value\n"
+                f"  output[i] = val;  // WRITE to volatile output\n"
+                f"Register-only FMA (val = val * 1.0001f without reading input[i]) = 0.09%!\n"
+                f"IGNORE --size/--repeats. HARDCODE n=16777216, grid=sm_count*4 blocks x 256 threads"
+            )
+        else:
+            parts.append(
+                f"\n\n⚠️ URGENT: You are measuring **{target}**. "
+                f"Do NOT generate code for any other target. "
+                f"Follow the verified formula and measurement approach described above for {target}. "
+                f"Use cudaDeviceGetAttribute to query hardware params, then CROSS-VALIDATE empirically."
+            )
 
         return "\n".join(parts)
 
@@ -393,35 +536,3 @@ class StagePromptBuilder:
         return "\n".join(parts)
 
 
-# Helper function for target-specific guidance (extracted from _codegen_task for filtering)
-def _get_target_type_guidance(target: str) -> str:
-    """Return concise code guidance for a specific target. Context-filtered."""
-    tl = target.lower()
-    if "launch__sm_count" in target:
-        return "Use cudaDeviceGetAttribute(cudaDevAttrMultiProcessorCount) AND block ID sweep"
-    elif "dram__bytes_read" in target:
-        return "Read-only STREAM kernel, 65535x256 threads, __ldg() for reads"
-    elif "dram__bytes_write" in target:
-        return "Write-only STREAM kernel, 65535x256 threads, volatile pointer writes"
-    elif "device__attribute_max_gpu_frequency" in target:
-        return "Use cudaDeviceGetAttribute(cudaDevAttrClockRate), result in kHz"
-    elif "device__attribute_max_mem_frequency" in target:
-        return "Use cudaDeviceGetAttribute(cudaDevAttrMemoryClockRate), result in kHz"
-    elif "device__attribute_fb_bus_width" in target:
-        return "Use cudaDeviceGetAttribute(cudaDevAttrMemoryBusWidth), result in bits"
-    elif "sm__throughput" in target:
-        return "Compute-intensive FMA kernel, 65535x256 threads, no global mem after init"
-    elif "gpu__compute_memory_throughput" in target:
-        return "Fused read-compute-write kernel, 65535x256 threads"
-    elif "latency" in tl:
-        return "Pointer-chasing kernel, clock64() timing, single thread"
-    elif "cache_size" in tl or "l2" in tl or "l1" in tl:
-        return "Working-set sweep kernel, clock64() timing"
-    elif "bandwidth" in tl:
-        return "STREAM copy kernel, cudaEventElapsedTime, 65535x256 threads"
-    elif "clock" in tl:
-        return "Cycle count / wall-clock time kernel"
-    elif "sm_count" in tl:
-        return "cudaDeviceGetAttribute + block ID sweep"
-    else:
-        return "See design principle and metric documentation above for measurement approach"

@@ -49,10 +49,10 @@ class StageExecutor:
     """
 
     MAX_TURNS_PER_STAGE = {
-        "plan": 20,
-        "code_gen": 50,
-        "metric_analysis": 30,
-        "verification": 20,
+        "plan": 10,
+        "code_gen": 30,
+        "metric_analysis": 8,
+        "verification": 6,
     }
 
     def __init__(
@@ -198,42 +198,28 @@ class StageExecutor:
     def _build_retry_message(
         self, step: Any, ctx: PipelineContext, feedback: dict[str, Any],
     ) -> CollaborationMessage:
-        """Build a retry collaboration message with rejection and MetricAnalysis feedback."""
+        """Build a retry collaboration message with rejection feedback.
+
+        MetricAnalysis feedback is handled separately by _build_user_task
+        to avoid duplication and provide better structured formatting.
+        """
         concerns = feedback.get("concerns", [])
         suggested_fixes = feedback.get("suggested_fixes", [])
         iteration = feedback.get("iteration", 0)
 
-        feedback_parts = [
-            "⚠️  VERIFICATION REJECTED YOUR PREVIOUS OUTPUT",
-            f"Iteration: {iteration}/{ctx.max_iterations}",
-            "Please fix the following concerns and regenerate:",
-            "",
-            *[f"- {concern}" for concern in concerns],
-        ]
-        if suggested_fixes:
+        feedback_parts = []
+        if concerns:
+            feedback_parts.append(
+                "⚠️  VERIFICATION REJECTED YOUR PREVIOUS OUTPUT"
+            )
+            feedback_parts.append(f"Iteration: {iteration}/{ctx.max_iterations}")
+            feedback_parts.append("Please fix the following concerns and regenerate:")
             feedback_parts.append("")
-            feedback_parts.append("Suggested fixes:")
-            for fix in suggested_fixes:
-                feedback_parts.append(f"  → {fix}")
-
-        metric_recommendations = feedback.get("metric_recommendations", [])
-        metric_suggested_fixes = feedback.get("metric_suggested_fixes", [])
-        bottleneck_type = feedback.get("bottleneck_type", "")
-        bottleneck_sub_type = feedback.get("bottleneck_sub_type", "")
-
-        if bottleneck_type or metric_recommendations or metric_suggested_fixes:
-            feedback_parts.append("")
-            feedback_parts.append("📊 MetricAnalysis feedback:")
-            if bottleneck_type:
-                sub_info = f"/{bottleneck_sub_type}" if bottleneck_sub_type else ""
-                feedback_parts.append(f"   Bottleneck identified: {bottleneck_type}{sub_info}")
-            if metric_recommendations:
-                feedback_parts.append("   Optimization recommendations:")
-                for rec in metric_recommendations:
-                    feedback_parts.append(f"  - {rec}")
-            if metric_suggested_fixes:
-                feedback_parts.append("   Suggested fixes:")
-                for fix in metric_suggested_fixes:
+            feedback_parts.extend(f"- {concern}" for concern in concerns)
+            if suggested_fixes:
+                feedback_parts.append("")
+                feedback_parts.append("Suggested fixes:")
+                for fix in suggested_fixes:
                     feedback_parts.append(f"  → {fix}")
 
         payload: dict[str, Any] = {}
@@ -265,11 +251,8 @@ class StageExecutor:
                 "  6. #include <algorithm> if you use std::sort"
             )
 
-        payload["rejection_feedback"] = "\n".join(feedback_parts)
-        payload["metric_recommendations"] = metric_recommendations
-        payload["metric_suggested_fixes"] = metric_suggested_fixes
-        payload["bottleneck_type"] = bottleneck_type
-        payload["bottleneck_sub_type"] = bottleneck_sub_type
+        if feedback_parts:
+            payload["rejection_feedback"] = "\n".join(feedback_parts)
 
         return CollaborationMessage(
             sender=AgentRole.VERIFICATION,
@@ -291,13 +274,28 @@ class StageExecutor:
         target_spec = payload.get("target_spec", {})
         rejection_feedback = payload.get("rejection_feedback", "")
 
+        # OPTIMIZATION ROUND: Override target_spec with optimization targets only
+        if stage_name == PipelineStage.CODE_GEN.value and ctx and hasattr(ctx, 'get_optimization_targets'):
+            opt_targets = ctx.get_optimization_targets()
+            if opt_targets and ctx.is_optimization_round:
+                opt_target_names = [t.get("target", "") for t in opt_targets if t.get("target")]
+                if opt_target_names:
+                    target_spec = dict(target_spec)
+                    target_spec["targets"] = opt_target_names
+                    target_spec["_is_optimization"] = True
+                    target_spec["_optimization_details"] = opt_targets
+                    logger.info(
+                        "[StageExecutor] Overriding target_spec with %d optimization targets: %s",
+                        len(opt_target_names), opt_target_names,
+                    )
+
         if not task and stage_name == PipelineStage.CODE_GEN.value:
             tasks_list = prev_result.get("data", {}).get("tasks", [])
             if tasks_list:
                 task = {"tasks": tasks_list}
 
         system_prompt = self._build_system_prompt(agent, step.stage, ctx)
-        user_task = self._build_user_task(step.stage, task, prev_result, target_spec)
+        user_task = self._build_user_task(step.stage, task, prev_result, target_spec, ctx)
 
         if rejection_feedback:
             user_task = f"{rejection_feedback}\n\n---\n\n{user_task}"
@@ -327,8 +325,25 @@ class StageExecutor:
 
         # Initialize target state machine for CodeGen stage
         if target_spec and stage_name == PipelineStage.CODE_GEN.value:
-            loop._init_target_state(target_spec)
-            logger.info("[StageExecutor] Target state machine initialized for CodeGen stage")
+            opt_targets = ctx.get_optimization_targets() if ctx and hasattr(ctx, 'get_optimization_targets') else []
+            if opt_targets and ctx and ctx.is_optimization_round:
+                opt_target_names = [t.get("target", "") for t in opt_targets if t.get("target")]
+                if opt_target_names:
+                    opt_spec = dict(target_spec)
+                    opt_spec["targets"] = opt_target_names
+                    opt_spec["_is_optimization"] = True
+                    opt_spec["_optimization_details"] = opt_targets
+                    loop._init_target_state(opt_spec)
+                    logger.info(
+                        "[StageExecutor] Target state machine initialized for OPTIMIZATION CodeGen stage with %d targets: %s",
+                        len(opt_target_names), opt_target_names,
+                    )
+                else:
+                    loop._init_target_state(target_spec)
+                    logger.info("[StageExecutor] Target state machine initialized for CodeGen stage (no opt targets)")
+            else:
+                loop._init_target_state(target_spec)
+                logger.info("[StageExecutor] Target state machine initialized for CodeGen stage")
 
         if agent._model_caller is not None:
             loop.set_model_caller(agent._model_caller)
@@ -482,6 +497,7 @@ class StageExecutor:
         task: dict,
         prev_result: dict,
         target_spec: dict,
+        ctx: PipelineContext | None = None,
     ) -> str:
         """Build the user task prompt for a stage."""
         if stage == PipelineStage.PLAN:
@@ -491,16 +507,125 @@ class StageExecutor:
                 f"Targets: {_json.dumps(target_spec, indent=2)}\n\n"
                 f"Return a JSON array of task objects with: "
                 f'"target", "category" (latency_measurement, capacity_measurement, '
-                f'clock_measurement, bandwidth_measurement, or unknown), '
+                f'clock_measurement, bandwidth_measurement, ncu_throughput_measurement, or unknown), '
                 f'"method" (detailed description of the measurement approach).'
             )
 
-        if task:
-            return self._prompt_builder.build_task_prompt(stage, target_spec, prev_result)
-        if prev_result:
-            return self._prompt_builder.build_task_prompt(stage, target_spec, prev_result)
+        # CRITICAL: Inject MetricAnalysis feedback for CodeGen optimization iterations
+        metric_feedback_section = ""
+        if stage == PipelineStage.CODE_GEN and ctx is not None and hasattr(ctx, 'metric_feedback'):
+            feedback = ctx.get_feedback_for_codegen()
+            opt_targets = ctx.get_optimization_targets() if hasattr(ctx, 'get_optimization_targets') else []
+            if feedback:
+                parts = []
+                iteration = ctx.iteration_count if ctx else 0
+                if iteration > 0:
+                    parts.append(
+                        f"\n{'━' * 60}\n"
+                        f"🔄 OPTIMIZATION ITERATION #{iteration}\n"
+                        f"{'━' * 60}\n\n"
+                        f"This is an OPTIMIZATION pass (iteration {iteration} of {ctx.max_iterations}). "
+                        f"MetricAnalysis has reviewed your code "
+                        f"and identified opportunities for improvement.\n"
+                    )
 
-        return f"You are the {stage.value} stage. Execute your task."
+                bottleneck_type = feedback.get("bottleneck_type", "")
+                bottleneck_sub_type = feedback.get("bottleneck_sub_type", "")
+                if bottleneck_type:
+                    parts.append(f"🔍 BOTTLENECK IDENTIFIED: {bottleneck_type}")
+                    if bottleneck_sub_type:
+                        parts.append(f"   Sub-type: {bottleneck_sub_type}")
+                    parts.append("")
+
+                metric_suggested_fixes = feedback.get("metric_suggested_fixes", [])
+                if metric_suggested_fixes:
+                    parts.append("🔧 OPTIMIZATION RECOMMENDATIONS (from MetricAnalysis):")
+                    for i, fix in enumerate(metric_suggested_fixes, 1):
+                        parts.append(f"   {i}. {fix}")
+                    parts.append("")
+
+                metric_recommendations = feedback.get("metric_recommendations", [])
+                if metric_recommendations:
+                    parts.append("📊 PERFORMANCE INSIGHTS (from MetricAnalysis):")
+                    for i, rec in enumerate(metric_recommendations, 1):
+                        parts.append(f"   {i}. {rec}")
+                    parts.append("")
+
+                concerns = feedback.get("concerns", [])
+                if concerns:
+                    parts.append("⚠️ CONCERNS (from Verification):")
+                    for i, concern in enumerate(concerns, 1):
+                        parts.append(f"   {i}. {concern}")
+                    parts.append("")
+
+                suggested_fixes = feedback.get("suggested_fixes", [])
+                if suggested_fixes:
+                    parts.append("🔧 SUGGESTED FIXES (from Verification):")
+                    for i, fix in enumerate(suggested_fixes, 1):
+                        parts.append(f"   {i}. {fix}")
+                    parts.append("")
+
+                # ENHANCED: Inject specific optimization targets with strategies
+                if opt_targets:
+                    parts.append(
+                        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        "🎯 MANDATORY RE-OPTIMIZATION TARGETS\n"
+                        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        "You MUST re-write and re-compile CUDA code for these specific targets.\n"
+                        "Do NOT just confirm existing results — you MUST apply the optimization\n"
+                        "strategy and generate NEW code with the improvements.\n"
+                    )
+                    for i, opt in enumerate(opt_targets, 1):
+                        target_name = opt.get("target", "unknown")
+                        strategy = opt.get("optimization_strategy", "Apply general optimizations")
+                        current_val = opt.get("current_value", "N/A")
+                        bn_type = opt.get("bottleneck_type", "")
+                        bn_sub = opt.get("bottleneck_sub_type", "")
+                        parts.append(
+                            f"\n  📌 Target #{i}: {target_name}\n"
+                            f"     Current value: {current_val}\n"
+                            f"     Bottleneck: {bn_type}"
+                            + (f" / {bn_sub}" if bn_sub else "") + "\n"
+                            f"     ⚡ Optimization strategy: {strategy}\n"
+                            f"     → You MUST: compile_cuda with NEW optimized code for '{target_name}'\n"
+                            f"     → Then: execute_binary to verify the improved measurement\n"
+                        )
+                    parts.append("")
+
+                if parts:
+                    if opt_targets:
+                        parts.append(
+                            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                            "⚡ YOUR MISSION: Re-write CUDA code for the MANDATORY targets above.\n"
+                            "Apply the specified optimization strategy to each target.\n"
+                            "Compile and execute EACH target to verify improvements.\n"
+                            "Do NOT skip any target — you MUST compile_cuda + execute_binary for each.\n"
+                            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        )
+                    else:
+                        parts.append(
+                            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                            "⚡ YOUR MISSION: Apply the above optimizations to improve your CUDA code.\n"
+                            "Focus on addressing the identified bottleneck and implementing the recommendations.\n"
+                            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        )
+                    metric_feedback_section = "\n".join(parts)
+
+        if task:
+            base_prompt = self._prompt_builder.build_task_prompt(stage, target_spec, prev_result)
+            if metric_feedback_section:
+                return metric_feedback_section + "\n\n" + base_prompt
+            return base_prompt
+        if prev_result:
+            base_prompt = self._prompt_builder.build_task_prompt(stage, target_spec, prev_result)
+            if metric_feedback_section:
+                return metric_feedback_section + "\n\n" + base_prompt
+            return base_prompt
+
+        base_prompt = f"You are the {stage.value} stage. Execute your task."
+        if metric_feedback_section:
+            return metric_feedback_section + "\n\n" + base_prompt
+        return base_prompt
 
     def _get_tool_guidance(self, stage: PipelineStage, ctx: PipelineContext | None = None) -> str:
         """Return stage-specific tool usage instructions."""
@@ -608,6 +733,36 @@ class StageExecutor:
                 "- ❌ Do NOT rely solely on cudaGetDeviceProperties — may return virtualized data\n"
                 "- ✅ Use clock64() + cudaEventElapsedTime to measure actual hardware behavior\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "🔌 DEVICE ATTRIBUTE QUERIES — USE CORRECT ENUM VALUES\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "When measuring device attributes, use these EXACT cudaDeviceGetAttribute calls:\n\n"
+                "  launch__sm_count:\n"
+                "    int sm_count;\n"
+                "    cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, 0);\n"
+                "    printf(\"launch__sm_count: %d\\n\", sm_count);\n\n"
+                "  device__attribute_max_gpu_frequency_khz:\n"
+                "    int clock_rate;\n"
+                "    cudaDeviceGetAttribute(&clock_rate, cudaDevAttrClockRate, 0);\n"
+                "    printf(\"device__attribute_max_gpu_frequency_khz: %d\\n\", clock_rate);\n\n"
+                "  device__attribute_max_mem_frequency_khz:\n"
+                "    int mem_clock;\n"
+                "    cudaDeviceGetAttribute(&mem_clock, cudaDevAttrMemoryClockRate, 0);\n"
+                "    printf(\"device__attribute_max_mem_frequency_khz: %d\\n\", mem_clock);\n\n"
+                "  device__attribute_fb_bus_width:\n"
+                "    int bus_width;\n"
+                "    cudaDeviceGetAttribute(&bus_width, cudaDevAttrGlobalMemoryBusWidth, 0);\n"
+                "    printf(\"device__attribute_fb_bus_width: %d\\n\", bus_width);\n\n"
+                "⚠️ IMPORTANT: If any enum name is undefined, use the numeric value instead:\n"
+                "  cudaDevAttrMultiProcessorCount = 16\n"
+                "  cudaDevAttrClockRate = 13\n"
+                "  cudaDevAttrMemoryClockRate = 36\n"
+                "  cudaDevAttrGlobalMemoryBusWidth = 37\n"
+                "Example fallback: cudaDeviceGetAttribute(&val, (enum cudaDeviceAttr)37, 0);\n\n"
+                "⚠️ Do NOT query wrong attributes! Common mistakes:\n"
+                "  ❌ cudaDevAttrMultiProcessorCount for bus_width → returns SM count, not bits\n"
+                "  ❌ cudaDevAttrClockRate for memory clock → returns GPU clock, not memory clock\n"
+                "  ❌ Confusing bus_width with total_memory → returns bits, not bytes\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 "📊 OUTPUT FORMAT — CRITICAL FOR CORRECT MEASUREMENT\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 "Your CUDA code MUST print the measurement in this EXACT format:\n\n"
@@ -616,11 +771,41 @@ class StageExecutor:
                 "✅ CORRECT examples:\n"
                 '  printf("launch__sm_count: %d\\n", sm_count);\n'
                 '  printf("dram__bytes_read.sum.per_second: %.2f\\n", bandwidth);\n'
-                '  printf("sm__throughput.avg.pct_of_peak_sustained_elapsed: %.2f\\n", throughput);\n\n'
+                '  printf("sm__throughput.avg.pct_of_peak_sustained_elapsed: %.2f\\n", pct);  // Compute actual percentage!\n\n'
                 "❌ WRONG examples:\n"
                 '  printf("Result: %f\\n", value);  // Missing target name!\n'
                 '  printf("sm_count: %d\\n", sm_count);  // Wrong target name!\n'
                 '  printf("DRAM bandwidth: %.2f\\n", bw);  // Descriptive name, not target!\n\n'
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "📐 pct_of_peak_sustained_elapsed METRICS — MUST COMPUTE ACTUAL VALUE\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "For sm__throughput.avg.pct_of_peak_sustained_elapsed:\n"
+                "  1. Query: cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, 0)\n"
+                "  2. Query: cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, 0)\n"
+                "  3. Query: cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, 0)\n"
+                "  4. Determine fp64_per_sm: V100(SM70)=32, A100(SM80)=32, H100(SM90)=64, T4(SM75)=2, consumer(SM86+)=2\n"
+                "  5. Launch PURELY compute-bound FMA kernel (double, all registers)\n"
+                "  6. Inside kernel: record clock64() before/after FMA loop, output cycle count\n"
+                "  7. Compute actual_freq_mhz = cycle_count / (elapsed_ms * 1000.0)\n"
+                "  8. Compute: peak_flops = sm_count * fp64_per_sm * actual_freq_mhz * 1e6 * 2\n"
+                "  9. Compute: achieved_flops = total_fma_ops / elapsed_seconds\n"
+                "  10. Compute: pct = (achieved_flops / peak_flops) * 100.0\n"
+                "  11. printf(\"sm__throughput.avg.pct_of_peak_sustained_elapsed: %.2f\\n\", pct);\n\n"
+                "For gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed:\n"
+                "  1. Query: cudaDeviceGetAttribute(&mem_clock_khz, cudaDevAttrMemoryClockRate, 0)\n"
+                "  2. Query: cudaDeviceGetAttribute(&bus_width_bits, cudaDevAttrGlobalMemoryBusWidth, 0)\n"
+                "  3. Launch FUSED read-compute-write kernel:\n"
+                "     - READ input[i] from global memory\n"
+                "     - COMPUTE 8+ FMA USING THE READ VALUE (not register-only!)\n"
+                "     - WRITE to volatile output[i]\n"
+                "     - 64MB+ buffer, sm_count*4 blocks x 256 threads\n"
+                "  4. Compute: peak_bw = (mem_clock_khz/1000.0) * 1e6 * (bus_width_bits/8) * 2 / 1e9\n"
+                "  5. Compute: achieved_bw = (2.0 * buffer_size_bytes) / elapsed_seconds / 1e9\n"
+                "     (2x because each element is read AND written)\n"
+                "  6. Compute: pct = (achieved_bw / peak_bw) * 100.0\n"
+                "  7. printf(\"gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed: %.2f\\n\", pct);\n\n"
+                "⚠️  DO NOT output 0.0 as placeholder — you MUST compute the actual percentage!\n"
+                "⚠️  The harness adds a runtime clamp [0,100] as safety net.\n\n"
                 "⚠️  CRITICAL: The target name in printf MUST match the target parameter exactly.\n"
                 "    The system parses stdout looking for 'TARGET_NAME: value' pattern.\n"
                 "    If the target name doesn't match, the measurement will be IGNORED.\n\n"
@@ -720,6 +905,17 @@ class StageExecutor:
                 "⚠️ CRITICAL: You MUST output a clear verdict.\n"
                 "If you do NOT output 'Verdict: ACCEPT' or 'Verdict: REJECT',\n"
                 "the pipeline will DEFAULT TO REJECTED (fail-closed per P2).\n\n"
+                "PLAUSIBLE VALUE RANGES FOR COMMON TARGETS:\n"
+                "  launch__sm_count: 8-132 (A100=108, V100=80, A10=72)\n"
+                "  device__attribute_max_gpu_frequency_khz: 1000000-2500000\n"
+                "  device__attribute_max_mem_frequency_khz: 500000-1600000\n"
+                "  device__attribute_fb_bus_width: 256-4096 bits (A100=5120, V100=4096, RTX3090=384)\n"
+                "  dram__bytes_read.sum.per_second: 200e9-1600e9 (200-1600 GB/s)\n"
+                "  dram__bytes_write.sum.per_second: 200e9-1600e9 (200-1600 GB/s)\n"
+                "  sm__throughput.avg.pct_of_peak_sustained_elapsed: 30-95\n"
+                "  gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed: 20-80\n\n"
+                "⚠️ If ALL measured values are within plausible ranges, output 'Verdict: ACCEPT'.\n"
+                "⚠️ Only REJECT if values are clearly wrong (zero, negative, or wildly implausible).\n\n"
                 "MANDATORY OUTPUT FORMAT:\n"
                 "Verdict: ACCEPT or REJECT\n"
                 "Findings: [list of issues found]\n"
@@ -867,8 +1063,22 @@ class StageExecutor:
                             # Try to parse value as float
                             try:
                                 val = float(val_str)
-                                # Only accept reasonable numeric values
-                                if val != 0 or "zero" not in key.lower():
+                                if val != 0 or "pct_of_peak" in key or "zero" not in key.lower():
+                                    if "pct_of_peak_sustained_elapsed" in key:
+                                        if val > 100.0:
+                                            logger.warning(
+                                                "[StageExecutor] Clamping out-of-range "
+                                                "pct_of_peak value for '%s': %.2f -> 100.0",
+                                                key, val,
+                                            )
+                                            val = 100.0
+                                        elif val < 0.0:
+                                            logger.warning(
+                                                "[StageExecutor] Clamping negative "
+                                                "pct_of_peak value for '%s': %.2f -> 0.0",
+                                                key, val,
+                                            )
+                                            val = 0.0
                                     measurements[key] = val
                             except ValueError:
                                 pass
@@ -907,6 +1117,11 @@ class StageExecutor:
 
         if stage == PipelineStage.VERIFICATION:
             self._extract_verification_structured_data(effective_text, assistant_outputs, data)
+
+        # CRITICAL FIX: Extract MetricAnalysis bottleneck results and feed back to PipelineContext
+        # This enables the MetricAnalysis → CodeGen feedback loop
+        if stage == PipelineStage.METRIC_ANALYSIS and ctx is not None:
+            self._extract_metric_analysis_feedback(effective_text, assistant_outputs, data, ctx)
 
         error_msg = self._build_error_message(stage, status, data, effective_text, tool_results)
 
@@ -1130,7 +1345,8 @@ class StageExecutor:
         """
         valid_categories = {
             "latency_measurement", "capacity_measurement",
-            "clock_measurement", "bandwidth_measurement", "unknown",
+            "clock_measurement", "bandwidth_measurement",
+            "ncu_throughput_measurement", "unknown",
         }
         tasks = []
         for t in raw_tasks:
@@ -1196,6 +1412,10 @@ class StageExecutor:
             r.get("status") in ("success", "success_with_warning", True) or r.get("success") is True
             for r in tool_results
         )
+        has_raw_output = any(
+            r.get("raw_output") for r in tool_results
+            if isinstance(r, dict)
+        )
         has_bottleneck = "bottleneck" in final_text.lower()
         has_metrics = any(
             kw in final_text.lower() 
@@ -1215,13 +1435,19 @@ class StageExecutor:
                 "Agent should analyze CodeGen measurements directly instead of calling run_ncu."
             )
         
-        if has_tool_result or (final_text and (has_bottleneck or has_metrics)):
+        if has_tool_result or has_raw_output or (final_text and (has_bottleneck or has_metrics)):
             return SubAgentStatus.SUCCESS
         
         if has_codegen_measurements and final_text and len(final_text) > 50:
             return SubAgentStatus.SUCCESS
         
+        if has_codegen_measurements:
+            return SubAgentStatus.SUCCESS
+        
         if final_text and len(final_text) > 100:
+            return SubAgentStatus.SUCCESS
+        
+        if has_raw_output and len(tool_results) >= 2:
             return SubAgentStatus.SUCCESS
         
         return SubAgentStatus.FAILED
@@ -1380,7 +1606,8 @@ class StageExecutor:
 
         zero_measurements = {k: v for k, v in measurements.items()
                             if isinstance(v, (int, float)) and v == 0
-                            and k not in ("exit_code", "binary_count")}
+                            and k not in ("exit_code", "binary_count")
+                            and "pct_of_peak_sustained_elapsed" not in k}
         if zero_measurements and status == SubAgentStatus.SUCCESS:
             status = SubAgentStatus.FAILED
             data["error_detail"] = (
@@ -1403,7 +1630,421 @@ class StageExecutor:
         return status
 
     @staticmethod
+    def _extract_metric_analysis_feedback(
+        final_text: str,
+        assistant_outputs: list[str],
+        data: dict[str, Any],
+        ctx: PipelineContext,
+    ) -> None:
+        """Extract bottleneck analysis from MetricAnalysis output and feed back to PipelineContext.
+
+        This enables the MetricAnalysis → CodeGen feedback loop:
+        - MetricAnalysis identifies bottlenecks via NCU profiling
+        - Bottleneck type and recommendations are stored in PipelineContext.metric_feedback
+        - Specific optimization targets are derived and stored for CodeGen
+        - On next CodeGen iteration, feedback is injected into CodeGen's task prompt
+        """
+        all_outputs = list(assistant_outputs)
+        if final_text and final_text not in all_outputs:
+            all_outputs.append(final_text)
+
+        combined_text = "\n".join(all_outputs)
+        lower = combined_text.lower()
+
+        bottleneck_type = ""
+        bottleneck_sub_type = ""
+        recommendations = []
+        suggested_fixes = []
+
+        for btype in ["compute_bound", "memory_bound", "latency_bound", "cache_capacity", "balanced"]:
+            if btype in lower:
+                bottleneck_type = btype
+                break
+
+        for subtype in ["dram", "l2", "l1", "tensor_core", "fp32", "fp64", "bank_conflict",
+                        "sm_throughput", "compute_memory_throughput", "clock", "sm", "shmem"]:
+            if subtype in lower:
+                bottleneck_sub_type = subtype
+                break
+
+        for output in all_outputs:
+            if not output or not output.strip():
+                continue
+            try:
+                start = output.find("{")
+                end = output.rfind("}") + 1
+                if start >= 0 and end > start:
+                    parsed = _json.loads(output[start:end])
+                    if isinstance(parsed, dict):
+                        if "bottleneck_type" in parsed and not bottleneck_type:
+                            bottleneck_type = parsed["bottleneck_type"]
+                        if "bottleneck_sub_type" in parsed and not bottleneck_sub_type:
+                            bottleneck_sub_type = parsed["bottleneck_sub_type"]
+                        if "recommendations" in parsed and isinstance(parsed["recommendations"], list):
+                            recommendations.extend(parsed["recommendations"])
+                        if "suggested_fixes" in parsed and isinstance(parsed["suggested_fixes"], list):
+                            suggested_fixes.extend(parsed["suggested_fixes"])
+            except (_json.JSONDecodeError, TypeError):
+                continue
+
+        if not recommendations:
+            for line in combined_text.splitlines():
+                line_stripped = line.strip()
+                if line_stripped.startswith(("- ", "* ", "→ ", "  - ", "  * ")):
+                    rec = line_stripped.lstrip("-*→ ").strip()
+                    if rec and len(rec) > 10 and any(
+                        kw in rec.lower() for kw in [
+                            "optim", "suggest", "recommend", "improve", "increase",
+                            "reduce", "use ", "try ", "apply", "enable", "consider",
+                            "tiling", "coalesc", "shared memory", "prefetch", "pipeline",
+                        ]
+                    ):
+                        recommendations.append(rec)
+
+        if bottleneck_type or recommendations or suggested_fixes:
+            code_quality = data.get("code_quality")
+            if code_quality and isinstance(code_quality, dict):
+                cq_fixes = code_quality.get("suggested_fixes", [])
+                if cq_fixes:
+                    suggested_fixes.extend(cq_fixes)
+                for dim in ["accuracy", "efficiency", "resource", "compatibility", "maintainability"]:
+                    dim_data = code_quality.get(dim, {})
+                    if isinstance(dim_data, dict) and dim_data.get("score", 1.0) < 0.7:
+                        dim_fixes = dim_data.get("fixes", [])
+                        if dim_fixes:
+                            suggested_fixes.extend(dim_fixes[:2])
+
+            ctx.add_metric_feedback(
+                suggested_fixes=suggested_fixes[:8],
+                bottleneck_type=bottleneck_type,
+                bottleneck_sub_type=bottleneck_sub_type,
+                recommendations=recommendations[:5],
+            )
+            logger.info(
+                "[StageExecutor] MetricAnalysis feedback: type=%s sub=%s recs=%d fixes=%d",
+                bottleneck_type, bottleneck_sub_type, len(recommendations), len(suggested_fixes),
+            )
+            data["bottleneck_type"] = bottleneck_type
+            data["bottleneck_sub_type"] = bottleneck_sub_type
+            if recommendations:
+                data["metric_recommendations"] = recommendations[:5]
+            if suggested_fixes:
+                data["metric_suggested_fixes"] = suggested_fixes[:5]
+
+            optimization_targets = StageExecutor._derive_optimization_targets(
+                bottleneck_type, bottleneck_sub_type, recommendations, suggested_fixes, ctx,
+            )
+            if optimization_targets:
+                ctx.set_optimization_targets(optimization_targets)
+                data["optimization_targets"] = optimization_targets
+                logger.info(
+                    "[StageExecutor] Derived %d optimization targets from MetricAnalysis feedback",
+                    len(optimization_targets),
+                )
+
+        # Extract NCU measurements for pct_of_peak_sustained_elapsed metrics.
+        # NCU provides authoritative measurements that can supplement or
+        # validate the CodeGen-computed percentages.
+        ncu_overrides: dict[str, float] = {}
+        tool_results_list = data.get("tool_results", [])
+        if isinstance(tool_results_list, list):
+            for tr in tool_results_list:
+                if not isinstance(tr, dict):
+                    continue
+
+                parsed_metrics = tr.get("parsed_metrics", {})
+                if isinstance(parsed_metrics, dict):
+                    for k, v in parsed_metrics.items():
+                        if "pct_of_peak_sustained_elapsed" in k or "throughput.avg" in k:
+                            try:
+                                fval = float(v)
+                                if fval > 0 and fval <= 100.0:
+                                    ncu_overrides[k] = fval
+                            except (TypeError, ValueError):
+                                pass
+
+                raw_output = tr.get("raw_output", "")
+                if raw_output:
+                    for line in raw_output.splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        if "pct_of_peak_sustained_elapsed" not in line and "throughput.avg" not in line:
+                            continue
+                        for sep in (" ................ ", " ......... ", " ........ ", " ... "):
+                            if sep in line:
+                                key, _, val_str = line.partition(sep)
+                                key = key.strip()
+                                val_str = val_str.strip().rstrip("%").strip()
+                                if key and ("pct_of_peak_sustained_elapsed" in key or "throughput.avg" in key):
+                                    try:
+                                        fval = float(val_str.replace(",", ""))
+                                        if fval > 0 and fval <= 100.0:
+                                            ncu_overrides[key] = fval
+                                    except ValueError:
+                                        pass
+                                break
+                        else:
+                            colon_pos = line.find(":")
+                            if colon_pos != -1:
+                                key = line[:colon_pos].strip()
+                                val_str = line[colon_pos + 1:].strip().rstrip("%")
+                                if "pct_of_peak_sustained_elapsed" in key or "throughput.avg" in key:
+                                    try:
+                                        fval = float(val_str.replace(",", ""))
+                                        if fval > 0 and fval <= 100.0:
+                                            ncu_overrides[key] = fval
+                                    except ValueError:
+                                        pass
+
+        if ncu_overrides:
+            existing_measurements = data.get("measurements", {})
+            if isinstance(existing_measurements, dict):
+                override_count = 0
+                for k, v in ncu_overrides.items():
+                    if k in existing_measurements:
+                        old_val = existing_measurements[k]
+                        existing_measurements[k] = v
+                        override_count += 1
+                        logger.info(
+                            "[StageExecutor] NCU override: %s = %.2f (was %.2f)",
+                            k, v, old_val,
+                        )
+                    else:
+                        existing_measurements[k] = v
+                        override_count += 1
+                        logger.info(
+                            "[StageExecutor] NCU new measurement: %s = %.2f",
+                            k, v,
+                        )
+                data["measurements"] = existing_measurements
+                if ctx.key_measurements:
+                    for k, v in ncu_overrides.items():
+                        ctx.key_measurements[k] = v
+                    logger.info(
+                        "[StageExecutor] Updated %d NCU measurements in pipeline context",
+                        override_count,
+                    )
+
+    @staticmethod
+    def _derive_optimization_targets(
+        bottleneck_type: str,
+        bottleneck_sub_type: str,
+        recommendations: list[str],
+        suggested_fixes: list[str],
+        ctx: PipelineContext,
+    ) -> list[dict[str, Any]]:
+        """Derive specific optimization targets from MetricAnalysis feedback.
+
+        Maps bottleneck analysis to concrete CodeGen re-optimization tasks.
+        Each target includes the measurement target name and a specific
+        optimization strategy derived from MetricAnalysis recommendations.
+        """
+        if bottleneck_type == "balanced":
+            return []
+
+        measurements = ctx.key_measurements or {}
+        if not measurements:
+            return []
+
+        target_strategy_map = {
+            "dram": {
+                "targets": [
+                    "dram__bytes_read.sum.per_second",
+                    "dram__bytes_write.sum.per_second",
+                ],
+                "strategies": [
+                    "Increase thread count or grid size for higher memory-level parallelism",
+                    "Use __ldg() intrinsic for read-only data to enable L1 texture cache",
+                    "Align memory accesses to 128-byte boundaries for optimal coalescing",
+                    "Use wider vector loads (float4/uint4) to increase memory throughput per thread",
+                ],
+            },
+            "l2": {
+                "targets": [
+                    "dram__bytes_read.sum.per_second",
+                    "dram__bytes_write.sum.per_second",
+                    "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed",
+                ],
+                "strategies": [
+                    "Increase working set to exceed L2 cache size and force DRAM access",
+                    "Use cudaFuncSetAttribute to set L1 cache preference",
+                    "Apply software prefetching with __ldg() to hide L2 latency",
+                ],
+            },
+            "compute": {
+                "targets": [
+                    "sm__throughput.avg.pct_of_peak_sustained_elapsed",
+                    "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed",
+                ],
+                "strategies": [
+                    "CRITICAL: Your kernel MUST be PURELY compute-bound with NO global memory access in the FMA loop. "
+                    "Use double-precision FMA (result += a * b + c) with all variables in registers. "
+                    "Use volatile double* sink to prevent dead-code elimination. "
+                    "Launch sm_count*4 blocks x 256 threads. Run warmup kernel first. "
+                    "Inside kernel: record clock64() before/after FMA loop, output cycle count. "
+                    "Compute actual_freq_mhz = cycle_count / (elapsed_ms * 1000.0). "
+                    "COMPUTE actual pct: achieved_flops / peak_flops * 100. "
+                    "peak_flops = sm_count * fp64_per_sm * actual_freq_mhz * 1e6 * 2. "
+                    "Determine fp64_per_sm from compute capability: SM70=32, SM80=32, SM90=64, SM75=2, SM86+=2. "
+                    "Do NOT use cudaDevAttrClockRate for peak_flops — it may report base clock!",
+                    "For sm__throughput: Remove ALL global memory reads/writes from the timed loop. "
+                    "Initialize a, b, c as register doubles before the loop. "
+                    "Use #pragma unroll 1 before the FMA loop. "
+                    "Use asm volatile('' : '+d'(sink) : : 'memory') after the loop.",
+                    "For gpu__compute_memory_throughput: Use a fused read-compute-write kernel. "
+                    "READ input[i] with __restrict__, COMPUTE 8 FMA USING THE READ VALUE (not register-only!), "
+                    "WRITE to volatile output[i]. "
+                    "Use 64MB+ buffer. Launch sm_count*4 blocks x 256 threads. Run warmup first. "
+                    "COMPUTE actual pct: achieved_bw / peak_bw * 100. "
+                    "peak_bw = (mem_clock_khz/1000.0) * 1e6 * (bus_width_bits/8) * 2 / 1e9. "
+                    "⚠️ ANTI-CHEAT: cudaDeviceGetAttribute may return virtualized values — "
+                    "cross-validate mem_clock and bus_width with empirical measurement.",
+                    "Increase FMA density per thread (use more multiply-add operations). "
+                    "Maximize register usage to reduce memory dependency. "
+                    "Use warp-level primitives (__shfl_sync) to reduce shared memory overhead.",
+                ],
+            },
+            "sm_throughput": {
+                "targets": [
+                    "sm__throughput.avg.pct_of_peak_sustained_elapsed",
+                ],
+                "strategies": [
+                    "CRITICAL: sm__throughput kernel MUST be PURELY compute-bound. "
+                    "Use double-precision FMA (result += a * b + c) with ALL variables in registers. "
+                    "Initialize a, b, c as register doubles BEFORE the timed loop. "
+                    "Use volatile double* sink to prevent dead-code elimination. "
+                    "Add asm volatile('' : '+d'(sink) : : 'memory') AFTER the FMA loop. "
+                    "Use #pragma unroll 1 before the FMA loop. "
+                    "Launch sm_count*4 blocks x 256 threads. Run warmup kernel first. "
+                    "Inside kernel: record clock64() before/after FMA loop, output cycle count. "
+                    "Compute actual_freq_mhz = cycle_count / (elapsed_ms * 1000.0). "
+                    "COMPUTE actual pct: achieved_flops / peak_flops * 100. "
+                    "peak_flops = sm_count * fp64_per_sm * actual_freq_mhz * 1e6 * 2. "
+                    "Determine fp64_per_sm from compute capability: SM70=32, SM80=32, SM90=64, SM75=2, SM86+=2. "
+                    "Do NOT use cudaDevAttrClockRate for peak_flops — it may report base clock!",
+                    "Remove ALL global memory reads/writes from the timed FMA loop. "
+                    "The timed section should contain ONLY register-to-register FMA operations. "
+                    "Any global memory access makes the kernel memory-bound, not compute-bound.",
+                    "Use double NOT float — double-precision FMA achieves higher SM utilization on data center GPUs. "
+                    "Prevent constant-folding by using non-trivial initial values (e.g., 1.0001, 1.0002).",
+                ],
+            },
+            "compute_memory_throughput": {
+                "targets": [
+                    "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed",
+                ],
+                "strategies": [
+                    "CRITICAL: gpu__compute_memory_throughput requires a FUSED read-compute-write kernel. "
+                    "READ input[i] with const float* __restrict__, COMPUTE 8+ FMA per element USING the read value, "
+                    "WRITE to volatile output[i]. "
+                    "FMA chain MUST use the value read from memory — register-only FMA does NOT stress memory → 0.09%! "
+                    "WRONG: val = val * 1.0001f + 0.001f where val is register-only. "
+                    "RIGHT: val = input[i]; then val = val * 1.0001f + 0.001f; then output[i] = val; "
+                    "Use 64MB+ buffer (16M+ floats) to ensure data goes through DRAM. "
+                    "Use volatile float* output to prevent dead-code elimination of writes. "
+                    "Launch sm_count*4 blocks x 256 threads. Run warmup first. "
+                    "COMPUTE actual pct: achieved_bw / peak_bw * 100. "
+                    "peak_bw = (mem_clock_khz/1000.0) * 1e6 * (bus_width_bits/8) * 2 / 1e9. "
+                    "achieved_bw = (2.0 * buffer_size_bytes) / elapsed_seconds / 1e9. "
+                    "Query mem_clock_khz and bus_width_bits via cudaDeviceGetAttribute. "
+                    "If pct < 5%, the kernel is FUNDAMENTALLY WRONG — not stressing memory at all.",
+                    "Balance compute and memory: each thread should do 4-8 FMA operations per memory access. "
+                    "Too few FMA → memory-only. Too many FMA → compute-only. "
+                    "Target: arithmetic intensity near the roofline ridge point.",
+                    "Use __restrict__ on input/output pointers to enable load/store optimization. "
+                    "Ensure coalesced memory access: consecutive threads access consecutive addresses.",
+                ],
+            },
+            "clock": {
+                "targets": ["actual_boost_clock_mhz"],
+                "strategies": [
+                    "Use clock64()+cudaEventElapsedTime dual-timing: "
+                    "kernel does 10M iterations with clock64(), host measures elapsed_us, "
+                    "freq_MHz = total_cycles / elapsed_us. "
+                    "Ensure ms->s conversion (divide by 1000) and Hz->MHz conversion (divide by 1e6). "
+                    "DO NOT use nvidia-smi — it reports locked frequency, not actual running frequency.",
+                ],
+            },
+            "sm": {
+                "targets": ["sm_count"],
+                "strategies": [
+                    "Cross-validate cudaDeviceGetAttribute with occupancy-based estimation. "
+                    "Use cudaOccupancyMaxActiveBlocksPerMultiprocessor + block ID sweep. "
+                    "DO NOT rely solely on cudaDeviceGetAttribute — may be intercepted in evaluation.",
+                ],
+            },
+            "shmem": {
+                "targets": ["max_shmem_per_block_kb"],
+                "strategies": [
+                    "Use cudaDeviceGetAttribute(cudaDevAttrMaxSharedMemoryPerBlock) with empirical validation. "
+                    "Launch kernel with increasing shared memory sizes until launch fails. "
+                    "Binary search for the maximum allocatable shared memory per block.",
+                ],
+            },
+        }
+
+        rec_lower = " ".join(str(r).lower() for r in recommendations + suggested_fixes)
+
+        sub_type = bottleneck_sub_type
+        if not sub_type:
+            if "memory" in bottleneck_type or "bandwidth" in rec_lower:
+                sub_type = "dram"
+            elif "compute" in bottleneck_type or "throughput" in rec_lower:
+                sub_type = "compute"
+            elif "bound" in bottleneck_type:
+                if "compute" in rec_lower or "fma" in rec_lower or "flop" in rec_lower:
+                    sub_type = "compute"
+                elif "memory" in rec_lower or "bandwidth" in rec_lower or "dram" in rec_lower:
+                    sub_type = "dram"
+                else:
+                    sub_type = "compute"
+            else:
+                sub_type = "dram"
+
+        mapping = target_strategy_map.get(sub_type, target_strategy_map.get("dram"))
+        if not mapping:
+            return []
+
+        all_profiled_targets = set(measurements.keys())
+        for version in (ctx.measurement_versions or []):
+            all_profiled_targets.update(version.measurements.keys())
+
+        opt_targets = []
+        for target in mapping["targets"]:
+            if target in measurements or target in all_profiled_targets:
+                strategy = mapping["strategies"][0]
+                for strat in mapping["strategies"]:
+                    strat_kw = strat.lower().split()[0]
+                    if strat_kw in rec_lower:
+                        strategy = strat
+                        break
+
+                current_val = measurements.get(target, 0.0)
+                opt_targets.append({
+                    "target": target,
+                    "bottleneck_type": bottleneck_type,
+                    "bottleneck_sub_type": sub_type,
+                    "optimization_strategy": strategy,
+                    "current_value": current_val,
+                })
+
+        if not opt_targets and sub_type == "dram":
+            for target in target_strategy_map["compute"]["targets"]:
+                if target in measurements or target in all_profiled_targets:
+                    current_val = measurements.get(target, 0.0)
+                    opt_targets.append({
+                        "target": target,
+                        "bottleneck_type": bottleneck_type,
+                        "bottleneck_sub_type": "compute",
+                        "optimization_strategy": target_strategy_map["compute"]["strategies"][0],
+                        "current_value": current_val,
+                    })
+
+        return opt_targets
+
     def _extract_verification_structured_data(
+        self,
         final_text: str,
         assistant_outputs: list[str],
         data: dict[str, Any],
@@ -1520,7 +2161,8 @@ class StageExecutor:
         if isinstance(measurements, dict):
             zero_keys = [k for k, v in measurements.items()
                          if isinstance(v, (int, float)) and v == 0
-                         and k not in ("exit_code", "binary_count")]
+                         and k not in ("exit_code", "binary_count")
+                         and "pct_of_peak_sustained_elapsed" not in k]
             if zero_keys:
                 data.setdefault("error_detail",
                     f"Zero measurements detected: {', '.join(zero_keys[:5])}. "

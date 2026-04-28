@@ -121,15 +121,49 @@ class HandoffValidator:
             ))
             return report
 
-        # Route to stage-specific validation
-        if to_stage == PipelineStage.CODE_GEN:
+        # Route to stage-specific validation based on BOTH from_stage and to_stage
+        if from_stage == PipelineStage.PLAN and to_stage == PipelineStage.CODE_GEN:
             self._validate_planner_output(result, report)
-        elif to_stage == PipelineStage.METRIC_ANALYSIS:
+        elif from_stage == PipelineStage.CODE_GEN and to_stage == PipelineStage.METRIC_ANALYSIS:
             self._validate_codegen_output(result, report)
-        elif to_stage == PipelineStage.VERIFICATION:
+        elif from_stage == PipelineStage.METRIC_ANALYSIS and to_stage == PipelineStage.VERIFICATION:
             self._validate_metric_analysis_output(result, report)
+        elif from_stage == PipelineStage.METRIC_ANALYSIS and to_stage == PipelineStage.CODE_GEN:
+            self._validate_metric_analysis_to_codegen(result, report)
+        elif from_stage == PipelineStage.VERIFICATION and to_stage == PipelineStage.CODE_GEN:
+            self._validate_verification_to_codegen(result, report)
 
         return report
+
+    def _validate_metric_analysis_to_codegen(
+        self, result: SubAgentResult, report: HandoffReport
+    ) -> None:
+        """Validate MetricAnalysis→CodeGen handoff (optimization feedback loop)."""
+        data = result.data
+
+        if "final_output" not in data and not data.get("bottleneck_type"):
+            report.violations.append(HandoffViolation(
+                stage="METRIC_ANALYSIS", field="data",
+                expected="final_output or bottleneck_type",
+                actual="neither present",
+                severity="warning",
+                message="MetricAnalysis produced no analysis output for optimization",
+            ))
+
+    def _validate_verification_to_codegen(
+        self, result: SubAgentResult, report: HandoffReport
+    ) -> None:
+        """Validate Verification→CodeGen handoff (retry loop)."""
+        data = result.data
+
+        if "final_output" not in data:
+            report.violations.append(HandoffViolation(
+                stage="VERIFICATION", field="data.final_output",
+                expected="verification review text with suggested fixes",
+                actual="missing",
+                severity="warning",
+                message="Verification produced no review output for retry",
+            ))
 
     def _validate_planner_output(
         self, result: SubAgentResult, report: HandoffReport

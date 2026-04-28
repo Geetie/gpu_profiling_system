@@ -1,0 +1,785 @@
+{
+  "status": "ok",
+  "metadata": {
+    "status": "ok",
+    "run_mode": "submission_strict",
+    "submission_mode": true,
+    "allow_mock": false,
+    "strict": true,
+    "input_spec_path": "/target/target_spec.json",
+    "target_modes": [
+      "live_llm_live_exec"
+    ],
+    "environment": {
+      "api_key_configured": true,
+      "api_key_source": "API_KEY",
+      "base_url_configured": true,
+      "base_model_configured": true,
+      "llm_base_url": "https://api.deepseek.com",
+      "llm_base_url_source": "BASE_URL",
+      "llm_model": "deepseek-reasoner",
+      "llm_model_source": "BASE_MODEL",
+      "llm_api_style": "responses",
+      "llm_mock_mode": false,
+      "llm_healthcheck_status": "passed",
+      "nvcc_available": true,
+      "ncu_available": true,
+      "nvidia_smi_available": true,
+      "gpu_visible": true,
+      "warnings": []
+    }
+  },
+  "environment_summary": {
+    "api_key_configured": true,
+    "api_key_source": "API_KEY",
+    "base_url_configured": true,
+    "base_model_configured": true,
+    "llm_base_url": "https://api.deepseek.com",
+    "llm_base_url_source": "BASE_URL",
+    "llm_model": "deepseek-reasoner",
+    "llm_model_source": "BASE_MODEL",
+    "llm_api_style": "responses",
+    "llm_mock_mode": false,
+    "llm_healthcheck_status": "passed",
+    "nvcc_available": true,
+    "ncu_available": true,
+    "nvidia_smi_available": true,
+    "gpu_visible": true,
+    "warnings": []
+  },
+  "results": {
+    "launch__sm_count": 82,
+    "dram__bytes_read.sum.per_second": 70811450283.693,
+    "dram__bytes_write.sum.per_second": 70861222588.532,
+    "device__attribute_max_gpu_frequency_khz": 220927.611,
+    "device__attribute_max_mem_frequency_khz": 221554.275,
+    "device__attribute_fb_bus_width": 160,
+    "sm__throughput.avg.pct_of_peak_sustained_elapsed": 143.279,
+    "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": 142.524
+  },
+  "targets": [
+    {
+      "target": "launch__sm_count",
+      "raw_target": "launch__sm_count",
+      "normalized_target": "sm_count_estimate",
+      "semantic_target": "sm_count_estimate",
+      "route": "benchmark",
+      "strategy": "launch_sm_count_probe",
+      "routing_path": "exact_target",
+      "profiling_allowed": false,
+      "has_run_field": false,
+      "selected_strategy": "launch_sm_count_probe",
+      "fallback_used": false,
+      "why_not_profiling": null,
+      "failure_stage": null,
+      "status": "success",
+      "mode": "live_llm_live_exec",
+      "value": 82,
+      "unit": "count",
+      "confidence": "high",
+      "reliability": {
+        "statistic": "median",
+        "sample_count": 3,
+        "spread_pct": 0.0,
+        "confidence": "high",
+        "warnings": [],
+        "notes": []
+      },
+      "warnings": [],
+      "notes": [
+        "This benchmark launches a large number of blocks (65536) to saturate all available SMs. Each block records its SM ID using inline PTX (%%smid). After kernel completion, the host counts the number of distinct SM IDs observed. The resulting sm_count is compared against the device property multiProcessorCount to verify coverage and detect any scheduling anomalies."
+      ],
+      "selection": {
+        "selected_attempt_index": 1,
+        "used_mock": false
+      },
+      "artifacts": {
+        "trace_file": "/workspace/artifacts/traces/launch__sm_count.json",
+        "generated_sources": [
+          "/workspace/artifacts/generated/launch__sm_count.cu"
+        ],
+        "compile_logs": [
+          "/workspace/artifacts/logs/launch__sm_count.compile.log"
+        ],
+        "ncu_trace_files": [],
+        "attempts": [
+          {
+            "attempt_index": 1,
+            "source_path": "/workspace/artifacts/generated/launch__sm_count.cu",
+            "compile_ok": true,
+            "compile_command": [
+              "nvcc",
+              "-O3",
+              "-std=c++17",
+              "/workspace/artifacts/generated/launch__sm_count.cu",
+              "-o",
+              "/workspace/artifacts/intermediate/bin/launch__sm_count"
+            ],
+            "run_commands": [
+              [
+                "/workspace/artifacts/intermediate/bin/launch__sm_count",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/launch__sm_count",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/launch__sm_count",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/launch__sm_count",
+                "--json"
+              ]
+            ],
+            "parse_ok": true,
+            "failure_stage": null,
+            "notes": [],
+            "measurement_count": 12
+          }
+        ]
+      }
+    },
+    {
+      "target": "dram__bytes_read.sum.per_second",
+      "raw_target": "dram__bytes_read.sum.per_second",
+      "normalized_target": "dram_read_bandwidth",
+      "semantic_target": "dram_read_bandwidth",
+      "route": "benchmark",
+      "strategy": "dram_bytes_read_per_second_probe",
+      "routing_path": "exact_target",
+      "profiling_allowed": false,
+      "has_run_field": false,
+      "selected_strategy": "dram_bytes_read_per_second_probe",
+      "fallback_used": false,
+      "why_not_profiling": null,
+      "failure_stage": null,
+      "status": "success",
+      "mode": "live_llm_live_exec",
+      "value": 70811450283.693,
+      "unit": "bytes_per_second",
+      "confidence": "high",
+      "reliability": {
+        "statistic": "median",
+        "sample_count": 5,
+        "spread_pct": 0.46511973360492537,
+        "confidence": "high",
+        "warnings": [],
+        "notes": []
+      },
+      "warnings": [],
+      "notes": [
+        "Bandwidth estimates will use a stable-top median during verification.",
+        "Target-specific deterministic live fallback was used to guarantee compact, valid JSON output for this bandwidth-oriented probe."
+      ],
+      "selection": {
+        "selected_attempt_index": 1,
+        "used_mock": false
+      },
+      "artifacts": {
+        "trace_file": "/workspace/artifacts/traces/dram__bytes_read.sum.per_second_attempt1.json",
+        "generated_sources": [
+          "/workspace/artifacts/generated/dram__bytes_read.sum.per_second_attempt1.cu"
+        ],
+        "compile_logs": [
+          "/workspace/artifacts/logs/dram__bytes_read.sum.per_second_attempt1.compile.log"
+        ],
+        "ncu_trace_files": [],
+        "attempts": [
+          {
+            "attempt_index": 1,
+            "source_path": "/workspace/artifacts/generated/dram__bytes_read.sum.per_second_attempt1.cu",
+            "compile_ok": true,
+            "compile_command": [
+              "nvcc",
+              "-O3",
+              "-std=c++17",
+              "/workspace/artifacts/generated/dram__bytes_read.sum.per_second_attempt1.cu",
+              "-o",
+              "/workspace/artifacts/intermediate/bin/dram__bytes_read.sum.per_second_attempt1"
+            ],
+            "run_commands": [
+              [
+                "/workspace/artifacts/intermediate/bin/dram__bytes_read.sum.per_second_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/dram__bytes_read.sum.per_second_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/dram__bytes_read.sum.per_second_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/dram__bytes_read.sum.per_second_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/dram__bytes_read.sum.per_second_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/dram__bytes_read.sum.per_second_attempt1",
+                "--json"
+              ]
+            ],
+            "parse_ok": true,
+            "failure_stage": null,
+            "notes": [
+              "target-specific codegen hardening applied: used deterministic bandwidth probe source to guarantee valid JSON output"
+            ],
+            "measurement_count": 5
+          }
+        ]
+      }
+    },
+    {
+      "target": "dram__bytes_write.sum.per_second",
+      "raw_target": "dram__bytes_write.sum.per_second",
+      "normalized_target": "dram_write_bandwidth",
+      "semantic_target": "dram_write_bandwidth",
+      "route": "benchmark",
+      "strategy": "dram_bytes_write_per_second_probe",
+      "routing_path": "exact_target",
+      "profiling_allowed": false,
+      "has_run_field": false,
+      "selected_strategy": "dram_bytes_write_per_second_probe",
+      "fallback_used": false,
+      "why_not_profiling": null,
+      "failure_stage": null,
+      "status": "success",
+      "mode": "live_llm_live_exec",
+      "value": 70861222588.532,
+      "unit": "bytes_per_second",
+      "confidence": "high",
+      "reliability": {
+        "statistic": "median",
+        "sample_count": 5,
+        "spread_pct": 0.07568602104118063,
+        "confidence": "high",
+        "warnings": [],
+        "notes": []
+      },
+      "warnings": [],
+      "notes": [
+        "Bandwidth estimates will use a stable-top median during verification.",
+        "Target-specific deterministic live fallback was used to guarantee compact, valid JSON output for this bandwidth-oriented probe."
+      ],
+      "selection": {
+        "selected_attempt_index": 1,
+        "used_mock": false
+      },
+      "artifacts": {
+        "trace_file": "/workspace/artifacts/traces/dram__bytes_write.sum.per_second_attempt1.json",
+        "generated_sources": [
+          "/workspace/artifacts/generated/dram__bytes_write.sum.per_second_attempt1.cu"
+        ],
+        "compile_logs": [
+          "/workspace/artifacts/logs/dram__bytes_write.sum.per_second_attempt1.compile.log"
+        ],
+        "ncu_trace_files": [],
+        "attempts": [
+          {
+            "attempt_index": 1,
+            "source_path": "/workspace/artifacts/generated/dram__bytes_write.sum.per_second_attempt1.cu",
+            "compile_ok": true,
+            "compile_command": [
+              "nvcc",
+              "-O3",
+              "-std=c++17",
+              "/workspace/artifacts/generated/dram__bytes_write.sum.per_second_attempt1.cu",
+              "-o",
+              "/workspace/artifacts/intermediate/bin/dram__bytes_write.sum.per_second_attempt1"
+            ],
+            "run_commands": [
+              [
+                "/workspace/artifacts/intermediate/bin/dram__bytes_write.sum.per_second_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/dram__bytes_write.sum.per_second_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/dram__bytes_write.sum.per_second_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/dram__bytes_write.sum.per_second_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/dram__bytes_write.sum.per_second_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/dram__bytes_write.sum.per_second_attempt1",
+                "--json"
+              ]
+            ],
+            "parse_ok": true,
+            "failure_stage": null,
+            "notes": [
+              "target-specific codegen hardening applied: used deterministic bandwidth probe source to guarantee valid JSON output"
+            ],
+            "measurement_count": 5
+          }
+        ]
+      }
+    },
+    {
+      "target": "device__attribute_max_gpu_frequency_khz",
+      "raw_target": "device__attribute_max_gpu_frequency_khz",
+      "normalized_target": "device__attribute_max_gpu_frequency_khz",
+      "semantic_target": "clock",
+      "route": "benchmark",
+      "strategy": "sustained_clock_probe",
+      "routing_path": "exact_target",
+      "profiling_allowed": false,
+      "has_run_field": false,
+      "selected_strategy": "sustained_clock_probe",
+      "fallback_used": false,
+      "why_not_profiling": null,
+      "failure_stage": null,
+      "status": "success",
+      "mode": "live_llm_live_exec",
+      "value": 220927.611,
+      "unit": "khz",
+      "confidence": "high",
+      "reliability": {
+        "statistic": "median",
+        "sample_count": 5,
+        "spread_pct": 0.19843889064499057,
+        "confidence": "high",
+        "warnings": [],
+        "notes": []
+      },
+      "warnings": [],
+      "notes": [
+        "Target-specific deterministic live fallback was used to guarantee compact, valid JSON output for this clock-frequency probe."
+      ],
+      "selection": {
+        "selected_attempt_index": 1,
+        "used_mock": false
+      },
+      "artifacts": {
+        "trace_file": "/workspace/artifacts/traces/device__attribute_max_gpu_frequency_khz_attempt1.json",
+        "generated_sources": [
+          "/workspace/artifacts/generated/device__attribute_max_gpu_frequency_khz_attempt1.cu"
+        ],
+        "compile_logs": [
+          "/workspace/artifacts/logs/device__attribute_max_gpu_frequency_khz_attempt1.compile.log"
+        ],
+        "ncu_trace_files": [
+          "/workspace/artifacts/traces/device__attribute_max_gpu_frequency_khz_attempt1.ncu.csv"
+        ],
+        "attempts": [
+          {
+            "attempt_index": 1,
+            "source_path": "/workspace/artifacts/generated/device__attribute_max_gpu_frequency_khz_attempt1.cu",
+            "compile_ok": true,
+            "compile_command": [
+              "nvcc",
+              "-O3",
+              "-std=c++17",
+              "/workspace/artifacts/generated/device__attribute_max_gpu_frequency_khz_attempt1.cu",
+              "-o",
+              "/workspace/artifacts/intermediate/bin/device__attribute_max_gpu_frequency_khz_attempt1"
+            ],
+            "run_commands": [
+              [
+                "/workspace/artifacts/intermediate/bin/device__attribute_max_gpu_frequency_khz_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/device__attribute_max_gpu_frequency_khz_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/device__attribute_max_gpu_frequency_khz_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/device__attribute_max_gpu_frequency_khz_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/device__attribute_max_gpu_frequency_khz_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/device__attribute_max_gpu_frequency_khz_attempt1",
+                "--json"
+              ]
+            ],
+            "parse_ok": true,
+            "failure_stage": null,
+            "notes": [
+              "target-specific codegen hardening applied: used deterministic clock probe source to guarantee valid JSON output",
+              "ncu assist was skipped or failed: ncu execution failed and mock fallback is disabled"
+            ],
+            "measurement_count": 5
+          }
+        ]
+      }
+    },
+    {
+      "target": "device__attribute_max_mem_frequency_khz",
+      "raw_target": "device__attribute_max_mem_frequency_khz",
+      "normalized_target": "device__attribute_max_mem_frequency_khz",
+      "semantic_target": "clock",
+      "route": "benchmark",
+      "strategy": "sustained_clock_probe",
+      "routing_path": "metric_like_benchmark_fallback_no_run",
+      "profiling_allowed": false,
+      "has_run_field": false,
+      "selected_strategy": "sustained_clock_probe",
+      "fallback_used": true,
+      "why_not_profiling": "metric-like target cannot use ncu profiling because target_spec.json has no run field",
+      "failure_stage": null,
+      "status": "degraded",
+      "mode": "live_llm_live_exec",
+      "value": 221554.275,
+      "unit": "khz",
+      "confidence": "low",
+      "reliability": {
+        "statistic": "median",
+        "sample_count": 5,
+        "spread_pct": 1.6736114457826794,
+        "confidence": "high",
+        "warnings": [],
+        "notes": []
+      },
+      "warnings": [
+        "reported value is a proxy for memory-side frequency behavior, not a direct measurement of max memory clock"
+      ],
+      "notes": [
+        "Target-specific deterministic live fallback was used to guarantee compact, valid JSON output for this proxy memory-frequency probe.",
+        "This target is reported as a proxy derived from an SM-side sustained-clock benchmark rather than a direct memory-clock measurement."
+      ],
+      "selection": {
+        "selected_attempt_index": 1,
+        "used_mock": false
+      },
+      "artifacts": {
+        "trace_file": "/workspace/artifacts/traces/device__attribute_max_mem_frequency_khz_attempt1.json",
+        "generated_sources": [
+          "/workspace/artifacts/generated/device__attribute_max_mem_frequency_khz_attempt1.cu"
+        ],
+        "compile_logs": [
+          "/workspace/artifacts/logs/device__attribute_max_mem_frequency_khz_attempt1.compile.log"
+        ],
+        "ncu_trace_files": [
+          "/workspace/artifacts/traces/device__attribute_max_mem_frequency_khz_attempt1.ncu.csv"
+        ],
+        "attempts": [
+          {
+            "attempt_index": 1,
+            "source_path": "/workspace/artifacts/generated/device__attribute_max_mem_frequency_khz_attempt1.cu",
+            "compile_ok": true,
+            "compile_command": [
+              "nvcc",
+              "-O3",
+              "-std=c++17",
+              "/workspace/artifacts/generated/device__attribute_max_mem_frequency_khz_attempt1.cu",
+              "-o",
+              "/workspace/artifacts/intermediate/bin/device__attribute_max_mem_frequency_khz_attempt1"
+            ],
+            "run_commands": [
+              [
+                "/workspace/artifacts/intermediate/bin/device__attribute_max_mem_frequency_khz_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/device__attribute_max_mem_frequency_khz_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/device__attribute_max_mem_frequency_khz_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/device__attribute_max_mem_frequency_khz_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/device__attribute_max_mem_frequency_khz_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/device__attribute_max_mem_frequency_khz_attempt1",
+                "--json"
+              ]
+            ],
+            "parse_ok": true,
+            "failure_stage": null,
+            "notes": [
+              "target-specific codegen hardening applied: used deterministic proxy clock probe source to guarantee valid JSON output",
+              "ncu assist was skipped or failed: ncu execution failed and mock fallback is disabled"
+            ],
+            "measurement_count": 5
+          }
+        ]
+      }
+    },
+    {
+      "target": "device__attribute_fb_bus_width",
+      "raw_target": "device__attribute_fb_bus_width",
+      "normalized_target": "device__attribute_fb_bus_width",
+      "semantic_target": "generic_hardware_metric",
+      "route": "benchmark",
+      "strategy": "fb_bus_width_infer_probe",
+      "routing_path": "exact_target",
+      "profiling_allowed": false,
+      "has_run_field": false,
+      "selected_strategy": "fb_bus_width_infer_probe",
+      "fallback_used": true,
+      "why_not_profiling": null,
+      "failure_stage": null,
+      "status": "degraded",
+      "mode": "live_llm_live_exec",
+      "value": 160,
+      "unit": "bits",
+      "confidence": "low",
+      "reliability": null,
+      "warnings": [
+        "fb bus width is an inferred estimate derived from measured bandwidth and memory frequency, not a direct hardware attribute read"
+      ],
+      "notes": [
+        "Dedicated fb-bus-width fallback avoided cudaDevAttrMemoryBusWidth and reused prior measured targets.",
+        "Selected nearest common bus width 160 bits using serialization factor 16.",
+        "This value is an inferred estimate derived from prior bandwidth and frequency targets, not a direct hardware attribute read."
+      ],
+      "selection": {
+        "selected_attempt_index": null,
+        "used_mock": false
+      },
+      "artifacts": {
+        "trace_file": null,
+        "generated_sources": [],
+        "compile_logs": [],
+        "ncu_trace_files": [],
+        "attempts": []
+      }
+    },
+    {
+      "target": "sm__throughput.avg.pct_of_peak_sustained_elapsed",
+      "raw_target": "sm__throughput.avg.pct_of_peak_sustained_elapsed",
+      "normalized_target": "sm__throughput.avg.pct_of_peak_sustained_elapsed",
+      "semantic_target": "bandwidth",
+      "route": "benchmark",
+      "strategy": "global_bandwidth_probe",
+      "routing_path": "metric_like_benchmark_fallback_no_run",
+      "profiling_allowed": false,
+      "has_run_field": false,
+      "selected_strategy": "global_bandwidth_probe",
+      "fallback_used": true,
+      "why_not_profiling": "metric-like target cannot use ncu profiling because target_spec.json has no run field",
+      "failure_stage": null,
+      "status": "degraded",
+      "mode": "live_llm_live_exec",
+      "value": 143.279,
+      "unit": "gbps",
+      "confidence": "medium",
+      "reliability": {
+        "statistic": "top_k_median",
+        "sample_count": 5,
+        "spread_pct": 0.7649805490936562,
+        "confidence": "high",
+        "warnings": [],
+        "notes": []
+      },
+      "warnings": [
+        "reported value is a benchmark bandwidth proxy, not a direct percentage-of-peak profiler metric"
+      ],
+      "notes": [
+        "Bandwidth estimates will use a stable-top median during verification.",
+        "Target-specific deterministic live fallback was used to guarantee compact, valid JSON output for this bandwidth-oriented probe.",
+        "This benchmark reports a bandwidth proxy rather than the direct ncu pct-of-peak metric named by the target."
+      ],
+      "selection": {
+        "selected_attempt_index": 1,
+        "used_mock": false
+      },
+      "artifacts": {
+        "trace_file": "/workspace/artifacts/traces/sm__throughput.avg.pct_of_peak_sustained_elapsed_attempt1.json",
+        "generated_sources": [
+          "/workspace/artifacts/generated/sm__throughput.avg.pct_of_peak_sustained_elapsed_attempt1.cu"
+        ],
+        "compile_logs": [
+          "/workspace/artifacts/logs/sm__throughput.avg.pct_of_peak_sustained_elapsed_attempt1.compile.log"
+        ],
+        "ncu_trace_files": [
+          "/workspace/artifacts/traces/sm__throughput.avg.pct_of_peak_sustained_elapsed_attempt1.ncu.csv"
+        ],
+        "attempts": [
+          {
+            "attempt_index": 1,
+            "source_path": "/workspace/artifacts/generated/sm__throughput.avg.pct_of_peak_sustained_elapsed_attempt1.cu",
+            "compile_ok": true,
+            "compile_command": [
+              "nvcc",
+              "-O3",
+              "-std=c++17",
+              "/workspace/artifacts/generated/sm__throughput.avg.pct_of_peak_sustained_elapsed_attempt1.cu",
+              "-o",
+              "/workspace/artifacts/intermediate/bin/sm__throughput.avg.pct_of_peak_sustained_elapsed_attempt1"
+            ],
+            "run_commands": [
+              [
+                "/workspace/artifacts/intermediate/bin/sm__throughput.avg.pct_of_peak_sustained_elapsed_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/sm__throughput.avg.pct_of_peak_sustained_elapsed_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/sm__throughput.avg.pct_of_peak_sustained_elapsed_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/sm__throughput.avg.pct_of_peak_sustained_elapsed_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/sm__throughput.avg.pct_of_peak_sustained_elapsed_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/sm__throughput.avg.pct_of_peak_sustained_elapsed_attempt1",
+                "--json"
+              ]
+            ],
+            "parse_ok": true,
+            "failure_stage": null,
+            "notes": [
+              "target-specific codegen hardening applied: used deterministic bandwidth probe source to guarantee valid JSON output",
+              "ncu assist was skipped or failed: ncu execution failed and mock fallback is disabled"
+            ],
+            "measurement_count": 5
+          }
+        ]
+      }
+    },
+    {
+      "target": "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed",
+      "raw_target": "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed",
+      "normalized_target": "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed",
+      "semantic_target": "bandwidth",
+      "route": "benchmark",
+      "strategy": "global_bandwidth_probe",
+      "routing_path": "metric_like_benchmark_fallback_no_run",
+      "profiling_allowed": false,
+      "has_run_field": false,
+      "selected_strategy": "global_bandwidth_probe",
+      "fallback_used": true,
+      "why_not_profiling": "metric-like target cannot use ncu profiling because target_spec.json has no run field",
+      "failure_stage": null,
+      "status": "degraded",
+      "mode": "live_llm_live_exec",
+      "value": 142.524,
+      "unit": "gbps",
+      "confidence": "medium",
+      "reliability": {
+        "statistic": "top_k_median",
+        "sample_count": 5,
+        "spread_pct": 0.3361266666807118,
+        "confidence": "high",
+        "warnings": [],
+        "notes": []
+      },
+      "warnings": [
+        "reported value is a benchmark bandwidth proxy, not a direct percentage-of-peak profiler metric"
+      ],
+      "notes": [
+        "Bandwidth estimates will use a stable-top median during verification.",
+        "Target-specific deterministic live fallback was used to guarantee compact, valid JSON output for this bandwidth-oriented probe.",
+        "This benchmark reports a bandwidth proxy rather than the direct ncu pct-of-peak metric named by the target."
+      ],
+      "selection": {
+        "selected_attempt_index": 1,
+        "used_mock": false
+      },
+      "artifacts": {
+        "trace_file": "/workspace/artifacts/traces/gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed_attempt1.json",
+        "generated_sources": [
+          "/workspace/artifacts/generated/gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed_attempt1.cu"
+        ],
+        "compile_logs": [
+          "/workspace/artifacts/logs/gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed_attempt1.compile.log"
+        ],
+        "ncu_trace_files": [
+          "/workspace/artifacts/traces/gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed_attempt1.ncu.csv"
+        ],
+        "attempts": [
+          {
+            "attempt_index": 1,
+            "source_path": "/workspace/artifacts/generated/gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed_attempt1.cu",
+            "compile_ok": true,
+            "compile_command": [
+              "nvcc",
+              "-O3",
+              "-std=c++17",
+              "/workspace/artifacts/generated/gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed_attempt1.cu",
+              "-o",
+              "/workspace/artifacts/intermediate/bin/gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed_attempt1"
+            ],
+            "run_commands": [
+              [
+                "/workspace/artifacts/intermediate/bin/gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed_attempt1",
+                "--json"
+              ],
+              [
+                "/workspace/artifacts/intermediate/bin/gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed_attempt1",
+                "--json"
+              ]
+            ],
+            "parse_ok": true,
+            "failure_stage": null,
+            "notes": [
+              "target-specific codegen hardening applied: used deterministic bandwidth probe source to guarantee valid JSON output",
+              "ncu assist was skipped or failed: ncu execution failed and mock fallback is disabled"
+            ],
+            "measurement_count": 5
+          }
+        ]
+      }
+    }
+  ],
+  "warnings": [
+    "device__attribute_max_mem_frequency_khz: reported value is a proxy for memory-side frequency behavior, not a direct measurement of max memory clock",
+    "device__attribute_fb_bus_width: fb bus width is an inferred estimate derived from measured bandwidth and memory frequency, not a direct hardware attribute read",
+    "sm__throughput.avg.pct_of_peak_sustained_elapsed: reported value is a benchmark bandwidth proxy, not a direct percentage-of-peak profiler metric",
+    "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed: reported value is a benchmark bandwidth proxy, not a direct percentage-of-peak profiler metric"
+  ],
+  "artifacts": {
+    "artifact_root": "/workspace/artifacts",
+    "generated_dir": "/workspace/artifacts/generated",
+    "logs_dir": "/workspace/artifacts/logs",
+    "traces_dir": "/workspace/artifacts/traces",
+    "intermediate_dir": "/workspace/artifacts/intermediate",
+    "results_json": "/workspace/artifacts/results.json",
+    "summary_json": "/workspace/artifacts/summary.json",
+    "execution_log_jsonl": "/workspace/artifacts/execution_log.jsonl",
+    "final_report": "/workspace/output.json"
+  }
+}

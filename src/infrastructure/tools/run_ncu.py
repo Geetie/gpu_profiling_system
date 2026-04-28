@@ -417,18 +417,65 @@ def run_ncu_handler(
 
 
 def _parse_ncu_output(raw: str) -> dict[str, Any]:
-    """Parse ncu output into structured metrics."""
+    """Parse ncu output into structured metrics.
+
+    Handles multiple NCU output formats:
+    1. Key: value (simple colon-separated)
+    2. Key, unit, value (CSV format)
+    3. Key ................ value% (section format)
+    4. Key ........ value (dotted format)
+    """
     metrics: dict[str, Any] = {}
     for line in raw.splitlines():
         line = line.strip()
         if not line or line.startswith("#") or line.startswith("---"):
             continue
+
+        if "," in line and line.count(",") >= 2:
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 3:
+                key = parts[0].strip('"')
+                value_str = parts[2].strip().rstrip("%").strip()
+                try:
+                    metrics[key] = float(value_str)
+                    continue
+                except ValueError:
+                    pass
+
+        if "pct_of_peak" in line or "throughput" in line or "bytes" in line:
+            for sep in (" ................ ", " ......... ", " ........ ", " ... "):
+                if sep in line:
+                    key, _, value_str = line.partition(sep)
+                    key = key.strip()
+                    value_str = value_str.strip().rstrip("%").strip()
+                    if key and value_str:
+                        try:
+                            metrics[key] = float(value_str)
+                        except ValueError:
+                            pass
+                    break
+            else:
+                if ":" in line:
+                    key, _, value = line.partition(":")
+                    key = key.strip()
+                    value = value.strip().rstrip("%").strip()
+                    if not key or len(key) > 200:
+                        continue
+                    try:
+                        metrics[key] = float(value)
+                    except ValueError:
+                        metrics[key] = value
+            continue
+
         if ":" in line:
             key, _, value = line.partition(":")
             key = key.strip()
-            value = value.strip()
+            value = value.strip().rstrip("%").strip()
+            if not key or len(key) > 200:
+                continue
             try:
                 metrics[key] = float(value)
             except ValueError:
                 metrics[key] = value
+
     return metrics

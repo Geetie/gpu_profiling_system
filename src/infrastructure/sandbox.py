@@ -31,7 +31,7 @@ class SandboxConfig:
     mount_docker_socket: bool = False  # Hard boundary — never True
     restricted_paths: tuple[str, ...] = ("/etc", "/root", "/proc", "/sys")
     work_dir: str = "/workspace"
-    timeout_seconds: int = 120  # Reduced from 300 to prevent long-running commands (FIX for 32-min timeout)
+    timeout_seconds: int = 60
 
 
 @dataclass

@@ -1,7 +1,0 @@
-[
-  {
-    "target": "l2_cache_size_kb",
-    "category": "capacity_measurement",
-    "method": "Implement a binary search approach to determine L2 cache size by measuring memory access latency. Create test kernels that access memory patterns with varying strides and data sizes. Measure execution time for different working set sizes, identifying the point where latency significantly increases due to cache misses. Use CUDA events or GPU profiling tools to accurately measure kernel execution times. The cache size is determined when the working set exceeds the L2 cache capacity and performance degrades noticeably."
-  }
-]
