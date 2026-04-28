@@ -1509,6 +1509,19 @@ class AgentLoop:
                                 print(f"[AgentLoop] ⚠️ Target '{current_target}' reached max retries "
                                       f"({new_retry}/{MAX_RETRIES}), forcing switch to next target")
 
+                                # P1 FIX: Try to provide reference value from fallback probe
+                                # This is COMPLIANCE-COMPLIANT: reference value guides LLM,
+                                # but final measurement must come from LLM-generated CUDA code
+                                reference_hint = ""
+                                try:
+                                    from src.infrastructure.probing.fallback_config import check_reference_fallback_allowed
+                                    if check_reference_fallback_allowed(current_target):
+                                        reference_hint = self._get_reference_hint_for_target(current_target)
+                                        if reference_hint:
+                                            print(f"[AgentLoop] 📊 Reference hint available for '{current_target}'")
+                                except Exception as ref_err:
+                                    print(f"[AgentLoop] Reference fallback check failed: {ref_err}")
+
                                 # Force mark as completed to prevent infinite loop
                                 if current_target not in self.loop_state.completed_targets:
                                     self.loop_state.completed_targets.append(current_target)
@@ -1526,6 +1539,15 @@ class AgentLoop:
                                         f"🚨🚨🚨 COMPILATION RETRY LIMIT EXHAUSTED 🚨🚨🚨\n\n"
                                         f"⛔ Target '{current_target}' failed {new_retry} times.\n"
                                         f"It has been force-marked as completed (unmeasured).\n\n"
+                                    )
+                                    if reference_hint:
+                                        force_switch_msg += (
+                                            f"📊 REFERENCE VALUE for '{current_target}':\n"
+                                            f"{reference_hint}\n\n"
+                                            f"⚠️ This is a REFERENCE value from hardware probe, NOT your measurement.\n"
+                                            f"Your CodeGen must still generate CUDA code to produce measurements.\n\n"
+                                        )
+                                    force_switch_msg += (
                                         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                                         f"👉 FORCED SWITCH TO: **{next_target}**\n"
                                         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -1678,6 +1700,17 @@ class AgentLoop:
                                     "max_shmem_per_block_kb": (1, 256, "KB"),
                                     "memory_bandwidth_gbps": (10, 5000, "GB/s"),
                                     "shmem_bandwidth_gbps": (100, 100000, "GB/s"),
+                                    "dram__bytes_read.sum.per_second": (50e9, 4000e9, "bytes/s"),
+                                    "dram__bytes_write.sum.per_second": (50e9, 4000e9, "bytes/s"),
+                                    "sm__throughput.avg.pct_of_peak_sustained_elapsed": (0.0, 100.0, "%"),
+                                    "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": (0.0, 100.0, "%"),
+                                }
+
+                                CRITICAL_RANGE_TARGETS = {
+                                    "dram__bytes_read.sum.per_second",
+                                    "dram__bytes_write.sum.per_second",
+                                    "sm__throughput.avg.pct_of_peak_sustained_elapsed",
+                                    "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed",
                                 }
 
                                 for target_name, value in measurements.items():
@@ -1688,17 +1721,52 @@ class AgentLoop:
                                         min_val, max_val, unit = VALID_RANGES[target_name]
                                         if not (min_val <= value <= max_val):
                                             is_valid = False
-                                            reason = (
-                                                f"❌ SANITY CHECK FAILED for '{target_name}':\n"
-                                                f"   Measured: {value} {unit}\n"
-                                                f"   Expected: [{min_val}, {max_val}] {unit}\n\n"
-                                                f"   Possible causes:\n"
-                                                f"   • Unit conversion error (ms vs s, MB vs KB)\n"
-                                                f"   • Algorithm bug (wrong formula or missing factor)\n"
-                                                f"   • Hardware anomaly (extremely rare)\n\n"
-                                                f"   ⚠️ This value will be FLAGGED but ACCEPTED in lenient mode.\n"
-                                                f"   Verification stage will likely REJECT it."
-                                            )
+                                            if target_name in CRITICAL_RANGE_TARGETS:
+                                                if "bytes" in target_name:
+                                                    reason = (
+                                                        f"❌ CRITICAL RANGE ERROR for '{target_name}':\n"
+                                                        f"   Measured: {value:.2f} {unit}\n"
+                                                        f"   Expected: [{min_val:.2e}, {max_val:.2e}] {unit}\n\n"
+                                                        f"   This value is WAY too low — likely a unit/scaling bug.\n"
+                                                        f"   COMMON FIXES:\n"
+                                                        f"   1. bandwidth = total_bytes / elapsed_seconds (NOT elapsed_ms!)\n"
+                                                        f"   2. total_bytes = element_count * sizeof(element_type)\n"
+                                                        f"   3. Use printf with %.2f NOT %d for large values\n"
+                                                        f"   4. elapsed_seconds = elapsed_ms / 1000.0\n\n"
+                                                        f"   ⛔ This measurement is INVALID and must be RE-DONE.\n"
+                                                    )
+                                                elif "pct_of_peak" in target_name:
+                                                    reason = (
+                                                        f"❌ CRITICAL RANGE ERROR for '{target_name}':\n"
+                                                        f"   Measured: {value:.2f}{unit}\n"
+                                                        f"   Expected: [{min_val}, {max_val}]{unit}\n\n"
+                                                        f"   The percentage calculation is wrong.\n"
+                                                        f"   COMMON FIXES:\n"
+                                                        f"   1. Use clock64() INSIDE __global__ kernel (NOT in main!)\n"
+                                                        f"   2. Use actual_freq_mhz from clock64 (NOT cudaDevAttrClockRate)\n"
+                                                        f"   3. FMA chain MUST read from input[i] (NOT register-only!)\n"
+                                                        f"   4. Grid size MUST be sm_count*4 blocks\n\n"
+                                                        f"   ⛔ This measurement is INVALID and must be RE-DONE.\n"
+                                                    )
+                                                else:
+                                                    reason = (
+                                                        f"❌ CRITICAL RANGE ERROR for '{target_name}':\n"
+                                                        f"   Measured: {value} {unit}\n"
+                                                        f"   Expected: [{min_val}, {max_val}] {unit}\n\n"
+                                                        f"   ⛔ This measurement is INVALID and must be RE-DONE.\n"
+                                                    )
+                                            else:
+                                                reason = (
+                                                    f"❌ SANITY CHECK FAILED for '{target_name}':\n"
+                                                    f"   Measured: {value} {unit}\n"
+                                                    f"   Expected: [{min_val}, {max_val}] {unit}\n\n"
+                                                    f"   Possible causes:\n"
+                                                    f"   • Unit conversion error (ms vs s, MB vs KB)\n"
+                                                    f"   • Algorithm bug (wrong formula or missing factor)\n"
+                                                    f"   • Hardware anomaly (extremely rare)\n\n"
+                                                    f"   ⚠️ This value will be FLAGGED but ACCEPTED in lenient mode.\n"
+                                                    f"   Verification stage will likely REJECT it."
+                                                )
                                             invalid_measurements.append(target_name)
                                             validation_warnings.append(reason)
 
@@ -1707,18 +1775,45 @@ class AgentLoop:
 
                                 # Inject validation warnings into context if any invalid values found
                                 if validation_warnings:
-                                    sanity_warning = (
-                                        "🚨🚨🚨 MEASUREMENT SANITY CHECK ALERT 🚨🚨🚨\n\n"
-                                        f"Detected {len(invalid_measurements)} potentially invalid measurement(s):\n\n"
-                                    )
-                                    for warning in validation_warnings:
-                                        sanity_warning += warning + "\n---\n"
+                                    has_critical = any(t in CRITICAL_RANGE_TARGETS for t in invalid_measurements)
+                                    if has_critical:
+                                        sanity_warning = (
+                                            "🚨🚨🚨 CRITICAL MEASUREMENT RANGE ERROR 🚨🚨🚨\n\n"
+                                            f"Detected {len(invalid_measurements)} INVALID measurement(s) with values "
+                                            f"far outside the physically plausible range:\n\n"
+                                        )
+                                        for warning in validation_warnings:
+                                            sanity_warning += warning + "\n---\n"
 
-                                    sanity_warning += (
-                                        "💡 RECOMMENDED ACTION:\n"
-                                        "If you have remaining time budget, consider re-measuring these targets.\n"
-                                        "Otherwise, proceed to next target - Verification will validate rigorously.\n"
-                                    )
+                                        sanity_warning += (
+                                            "⛔ REQUIRED ACTION:\n"
+                                            "You MUST re-compile and re-execute with FIXED code for these targets.\n"
+                                            "Do NOT proceed to the next target until these are fixed.\n"
+                                            "The invalid values will NOT be recorded.\n"
+                                        )
+
+                                        for inv_target in invalid_measurements:
+                                            if inv_target in CRITICAL_RANGE_TARGETS:
+                                                measurements.pop(inv_target, None)
+                                                self.loop_state.completed_targets = [
+                                                    t for t in self.loop_state.completed_targets
+                                                    if t != inv_target
+                                                ]
+                                                self.loop_state.measured_values.pop(inv_target, None)
+                                                print(f"[AgentLoop] ⛔ Removed invalid measurement for '{inv_target}' — must re-measure")
+                                    else:
+                                        sanity_warning = (
+                                            "🚨🚨🚨 MEASUREMENT SANITY CHECK ALERT 🚨🚨🚨\n\n"
+                                            f"Detected {len(invalid_measurements)} potentially invalid measurement(s):\n\n"
+                                        )
+                                        for warning in validation_warnings:
+                                            sanity_warning += warning + "\n---\n"
+
+                                        sanity_warning += (
+                                            "💡 RECOMMENDED ACTION:\n"
+                                            "If you have remaining time budget, consider re-measuring these targets.\n"
+                                            "Otherwise, proceed to next target - Verification will validate rigorously.\n"
+                                        )
 
                                     self.context_manager.add_entry(
                                         Role.SYSTEM,
@@ -2373,6 +2468,51 @@ class AgentLoop:
                     pass
         return False
 
+    def _get_reference_hint_for_target(self, target_name: str) -> str:
+        """Get a reference range hint for a target when CodeGen has exhausted retries.
+
+        This does NOT return hardcoded CUDA code or exact values.
+        It returns physically plausible ranges based on GPU architecture knowledge,
+        which helps the LLM understand what a correct measurement should look like.
+
+        This is COMPLIANCE-COMPLIANT per spec.md §5.1: no hardcoded CUDA source code.
+        """
+        REFERENCE_RANGES = {
+            "sm__throughput.avg.pct_of_peak_sustained_elapsed": (
+                "Expected range: 70-99% for a compute-bound FMA kernel.\n"
+                "If your value is <30%, the kernel is not stressing SM compute units enough.\n"
+                "Key: Use double-precision FMA inside __global__ kernel, grid=sm_count*4 blocks."
+            ),
+            "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": (
+                "Expected range: 40-80% for a memory-stressing fused kernel.\n"
+                "If your value is <5%, the FMA chain likely uses register-only values (0.09% typical).\n"
+                "Key: FMA chain MUST read from input[idx] in global memory."
+            ),
+            "dram__bytes_read.sum.per_second": (
+                "Expected range: 50-4000 GB/s (50e9 to 4e12 bytes/s).\n"
+                "If your value is <1 GB/s, there is a unit/scaling error in the bandwidth formula.\n"
+                "Key: bandwidth = total_bytes / elapsed_seconds (NOT elapsed_ms!)."
+            ),
+            "dram__bytes_write.sum.per_second": (
+                "Expected range: 50-4000 GB/s (50e9 to 4e12 bytes/s).\n"
+                "If your value is <1 GB/s, there is a unit/scaling error in the bandwidth formula.\n"
+                "Key: bandwidth = total_bytes / elapsed_seconds (NOT elapsed_ms!)."
+            ),
+            "dram_latency_cycles": (
+                "Expected range: 200-800 cycles for GPU DRAM.\n"
+                "Use a pointer-chasing kernel with large stride to bypass cache."
+            ),
+            "l2_cache_size_mb": (
+                "Expected range: 2-60 MB depending on GPU model.\n"
+                "Use cliff detection: measure latency vs working set size, find the sharp jump."
+            ),
+            "actual_boost_clock_mhz": (
+                "Expected range: 500-2500 MHz under sustained load.\n"
+                "Use clock64() inside a __global__ kernel to measure actual frequency."
+            ),
+        }
+        return REFERENCE_RANGES.get(target_name, "")
+
     def _find_unmeasured_targets(self) -> list[str]:
         """Find targets that have not yet been measured in this session.
 
@@ -3009,6 +3149,29 @@ class AgentLoop:
         guidance_parts = []
         errors_lower = errors.lower()
 
+        if "clock64" in errors_lower and ("__host__" in errors_lower or "host function" in errors_lower or "__device__" in errors_lower):
+            guidance_parts.append(
+                "\n🚨 CRITICAL FIX: clock64() is a __device__ intrinsic — it can ONLY be called inside\n"
+                "__global__ or __device__ functions, NEVER in main() or any __host__ function!\n\n"
+                "WRONG:\n"
+                "  int main() {\n"
+                "    uint64_t start = clock64();  // ❌ ERROR: clock64 in host function\n"
+                "    kernel<<<...>>>(...);\n"
+                "  }\n\n"
+                "CORRECT:\n"
+                "  __global__ void kernel(..., uint64_t* cycle_out) {\n"
+                "    uint64_t start = clock64();  // ✅ OK: inside __global__ kernel\n"
+                "    // ... computation ...\n"
+                "    uint64_t end = clock64();\n"
+                "    if (threadIdx.x == 0 && blockIdx.x == 0) *cycle_out = end - start;\n"
+                "  }\n"
+                "  int main() {\n"
+                "    uint64_t *d_cycles; cudaMalloc(&d_cycles, sizeof(uint64_t));\n"
+                "    kernel<<<...>>>(..., d_cycles);\n"
+                "    uint64_t h_cycles;\n"
+                "    cudaMemcpy(&h_cycles, d_cycles, sizeof(uint64_t), cudaMemcpyDeviceToHost);\n"
+                "  }\n"
+            )
         if "std" in errors and "sort" in errors_lower:
             guidance_parts.append(
                 "\n💡 FIX: Add #include <algorithm> at the top of your .cu file. "
@@ -3045,6 +3208,14 @@ class AgentLoop:
             guidance_parts.append(
                 "\n💡 FIX: Remove or fix the -arch flag. Do NOT use -arch=0 or -arch=sm_0. "
                 "Use flags=[\"-O3\"] only, the system will auto-detect the correct architecture."
+            )
+        if 'expected a ")"' in errors_lower or "expected ')'" in errors_lower:
+            guidance_parts.append(
+                "\n💡 FIX: Missing closing parenthesis. Check ALL function calls:\n"
+                "  - cudaEventDestroy(start_ev);  // must have semicolon AND closing paren\n"
+                "  - cudaMalloc(&ptr, size);  // check each argument\n"
+                "  - printf(\"format\", args);  // check format string quotes\n"
+                "Read your code line by line and match every opening ( with a closing )."
             )
         if "expected a" in errors_lower and (";" in errors or "{" in errors):
             guidance_parts.append(

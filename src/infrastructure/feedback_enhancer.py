@@ -717,6 +717,171 @@ class FeedbackEnhancer:
         
         return result
 
+    def generate_code_fix_bridge(
+        self,
+        target: str,
+        compilation_error: str | None = None,
+        runtime_output: str | None = None,
+        measured_value: float | None = None,
+        metric_analysis_verdict: str | None = None,
+    ) -> str:
+        """Generate a structured code-fix bridge from errors/analysis to concrete fixes.
+
+        This bridges the gap between MetricAnalysis's natural language output
+        and CodeGen's need for actionable code modifications.
+
+        Args:
+            target: The target metric being measured
+            compilation_error: Error from nvcc compilation (if any)
+            runtime_output: stdout from binary execution (if any)
+            measured_value: The measured value (if any)
+            metric_analysis_verdict: Verdict from MetricAnalysis
+
+        Returns:
+            Structured code-fix guidance string for injection into CodeGen prompt
+        """
+        fixes = []
+
+        if compilation_error:
+            fixes.extend(self._diagnose_compilation_error(target, compilation_error))
+
+        if measured_value is not None:
+            fixes.extend(self._diagnose_measurement_error(target, measured_value))
+
+        if not fixes:
+            return ""
+
+        lines = [
+            "🔧 CODE-FIX BRIDGE (Auto-generated from error analysis)",
+            f"Target: {target}",
+            "",
+        ]
+
+        for i, fix in enumerate(fixes, 1):
+            lines.append(f"FIX #{i}: {fix['title']}")
+            lines.append(f"  Problem: {fix['problem']}")
+            lines.append(f"  Solution: {fix['solution']}")
+            if fix.get("code_pattern"):
+                lines.append(f"  Code Pattern:")
+                for line in fix["code_pattern"].split("\n"):
+                    lines.append(f"    {line}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    def _diagnose_compilation_error(
+        self, target: str, error: str
+    ) -> list[dict[str, str]]:
+        """Diagnose compilation errors and generate specific fixes."""
+        fixes = []
+        error_lower = error.lower()
+
+        if "clock64" in error_lower and ("__host__" in error_lower or "host function" in error_lower):
+            fixes.append({
+                "title": "clock64() called in host function",
+                "problem": "clock64() is a __device__ intrinsic and can ONLY be called inside __global__ or __device__ functions, NEVER in main()",
+                "solution": "Move the clock64() call into the __global__ kernel. Store the result in a device pointer and copy it back to host after kernel execution.",
+                "code_pattern": (
+                    "__global__ void kernel(..., uint64_t* cycle_out) {\n"
+                    "    uint64_t start = clock64();\n"
+                    "    // ... computation ...\n"
+                    "    uint64_t end = clock64();\n"
+                    "    if (threadIdx.x == 0 && blockIdx.x == 0)\n"
+                    "        *cycle_out = end - start;\n"
+                    "}\n"
+                    "int main() {\n"
+                    "    uint64_t *d_cycles;\n"
+                    "    cudaMalloc(&d_cycles, sizeof(uint64_t));\n"
+                    "    kernel<<<grid, block>>>(..., d_cycles);\n"
+                    "    uint64_t h_cycles;\n"
+                    "    cudaMemcpy(&h_cycles, d_cycles, sizeof(uint64_t), cudaMemcpyDeviceToHost);\n"
+                    "}"
+                ),
+            })
+
+        if 'expected a ")"' in error_lower or "expected ')'" in error_lower:
+            fixes.append({
+                "title": "Syntax error - missing parenthesis",
+                "problem": "Missing closing parenthesis in function call or expression",
+                "solution": "Check all function calls for matching parentheses. Common issue: cudaEventDestroy() calls with incorrect syntax.",
+                "code_pattern": (
+                    "// CORRECT:\n"
+                    "cudaEventDestroy(start_ev);\n"
+                    "cudaEventDestroy(stop_ev);\n\n"
+                    "// WRONG (missing semicolons or extra parens):\n"
+                    "cudaEventDestroy(start_ev  // missing );\n"
+                    "cudaEventDestroy((stop_ev));  // extra parens"
+                ),
+            })
+
+        if "undeclared identifier" in error_lower or "was not declared" in error_lower:
+            fixes.append({
+                "title": "Undeclared identifier",
+                "problem": "A variable or function is used without being declared",
+                "solution": "Add the missing declaration or #include. Common missing includes: <cstdint> for uint64_t, <cstdio> for printf.",
+                "code_pattern": (
+                    "#include <cstdint>  // for uint64_t\n"
+                    "#include <cstdio>   // for printf\n"
+                    "#include <cstddef>  // for size_t"
+                ),
+            })
+
+        return fixes
+
+    def _diagnose_measurement_error(
+        self, target: str, value: float
+    ) -> list[dict[str, str]]:
+        """Diagnose measurement value errors and generate specific fixes."""
+        fixes = []
+
+        if "bytes" in target and ("per_second" in target or "sum" in target):
+            if value < 1e9:
+                fixes.append({
+                    "title": "Bandwidth value too low (unit/scaling error)",
+                    "problem": f"Measured {value:.2f} bytes/s is far below expected range (50-4000 GB/s). Likely a unit conversion or formula error.",
+                    "solution": "Check: (1) Use elapsed_seconds = elapsed_ms / 1000.0, NOT elapsed_ms directly. (2) total_bytes = element_count * sizeof(type). (3) Use printf %.2f not %d.",
+                    "code_pattern": (
+                        "float elapsed_ms = 0;\n"
+                        "cudaEventElapsedTime(&elapsed_ms, start_ev, stop_ev);\n"
+                        "double elapsed_sec = elapsed_ms / 1000.0;\n"
+                        "double total_bytes = (double)n * sizeof(float);\n"
+                        "double bandwidth = total_bytes / elapsed_sec;\n"
+                        "printf(\"%s: %.2f\\n\", target_name, bandwidth);"
+                    ),
+                })
+
+        if "pct_of_peak" in target:
+            if value < 0 or value > 100:
+                fixes.append({
+                    "title": "Percentage out of [0, 100] range",
+                    "problem": f"Measured {value:.2f}% is outside valid range. The peak calculation or achieved calculation is wrong.",
+                    "solution": "For sm__throughput: use clock64() inside kernel for actual_freq_mhz. For gpu__compute_memory_throughput: ensure FMA chain reads from input[i].",
+                    "code_pattern": (
+                        "// sm__throughput:\n"
+                        "double pct = (achieved_flops / peak_flops) * 100.0;\n"
+                        "if (pct < 0.0) pct = 0.0;\n"
+                        "if (pct > 100.0) pct = 100.0;\n"
+                        "printf(\"sm__throughput.avg.pct_of_peak_sustained_elapsed: %.2f\\n\", pct);"
+                    ),
+                })
+            elif value < 5.0:
+                fixes.append({
+                    "title": "Percentage suspiciously low (<5%)",
+                    "problem": f"Measured {value:.2f}% suggests the kernel is NOT stressing the right resource. Register-only FMA gives ~0.09% for compute_memory_throughput.",
+                    "solution": "For sm__throughput: ensure double-precision FMA with sm_count*4 blocks. For compute_memory_throughput: FMA chain MUST read from input[i], NOT register-only.",
+                    "code_pattern": (
+                        "// WRONG (register-only, gives 0.09%):\n"
+                        "float val = 1.0f;\n"
+                        "val = val * 1.0001f + 0.001f;  // val never read from memory!\n\n"
+                        "// CORRECT (memory-dependent):\n"
+                        "float val = input[idx];  // READ from global memory\n"
+                        "val = val * 1.0001f + 0.001f;\n"
+                        "output[idx] = val;  // WRITE to global memory"
+                    ),
+                })
+
+        return fixes
+
     def get_action_items_for_pipeline_context(
         self,
         report: FeedbackReport,

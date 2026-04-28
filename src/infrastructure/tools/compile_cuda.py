@@ -258,6 +258,111 @@ def _detect_wrong_measurement(source: str, target_name: str) -> bool:
     return is_sm_count_code
 
 
+_MEASUREMENT_RANGE_VALIDATORS = {
+    "dram__bytes_read.sum.per_second": {
+        "min": 50e9,
+        "max": 4000e9,
+        "unit": "bytes/s",
+        "human_min": "50 GB/s",
+        "human_max": "4000 GB/s",
+        "error_template": (
+            "MEASUREMENT RANGE ERROR: '{target}' value {value:.2f} bytes/s is OUTSIDE the valid range "
+            "[{human_min}, {human_max}]. "
+            "This typically means the bandwidth calculation has a unit error or wrong scaling factor. "
+            "COMMON CAUSES:\n"
+            "  1. Using wrong printf format (%%d instead of %%.2f for large values)\n"
+            "  2. Dividing by wrong time unit (e.g., elapsed_ms instead of elapsed_seconds)\n"
+            "  3. Using wrong buffer size in bandwidth formula\n"
+            "  4. Not multiplying by data type size (sizeof(float)=4, sizeof(double)=8)\n"
+            "FIX: bandwidth_bytes_per_sec = (total_bytes_transferred) / elapsed_seconds\n"
+            "  where total_bytes_transferred = buffer_count * sizeof(element_type)\n"
+            "  and elapsed_seconds = elapsed_ms / 1000.0"
+        ),
+    },
+    "dram__bytes_write.sum.per_second": {
+        "min": 50e9,
+        "max": 4000e9,
+        "unit": "bytes/s",
+        "human_min": "50 GB/s",
+        "human_max": "4000 GB/s",
+        "error_template": (
+            "MEASUREMENT RANGE ERROR: '{target}' value {value:.2f} bytes/s is OUTSIDE the valid range "
+            "[{human_min}, {human_max}]. "
+            "This typically means the bandwidth calculation has a unit error or wrong scaling factor. "
+            "COMMON CAUSES:\n"
+            "  1. Using wrong printf format (%%d instead of %%.2f for large values)\n"
+            "  2. Dividing by wrong time unit (e.g., elapsed_ms instead of elapsed_seconds)\n"
+            "  3. Using wrong buffer size in bandwidth formula\n"
+            "  4. Not multiplying by data type size (sizeof(float)=4, sizeof(double)=8)\n"
+            "FIX: bandwidth_bytes_per_sec = (total_bytes_written) / elapsed_seconds\n"
+            "  where total_bytes_written = buffer_count * sizeof(element_type)\n"
+            "  and elapsed_seconds = elapsed_ms / 1000.0"
+        ),
+    },
+    "sm__throughput.avg.pct_of_peak_sustained_elapsed": {
+        "min": 0.0,
+        "max": 100.0,
+        "unit": "percent",
+        "human_min": "0%",
+        "human_max": "100%",
+        "error_template": (
+            "MEASUREMENT RANGE ERROR: '{target}' value {value:.2f}% is OUTSIDE the valid range "
+            "[{human_min}, {human_max}]. "
+            "This means the percentage calculation is wrong. "
+            "COMMON CAUSES:\n"
+            "  1. Using cudaDevAttrClockRate (base clock) instead of actual_freq_mhz from clock64()\n"
+            "  2. Wrong fp64_per_sm value for this GPU's compute capability\n"
+            "  3. Wrong FMA count in achieved_flops calculation\n"
+            "FIX: pct = (achieved_flops / peak_flops) * 100.0\n"
+            "  peak_flops = sm_count * fp64_per_sm * actual_freq_mhz * 1e6 * 2\n"
+            "  achieved_flops = grid_size * block_size * iterations * 2 / elapsed_seconds"
+        ),
+    },
+    "gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed": {
+        "min": 0.0,
+        "max": 100.0,
+        "unit": "percent",
+        "human_min": "0%",
+        "human_max": "100%",
+        "error_template": (
+            "MEASUREMENT RANGE ERROR: '{target}' value {value:.2f}% is OUTSIDE the valid range "
+            "[{human_min}, {human_max}]. "
+            "COMMON CAUSES:\n"
+            "  1. FMA chain does NOT use value read from input[i] (register-only FMA = 0.09%%!)\n"
+            "  2. Wrong peak_bw calculation\n"
+            "  3. Missing volatile on output pointer\n"
+            "FIX: pct = (achieved_bw / peak_bw) * 100.0\n"
+            "  peak_bw = (mem_clock_khz/1000.0) * 1e6 * (bus_width_bits/8) * 2 / 1e9\n"
+            "  achieved_bw = (2.0 * buffer_bytes) / elapsed_seconds / 1e9"
+        ),
+    },
+}
+
+
+def validate_measurement_range(target_name: str, value: float) -> str | None:
+    """Validate that a measured value is within the expected range for its target.
+
+    Returns an error message string if the value is out of range, or None if valid.
+    This catches unit errors, wrong scaling factors, and broken measurement code.
+    """
+    validator = _MEASUREMENT_RANGE_VALIDATORS.get(target_name)
+    if validator is None:
+        return None
+
+    min_val = validator["min"]
+    max_val = validator["max"]
+
+    if value < min_val or value > max_val:
+        return validator["error_template"].format(
+            target=target_name,
+            value=value,
+            human_min=validator["human_min"],
+            human_max=validator["human_max"],
+        )
+
+    return None
+
+
 def _fix_printf_format(source: str, target_name: str) -> str:
     """Fix printf format to match the target name.
 

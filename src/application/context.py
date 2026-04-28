@@ -5,6 +5,7 @@ assembled, compressed, and managed — not a static prompt.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -68,6 +69,21 @@ def _classify_priority(role: Role, content: str) -> Priority:
         # Compilation success + execute hint — HIGH
         if "Compilation #" in content and "IMMEDIATELY call execute_binary" in content:
             return Priority.HIGH
+        # Measurement recording — HIGH
+        if "MEASUREMENTS RECORDED" in content:
+            return Priority.HIGH
+        # Critical range errors — HIGH (must be addressed)
+        if "CRITICAL RANGE ERROR" in content or "CRITICAL MEASUREMENT RANGE ERROR" in content:
+            return Priority.HIGH
+        # Code-fix bridge — HIGH (actionable fixes)
+        if "CODE-FIX BRIDGE" in content:
+            return Priority.HIGH
+        # Reference value hints — HIGH (guides LLM when CodeGen fails)
+        if "REFERENCE VALUE" in content:
+            return Priority.HIGH
+        # Repeated compilation errors — DISPOSABLE (noise after first occurrence)
+        if "COMPILATION FAILED" in content or "compile_cuda REQUIRES" in content:
+            return Priority.DISPOSABLE
         # Error guidance — low importance (noise if repeated)
         if "⚠️" in content or "ERROR" in content:
             return Priority.LOW
@@ -232,11 +248,13 @@ class ContextManager:
     """
 
     COMPRESSION_RATIO = 0.8
+    MAX_DUPLICATE_ENTRIES = 2
 
     def __init__(self, max_tokens: int = 16000) -> None:
         self._entries: list[ContextEntry] = []
         self._max_tokens = max_tokens
         self._total_tokens = 0
+        self._content_fingerprint_counts: dict[str, int] = {}
 
     @property
     def total_tokens(self) -> int:
@@ -245,6 +263,12 @@ class ContextManager:
     @property
     def max_tokens(self) -> int:
         return self._max_tokens
+
+    @staticmethod
+    def _fingerprint(content: str) -> str:
+        """Create a short fingerprint for duplicate detection."""
+        normalized = re.sub(r'\d+', 'N', content[:200])
+        return hashlib.md5(normalized.encode()).hexdigest()[:12]
 
     def add_entry(
         self,
@@ -255,6 +279,17 @@ class ContextManager:
         priority = _classify_priority(role, content)
         if token_count <= 0:
             token_count = _estimate_tokens(content)
+
+        fp = self._fingerprint(content)
+        count = self._content_fingerprint_counts.get(fp, 0)
+        if count >= self.MAX_DUPLICATE_ENTRIES and priority not in (Priority.PERMANENT, Priority.HIGH):
+            logger.info(
+                "[CONTEXT] DEDUP: Skipping duplicate entry (count=%d) preview=%s",
+                count, content[:80].replace('\n', '\\n')
+            )
+            return
+
+        self._content_fingerprint_counts[fp] = count + 1
         entry = ContextEntry(role=role, content=content, token_count=token_count, priority=priority)
         self._entries.append(entry)
         self._total_tokens += entry.token_count
