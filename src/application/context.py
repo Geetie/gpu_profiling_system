@@ -266,8 +266,15 @@ class ContextManager:
 
     @staticmethod
     def _fingerprint(content: str) -> str:
-        """Create a short fingerprint for duplicate detection."""
-        normalized = re.sub(r'\d+', 'N', content[:200])
+        """Create a short fingerprint for duplicate detection.
+
+        Only normalizes common counter patterns in longer content.
+        Short content (< 50 chars) uses the raw string to preserve uniqueness.
+        """
+        text = content[:300]
+        if len(text) < 50:
+            return hashlib.md5(text.encode()).hexdigest()[:12]
+        normalized = re.sub(r'(line|turn|step|attempt|retry|iteration|compile|compilation)\s*#?\s*\d+', r'\1N', text, flags=re.IGNORECASE)
         return hashlib.md5(normalized.encode()).hexdigest()[:12]
 
     def add_entry(
